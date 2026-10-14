@@ -1209,7 +1209,8 @@ esp_err_t lr11xx_send(lr11xx_t *dev, const solar_os_radio_packet_t *packet, uint
         dev->state = SOLAR_OS_RADIO_STATE_STANDBY;
     } else {
         lr11xx_lose_track(dev);
-        if (err == ESP_OK) {
+        /* A timeout is ordinary only if the transmission could be stopped. */
+        if (err == ESP_OK || err == ESP_ERR_TIMEOUT) {
             err = standby;
         }
     }

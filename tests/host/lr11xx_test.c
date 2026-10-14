@@ -45,6 +45,7 @@
 
 #define IRQ_TX_DONE 0x00000004UL
 #define IRQ_RX_DONE 0x00000008UL
+#define IRQ_TIMEOUT 0x00000400UL
 
 #define MAX_WINDOWS 96
 #define MAX_PARAMS 300
@@ -1619,6 +1620,43 @@ static void test_send_fault_at_every_step(void)
     }
 }
 
+/* A send timeout does not hide a failed standby or its recovery requirement. */
+static void test_send_timeout_cleanup(void)
+{
+    const uint32_t irqs[] = {0UL, IRQ_TIMEOUT};
+    solar_os_radio_packet_t packet = {.len = 5U};
+    lr11xx_t dev;
+
+    for (size_t i = 0; i < sizeof(irqs) / sizeof(irqs[0]); i++) {
+        /* A caller or radio timeout remains a timeout when standby succeeds. */
+        open_listening(&dev);
+        chip.irq = irqs[i];
+        const unsigned before = chip.transfers;
+        assert(lr11xx_send(&dev, &packet, 10U) == ESP_ERR_TIMEOUT);
+        const unsigned steps = chip.transfers - before;
+        assert(steps >= 2U);
+        assert(dev.state == SOLAR_OS_RADIO_STATE_STANDBY && dev.configured);
+        assert_state_true(&dev);
+
+        /* A refused standby is a device failure, even after a timeout. */
+        open_listening(&dev);
+        chip.irq = irqs[i];
+        chip.reject_opcode = LR11XX_OP_SET_STANDBY;
+        assert(lr11xx_send(&dev, &packet, 10U) == ESP_ERR_INVALID_RESPONSE);
+        assert(dev.state == SOLAR_OS_RADIO_STATE_UNKNOWN && !dev.configured);
+        assert(lr11xx_send(&dev, &packet, 10U) == ESP_ERR_INVALID_STATE);
+
+        /* The final two transfers send standby and read its status. */
+        for (unsigned step = steps - 1U; step <= steps; step++) {
+            open_listening(&dev);
+            chip.irq = irqs[i];
+            chip.fail_transfer = step;
+            assert(lr11xx_send(&dev, &packet, 10U) == ESP_FAIL);
+            assert(dev.state == SOLAR_OS_RADIO_STATE_UNKNOWN && !dev.configured);
+        }
+    }
+}
+
 /* A packet whose RX_DONE could not be cleared is not delivered: the flag
  * would still be up at the next poll, and the same packet would be handed
  * back a second time. A receive that fails at any transfer, before the flag
@@ -1731,6 +1769,7 @@ int main(void)
     test_configure_fault_at_every_step();
     test_configure_recovers_a_lost_part();
     test_send_fault_at_every_step();
+    test_send_timeout_cleanup();
     test_low_data_rate_follows_symbol_time();
     test_bandwidth_reported_as_applied();
     test_listening_takes_any_preamble();
