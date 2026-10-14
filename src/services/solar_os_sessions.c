@@ -1,4 +1,5 @@
 #include "solar_os_sessions.h"
+#include "solar_os_shutdown.h"
 
 #include <stdio.h>
 #include <inttypes.h>
@@ -1669,7 +1670,14 @@ static bool close_session(solar_os_session_entry_t *session, bool preserve_conte
                       "close session %u: %s",
                       (unsigned)session->id,
                       app_display_name(session->app));
-        solar_os_app_stop(session->app, session_state.ctx);
+        if (!solar_os_app_stop_checked(session->app, session_state.ctx)) {
+            if (was_foreground) {
+                session_state.foreground_session = session;
+                session_state.foreground_app = session->app;
+            }
+            if (preserve_caller_context) session_context_restore(&previous);
+            return false;
+        }
     }
     session_transfer_exit_result(session);
     session_release_display(session);
@@ -2069,6 +2077,7 @@ static void dispatch_session_event(solar_os_session_entry_t *session,
         if (session->app->resume == NULL) {
             session_restore_graphics_snapshot(session);
         }
+        if (event->type == SOLAR_OS_EVENT_RESUME) return;
     }
     if (tui_control_consumed) {
         return;
@@ -3003,6 +3012,7 @@ static esp_err_t session_send_command_internal(uint8_t session_id,
                                                const char *command,
                                                solar_os_shell_io_t *caller_io)
 {
+    if (solar_os_shutdown_requested()) return ESP_ERR_INVALID_STATE;
     if (command == NULL || command[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
@@ -3086,6 +3096,11 @@ static void session_process_operation_requests(void)
         }
         xSemaphoreGive(request->complete);
     }
+}
+
+void solar_os_sessions_drain_operations(void)
+{
+    session_process_operation_requests();
 }
 
 void solar_os_sessions_dispatch_tick(uint32_t now_ms)
@@ -3176,7 +3191,34 @@ void solar_os_sessions_dispatch_resume(uint32_t now_ms)
         .type = SOLAR_OS_EVENT_RESUME,
         .data.tick_ms = now_ms,
     };
-    solar_os_sessions_dispatch_foreground_event(&event);
+    solar_os_session_context_snapshot_t previous = {0};
+    session_context_capture(&previous);
+    for (size_t i = 0; i < SOLAR_OS_SESSION_MAX; i++) {
+        solar_os_session_entry_t *session = &session_state.sessions[i];
+        if (!session->used || session->suspended || !session->started ||
+            session == session_state.foreground_session) continue;
+        if (session->terminal != NULL) solar_os_terminal_invalidate_render(session->terminal);
+        session->terminal_redraw_requested = true;
+        dispatch_session_event(session, &event);
+        if (session->used) {
+            session_prepare_context(session);
+            (void)process_addressed_session_requests(session);
+            session_draw_terminal_if_needed(session);
+        }
+        session_context_restore(&previous);
+    }
+    solar_os_session_entry_t *foreground = session_state.foreground_session;
+    if (foreground != NULL) {
+        if (foreground->terminal != NULL) solar_os_terminal_invalidate_render(foreground->terminal);
+        foreground->terminal_redraw_requested = true;
+    }
+    if (foreground == NULL && session_state.foreground_app != NULL &&
+        session_state.foreground_app->resume != NULL) {
+        restore_foreground_context();
+        session_state.foreground_app->resume(session_state.ctx);
+    } else {
+        solar_os_sessions_dispatch_foreground_event(&event);
+    }
     solar_os_sessions_process_requests();
 }
 
@@ -3232,6 +3274,7 @@ esp_err_t solar_os_sessions_send_command(uint8_t session_id,
                                          const char *command,
                                          solar_os_shell_io_t *caller_io)
 {
+    if (solar_os_shutdown_requested()) return ESP_ERR_INVALID_STATE;
     if (command == NULL || command[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
@@ -3273,6 +3316,7 @@ static esp_err_t create_display_shell(const char *target_name,
                                       char *busy_owner,
                                       size_t busy_owner_len)
 {
+    if (solar_os_shutdown_requested()) return ESP_ERR_INVALID_STATE;
     if (session_id != NULL) {
         *session_id = 0;
     }
@@ -3430,6 +3474,7 @@ static esp_err_t session_create_display_app_internal(
     char *busy_owner,
     size_t busy_owner_len)
 {
+    if (solar_os_shutdown_requested()) return ESP_ERR_INVALID_STATE;
     if (session_id != NULL) {
         *session_id = 0;
     }
@@ -3537,6 +3582,7 @@ esp_err_t solar_os_sessions_create_display_app(const solar_os_app_t *app,
                                                char *busy_owner,
                                                size_t busy_owner_len)
 {
+    if (solar_os_shutdown_requested()) return ESP_ERR_INVALID_STATE;
     if (xTaskGetCurrentTaskHandle() == session_scheduler_task) {
         return session_create_display_app_internal(app,
                                                    target_name,
@@ -3667,6 +3713,27 @@ static void session_print_close_result(solar_os_shell_io_t *io,
         solar_os_shell_io_printf(io, "close: failed: %u\n", (unsigned)session_id);
     }
     solar_os_shell_io_flush(io);
+}
+
+esp_err_t solar_os_sessions_prepare_shutdown(void)
+{
+    for (size_t i = 0; i < SOLAR_OS_SESSION_MAX; i++) {
+        solar_os_session_entry_t *session = &session_state.sessions[i];
+        if (session_is_closable(session)) {
+            session->has_return_session = false;
+            if (!close_session(session, true)) return ESP_ERR_NOT_FINISHED;
+        }
+    }
+    if (session_state.foreground_session == NULL &&
+        session_state.foreground_app != NULL &&
+        session_state.foreground_app != solar_os_shell_app()) {
+        if (!solar_os_app_stop_checked(session_state.foreground_app, session_state.ctx)) {
+            return ESP_ERR_NOT_FINISHED;
+        }
+        session_state.foreground_app = solar_os_shell_app();
+        session_restore_base_context();
+    }
+    return ESP_OK;
 }
 
 esp_err_t solar_os_sessions_close_session(uint8_t session_id, solar_os_shell_io_t *io)

@@ -19,6 +19,42 @@
 #define POWER_CPU_LOWPOWER_MHZ 80U
 
 static const char *TAG = "solar_os_power";
+static portMUX_TYPE off_lock = portMUX_INITIALIZER_UNLOCKED;
+static solar_os_power_off_fn_t off_provider;
+static void *off_user;
+
+esp_err_t solar_os_power_register_off_provider(const char *name,
+                                               solar_os_power_off_fn_t off,
+                                               void *user)
+{
+    if (name == NULL || off == NULL || user == NULL) return ESP_ERR_INVALID_ARG;
+#ifndef SOLAR_OS_BOARD_POWEROFF_PROVIDER
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (strcmp(name, SOLAR_OS_BOARD_POWEROFF_PROVIDER) != 0) return ESP_ERR_NOT_SUPPORTED;
+    portENTER_CRITICAL(&off_lock);
+    const bool busy = off_provider != NULL && off_user != user;
+    if (!busy) { off_provider = off; off_user = user; }
+    portEXIT_CRITICAL(&off_lock);
+    return busy ? ESP_ERR_INVALID_STATE : ESP_OK;
+#endif
+}
+
+void solar_os_power_unregister_off_provider(void *user)
+{
+    portENTER_CRITICAL(&off_lock);
+    if (off_user == user) { off_provider = NULL; off_user = NULL; }
+    portEXIT_CRITICAL(&off_lock);
+}
+
+esp_err_t solar_os_power_off(void)
+{
+    portENTER_CRITICAL(&off_lock);
+    const solar_os_power_off_fn_t off = off_provider;
+    void *user = off_user;
+    portEXIT_CRITICAL(&off_lock);
+    return off != NULL ? off(user) : ESP_ERR_NOT_SUPPORTED;
+}
 
 static solar_os_power_status_t power_status = {
     .profile = SOLAR_OS_POWER_PROFILE_PERFORMANCE,

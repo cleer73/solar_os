@@ -12,6 +12,7 @@
 #include "solar_os_memory.h"
 #include "solar_os_splash.h"
 #include "solar_os_shell_io.h"
+#include "solar_os_shutdown.h"
 
 static const char *TAG = "solar_os";
 
@@ -70,6 +71,10 @@ esp_err_t solar_os_app_start(const solar_os_app_t *app,
     if (app == NULL || ctx == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (solar_os_shutdown_requested() &&
+        (app->name == NULL || strcmp(app->name, "shell") != 0)) {
+        return app_start_failure(app, ctx, ESP_ERR_INVALID_STATE);
+    }
     if (app->app_class == SOLAR_OS_APP_CLASS_UNSPECIFIED) {
         SOLAR_OS_LOGE(TAG,
                       "%s has no foreground app class",
@@ -114,10 +119,10 @@ esp_err_t solar_os_app_start(const solar_os_app_t *app,
     return err;
 }
 
-void solar_os_app_stop(const solar_os_app_t *app, solar_os_context_t *ctx)
+bool solar_os_app_stop_checked(const solar_os_app_t *app, solar_os_context_t *ctx)
 {
     if (app == NULL) {
-        return;
+        return true;
     }
     if (ctx != NULL) ctx->app = app;
     if (app->stop != NULL) {
@@ -126,7 +131,14 @@ void solar_os_app_stop(const solar_os_app_t *app, solar_os_context_t *ctx)
     if (!app_release_state(app)) {
         SOLAR_OS_LOGW(TAG, "%s retained cold state while worker stops",
                       app->name != NULL ? app->name : "?");
+        return false;
     }
+    return true;
+}
+
+void solar_os_app_stop(const solar_os_app_t *app, solar_os_context_t *ctx)
+{
+    (void)solar_os_app_stop_checked(app, ctx);
 }
 
 void solar_os_context_init(solar_os_context_t *ctx,

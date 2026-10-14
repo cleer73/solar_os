@@ -130,8 +130,12 @@ cw2017_test: cw2017_test.c $(ROOT)/src/drivers/cw2017.c $(ROOT)/src/drivers/cw20
 		cw2017_test.c $(ROOT)/src/drivers/cw2017.c $(ROOT)/src/services/solar_os_cw2017.c -o $@
 TARGETS += pipeline_test pipeline_lua_test
 TARGETS += jobs_admission_test
+TARGETS += shutdown_test
 
-jobs_admission_test: jobs_admission_test.c $(ROOT)/src/solar_os_jobs.c $(ROOT)/src/solar_os_scheduler.c
+shutdown_test: shutdown_test.c $(ROOT)/src/services/solar_os_shutdown.c
+	$(CC) $(CFLAGS) -I. -I$(ROOT)/src/services $< -o $@
+
+jobs_admission_test: jobs_admission_test.c $(ROOT)/src/solar_os_jobs.c $(ROOT)/src/solar_os_scheduler.c $(ROOT)/src/services/solar_os_shutdown.c
 	$(CC) $(CFLAGS) -DSOLAR_OS_JOBS_MAX=0 -include compat.h -ffunction-sections -fdata-sections \
 		-Ijobs_admission_stubs -I. -I$(ROOT)/src -I$(ROOT)/src/services \
 		$(filter-out $(ROOT)/src/solar_os_jobs.c,$^) -Wl,--gc-sections -o $@

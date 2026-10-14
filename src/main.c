@@ -49,6 +49,16 @@
 #include "solar_os_memory.h"
 #include "solar_os_port_shell.h"
 #include "solar_os_power.h"
+#include "solar_os_shutdown.h"
+#if SOLAR_OS_PACKAGE_SERVICE_GNSS
+#include "solar_os_gnss.h"
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_NFC
+#include "solar_os_nfc.h"
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_MODEM
+#include "solar_os_modem.h"
+#endif
 #include "solar_os_radio.h"
 #if SOLAR_OS_PACKAGE_SERVICE_MESHCORE_BLE
 #include "solar_os_meshcore_ble.h"
@@ -475,8 +485,9 @@ static void dispatch_app_resume(uint32_t now_ms)
 
 static void resume_display_after_sleep(uint32_t now_ms)
 {
+    solar_os_display_clear_power_state();
 #if !SOLAR_OS_BOARD_HAS_DISPLAY
-    (void)now_ms;
+    dispatch_app_resume(now_ms);
     return;
 #else
     if (!solar_os_board_display_ready(&board_display)) {
@@ -489,9 +500,8 @@ static void resume_display_after_sleep(uint32_t now_ms)
         return;
     }
 
-    if (solar_os_context_graphics_active(&os_ctx)) {
-        dispatch_app_resume(now_ms);
-    } else if (terminal != NULL) {
+    dispatch_app_resume(now_ms);
+    if (!solar_os_context_graphics_active(&os_ctx) && terminal != NULL) {
         solar_os_terminal_invalidate_render(terminal);
         draw_terminal_if_needed();
     }
@@ -529,11 +539,13 @@ static void enter_suspend(const char *reason)
         return;
     }
 
-    err = solar_os_display_suspend_primary();
+    err = solar_os_display_show_power_state("Suspended");
+    if (err == ESP_OK) err = solar_os_display_suspend_primary();
     if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
         SOLAR_OS_LOGW(TAG, "%s: display suspend failed: %s",
                       reason, esp_err_to_name(err));
         (void)solar_os_power_end_suspend();
+        resume_display_after_sleep(millis_u32());
         return;
     }
 
@@ -597,14 +609,14 @@ static void exit_suspend(const char *reason)
                       reason, esp_err_to_name(display_err));
     }
 
+    solar_os_display_clear_power_state();
     const uint32_t now_ms = millis_u32();
     solar_os_power_note_activity(now_ms);
     last_app_tick_ms = now_ms;
     last_status_update_ms = 0;
     update_status();
-    if (solar_os_context_graphics_active(&os_ctx)) {
-        dispatch_app_resume(now_ms);
-    } else if (terminal != NULL) {
+    dispatch_app_resume(now_ms);
+    if (!solar_os_context_graphics_active(&os_ctx) && terminal != NULL) {
         solar_os_terminal_invalidate_render(terminal);
         draw_terminal_if_needed();
     }
@@ -704,6 +716,131 @@ static bool wait_key_rtc_released_stable(uint32_t stable_ms, uint32_t timeout_ms
     }
 
     return false;
+}
+
+static esp_err_t shutdown_step(solar_os_shutdown_stage_t stage, void *user)
+{
+    (void)user;
+    switch (stage) {
+    case SOLAR_OS_SHUTDOWN_WAKE:
+        deferred_sleep_pending = false;
+        if (board_has(SOLAR_OS_BOARD_CAP_KEY) &&
+            !wait_key_released_stable(KEY_RELEASE_STABLE_MS, KEY_RELEASE_STABLE_TIMEOUT_MS)) {
+            return ESP_ERR_NOT_FINISHED;
+        }
+        return ESP_OK;
+    case SOLAR_OS_SHUTDOWN_PORTS:
+        return solar_os_port_shell_prepare_shutdown();
+    case SOLAR_OS_SHUTDOWN_APPS:
+        return solar_os_sessions_prepare_shutdown();
+    case SOLAR_OS_SHUTDOWN_JOBS:
+        return solar_os_jobs_prepare_shutdown(&os_ctx);
+    case SOLAR_OS_SHUTDOWN_RADIOS: {
+        esp_err_t err = ESP_OK;
+#if SOLAR_OS_PACKAGE_SERVICE_BLE
+        if (board_has(SOLAR_OS_BOARD_CAP_BLE) && solar_os_ble_keyboard_enabled_for_current_boot()) {
+            err = solar_os_ble_keyboard_prepare_sleep(BLE_SLEEP_DISCONNECT_TIMEOUT_MS);
+            if (err != ESP_OK) return err;
+        }
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_ESPNOW
+        err = solar_os_espnow_prepare_sleep();
+        if (err != ESP_OK) return err;
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_WIREGUARD
+        err = solar_os_wireguard_prepare_sleep();
+        if (err != ESP_OK) return err;
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_WIFI
+        if (board_has(SOLAR_OS_BOARD_CAP_WIFI)) {
+            err = solar_os_wifi_prepare_sleep();
+            if (err != ESP_OK) return err;
+        }
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_MODEM
+        for (size_t i = 0; i < solar_os_modem_count(); i++) {
+            solar_os_modem_info_t modem;
+            solar_os_modem_status_t status;
+            if (!solar_os_modem_get(i, &modem)) continue;
+            err = solar_os_modem_get_status(modem.name, &status);
+            if (err != ESP_OK) return err;
+            if (status.data_active) {
+                err = solar_os_modem_set_data_active(modem.name, false);
+                if (err != ESP_OK) return err;
+            }
+            if (status.power_control && status.powered) {
+                err = solar_os_modem_set_power(modem.name, false);
+                if (err != ESP_OK) return err;
+            }
+        }
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_RADIO
+        for (size_t i = 0; i < solar_os_radio_count(); i++) {
+            solar_os_radio_info_t radio;
+            if (!solar_os_radio_get(i, &radio)) continue;
+            err = solar_os_radio_set_state(radio.name, SOLAR_OS_RADIO_STATE_SLEEP);
+            if (err != ESP_OK) return err;
+        }
+#endif
+        solar_os_audio_deinit();
+#if SOLAR_OS_PACKAGE_SERVICE_GNSS
+        for (size_t i = 0; i < solar_os_gnss_count(); i++) {
+            solar_os_gnss_info_t info;
+            if (!solar_os_gnss_get(i, &info) || !info.power_control || !info.powered) continue;
+            err = solar_os_gnss_set_power(info.name, false);
+            if (err != ESP_OK) return err;
+        }
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_NFC
+        for (size_t i = 0; i < solar_os_nfc_count(); i++) {
+            solar_os_nfc_info_t info;
+            if (!solar_os_nfc_get(i, &info) || !info.power_control || !info.powered) continue;
+            err = solar_os_nfc_set_power(info.name, false);
+            if (err != ESP_OK) return err;
+        }
+#endif
+        return err;
+    }
+    case SOLAR_OS_SHUTDOWN_STORAGE:
+        return solar_os_storage_prepare_shutdown();
+    case SOLAR_OS_SHUTDOWN_DISPLAY: {
+        /* A remote shutdown may arrive while the primary display is suspended. */
+        if (solar_os_display_primary_suspended()) {
+            const esp_err_t err = solar_os_display_resume_primary();
+            if (err != ESP_OK) return err;
+        }
+        const esp_err_t err = solar_os_display_show_power_state("Powered off");
+        if (err != ESP_OK) return err;
+        const esp_err_t display_err = solar_os_display_shutdown();
+        if (display_err != ESP_OK) return display_err;
+        return solar_os_storage_shutdown_hardware();
+    }
+    case SOLAR_OS_SHUTDOWN_POWER: {
+        /* Shutdown excludes RTC alarms and scheduled timers. KEY wake always
+         * starts app_main afresh; boards without a RTC KEY need RESET/power. */
+        const esp_err_t wake_err = esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+        if (wake_err != ESP_OK) return wake_err;
+        if (board_has(SOLAR_OS_BOARD_CAP_KEY) && rtc_gpio_is_valid_gpio(SOLAR_OS_BOARD_PIN_KEY)) {
+            esp_err_t err = key_prepare_rtc_wakeup();
+            if (err == ESP_OK) err = esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+            if (err == ESP_OK) err = esp_sleep_enable_ext1_wakeup_io(KEY_WAKE_MASK, KEY_WAKE_MODE);
+            if (err != ESP_OK) return err;
+            if (!wait_key_rtc_released_stable(KEY_RELEASE_STABLE_MS, KEY_RELEASE_STABLE_TIMEOUT_MS)) {
+                return ESP_ERR_NOT_FINISHED;
+            }
+        }
+        (void)fflush(NULL);
+        const esp_err_t err = solar_os_power_off();
+        if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) return err;
+        /* USB can keep a battery-disconnected board alive. The same cold-boot
+         * fallback covers boards with no system power switch. */
+        if (err == ESP_OK) vTaskDelay(pdMS_TO_TICKS(100));
+        esp_deep_sleep_start();
+        return ESP_FAIL;
+    }
+    default:
+        return ESP_ERR_INVALID_STATE;
+    }
 }
 
 static void enter_sleep(const char *reason, bool deep_sleep)
@@ -883,6 +1020,10 @@ static void enter_sleep(const char *reason, bool deep_sleep)
     }
 #endif
 
+    const esp_err_t splash_err = solar_os_display_show_power_state("Sleeping");
+    if (splash_err != ESP_OK) {
+        SOLAR_OS_LOGW(TAG, "sleep splash failed: %s", esp_err_to_name(splash_err));
+    }
     solar_os_power_note_sleep_enter(millis_u32());
     if (deep_sleep) {
         const esp_err_t display_err = solar_os_display_suspend_primary();
@@ -1942,6 +2083,23 @@ void app_main(void)
                   requires_fast_poll ? "polled" : "event-driven");
 
     while (true) {
+        if (solar_os_shutdown_requested()) {
+            /* Drain broker requests while port workers close, without
+             * dispatching new input, schedules, or app/job ticks. */
+            solar_os_sessions_drain_operations();
+            solar_os_sessions_process_requests();
+            solar_os_shutdown_poll(shutdown_step, NULL, millis_u32());
+            static bool shutdown_error_reported;
+            const esp_err_t error = solar_os_shutdown_error();
+            if (error != ESP_OK && !shutdown_error_reported) {
+                shutdown_error_reported = true;
+                SOLAR_OS_LOGE(TAG, "shutdown stopped at %s: %s",
+                    solar_os_shutdown_stage_name(solar_os_shutdown_stage()), esp_err_to_name(error));
+                (void)solar_os_display_show_power_state("Shutdown failed");
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
         solar_os_schedule_poll();
         solar_os_power_poll();
 #if SOLAR_OS_PACKAGE_SERVICE_EXPANSION

@@ -25,6 +25,7 @@
 #include "solar_os_engines.h"
 #include "solar_os_i2c.h"
 #include "solar_os_memory.h"
+#include "solar_os_shutdown.h"
 #if SOLAR_OS_PACKAGE_SERVICE_NATIVE_MODULES
 #include "solar_os_log.h"
 #include "solar_os_module_packages.h"
@@ -719,6 +720,20 @@ void solar_os_shell_cmd_sleep(solar_os_context_t *ctx, int argc, char **argv)
 
     solar_os_shell_io_writeln(term, "sleeping; press KEY to wake");
     solar_os_context_request_sleep(ctx);
+}
+
+void solar_os_shell_cmd_shutdown(solar_os_context_t *ctx, int argc, char **argv)
+{
+    solar_os_shell_io_t *io = terminal(ctx);
+    if (argc != 1) {
+        solar_os_shell_diag_unexpected(io, "shutdown", argv[1], "shutdown");
+        return;
+    }
+    solar_os_shell_io_writeln(io, "shutting down; press power/KEY or RESET to boot");
+    (void)solar_os_shell_io_flush(io);
+    if (solar_os_shutdown_request() != ESP_OK) {
+        solar_os_shell_io_writeln(io, "shutdown already requested");
+    }
 }
 
 void solar_os_shell_cmd_deepsleep(solar_os_context_t *ctx, int argc, char **argv)

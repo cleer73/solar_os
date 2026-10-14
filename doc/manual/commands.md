@@ -266,6 +266,7 @@ job for periodic polling.
 | `top` | `top` | Print a one-shot cumulative FreeRTOS task snapshot. Use `ltop` for live interval CPU, memory, and stack monitoring. |
 | `sleep` | `sleep` | Enter explicit light sleep. |
 | `deepsleep` | `deepsleep` | Turn off the ESP32 radios and enter deep sleep. KEY, an armed RTC or scheduled timer, or RESET starts a fresh boot. |
+| `shutdown` | `shutdown` | Stop apps and jobs, flush storage, and power down. Only the physical power/KEY button, RESET, or a power cycle starts a fresh boot. |
 | `suspend` | `suspend` | Turn off the primary display and temporarily use the `lowpower` profile while services and jobs continue. Press KEY to resume. |
 | `power` | `power [status]` | Show the selected and effective profiles, suspend state, sleep policy, and wake statistics. |
 | `power` | `power profile [performance\|balanced\|battery\|lowpower]` | Show or save the power profile. |
@@ -435,6 +436,30 @@ RTC or scheduled timer, and RESET start a normal fresh boot; running jobs,
 sessions, and RAM state are not restored. BLE and Wi-Fi are off and cannot wake
 the device. This is not a hardware power-off: the board remains powered, and a
 separate board power control must still be used to remove its supply.
+
+`suspend` shows the SolarOS splash with **Suspended**; `sleep` and `deepsleep`
+show **Sleeping**. The splash replaces the current contents on every attached
+display before the transition, including e-paper displays that retain their
+image. Waking from suspend or light sleep restores the previous session.
+
+`shutdown` works from display and port shells on every target. It stops new
+app and job launches, closes sessions, stops background jobs and radios,
+flushes and unmounts persistent storage, and shows **Powered off** before
+power-down. Save unsaved documents before shutdown; closing an app does not
+automatically save edits. RAMFS contents and running sessions are discarded.
+Cleanup failures are reported and prevent power-down. Use RESET or cycle power
+to restart after a cleanup failure.
+
+Shutdown uses the board's declared hardware power-off provider when available:
+the CL32 controller, AXP2101 on Waveshare ESP32-S3-ePaper-3.97, and BQ25896
+battery disconnect on T-LoRa-Pager. Xteink X4 Pro drops its peripheral latch;
+T-Deck Plus and ThinkNode M9 turn off their shared display/peripheral rail.
+Other targets enter ESP32 deep sleep. USB power can keep a board
+alive after its battery is disconnected; deep sleep is the fallback in that
+case. Shutdown disables RTC and scheduled timer wake. Pressing the physical
+power/KEY button starts a normal fresh boot, with apps and jobs initialized
+from saved settings. A target without a usable KEY wake pin needs RESET or a
+power cycle. Shutdown never resumes the old session.
 
 `rtc` is the low-level hardware interface. `rtc status` remains useful on
 boards without RTC hardware and reports `unavailable` there.

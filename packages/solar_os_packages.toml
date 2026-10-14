@@ -798,6 +798,7 @@ sources = [
   "services/solar_os_boot_services.c",
   "services/solar_os_cdc.c",
   "services/solar_os_clipboard.c",
+  "services/solar_os_shutdown.c",
   "services/solar_os_display.c",
   "services/solar_os_display_layout.c",
   "services/solar_os_display_layout_core.c",

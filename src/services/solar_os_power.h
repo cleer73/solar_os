@@ -8,6 +8,14 @@
 
 #define SOLAR_OS_POWER_PROFILE_NAME_MAX 16
 
+typedef esp_err_t (*solar_os_power_off_fn_t)(void *user);
+/* Only the provider named by the board manifest may cut the system supply. */
+esp_err_t solar_os_power_register_off_provider(const char *name,
+                                               solar_os_power_off_fn_t off,
+                                               void *user);
+void solar_os_power_unregister_off_provider(void *user);
+esp_err_t solar_os_power_off(void);
+
 typedef enum {
     SOLAR_OS_POWER_PROFILE_PERFORMANCE = 0,
     SOLAR_OS_POWER_PROFILE_BALANCED = 1,

@@ -56,6 +56,9 @@ typedef struct solar_os_board_display_ops {
                                  const solar_os_display_surface_t *surface);
     esp_err_t (*present_frame)(solar_os_board_display_t *display,
                                const solar_os_display_raster_t *frame);
+    /* Submit the current buffer synchronously before a power transition. */
+    esp_err_t (*present_power_state)(solar_os_board_display_t *display);
+    esp_err_t (*shutdown)(solar_os_board_display_t *display);
 } solar_os_board_display_ops_t;
 
 esp_err_t solar_os_board_display_register_primary(solar_os_board_display_t *display);

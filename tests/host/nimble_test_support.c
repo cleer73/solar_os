@@ -4,6 +4,7 @@
 #include "freertos/queue.h"
 #include <nvs.h>
 #include "host/ble_hs_id.h"
+#include "solar_os_identity.h"
 #include <freertos/semphr.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -19,6 +20,7 @@ static pthread_mutex_t event_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t event_changed = PTHREAD_COND_INITIALIZER;
 void nimble_test_reset(void)
 { memset(&fake, 0, sizeof(fake)); fake.mtu = 517;
+  strcpy(fake.hostname, "test-device");
   ble_hs_cfg=(struct ble_hs_cfg_stub){.sm_io_cap=BLE_HS_IO_DISPLAY_ONLY,.sm_mitm=1,.sm_sc=1}; }
 struct ble_npl_eventq *nimble_port_get_dflt_eventq(void) { return &eventq; }
 void ble_npl_event_init(struct ble_npl_event *e, void (*fn)(struct ble_npl_event *), void *arg)
@@ -209,7 +211,11 @@ int ble_gap_adv_stop(void) { fake.advertising = false; return 0; }
 int ble_gap_wl_set(const ble_addr_t *peers, uint8_t count)
 { assert(count==1); fake.whitelist_calls++; fake.whitelist_peer=*peers; return fake.whitelist_error; }
 int ble_svc_gap_device_name_set(const char *name)
-{ assert(strlen(name) <= 26); strcpy(fake.device_name, name); return fake.submit_error; }
+{ assert(strlen(name) < sizeof(fake.device_name));
+  if (!fake.submit_error) strcpy(fake.device_name, name);
+  return fake.submit_error; }
+void solar_os_identity_get_hostname(char *buffer, size_t len)
+{ snprintf(buffer, len, "%s", fake.hostname); }
 int ble_gap_adv_set_fields(const struct ble_hs_adv_fields *fields)
 { fake.adv_flags=fields->flags; fake.appearance = fields->appearance_is_present ? fields->appearance : 0; return fake.submit_error; }
 int ble_gap_adv_rsp_set_fields(const struct ble_hs_adv_fields *fields) { assert(fields->name_len <= 26); return fake.submit_error; }

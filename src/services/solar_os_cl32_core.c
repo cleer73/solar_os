@@ -13,6 +13,7 @@
 #include "solar_os_cl32_keyboard.h"
 #include "solar_os_input.h"
 #include "solar_os_task.h"
+#include "solar_os_power.h"
 
 #define CL32_CORE_POLL_MS 10U
 #define CL32_CORE_TASK_STACK 3072U
@@ -105,6 +106,15 @@ static esp_err_t read_register(solar_os_cl32_core_device_t *device,
                                      reg,
                                      value,
                                      sizeof(*value));
+}
+
+static esp_err_t power_off(void *user)
+{
+    solar_os_cl32_core_device_t *device = user;
+    if (device == NULL || !device->active) return ESP_ERR_INVALID_STATE;
+    const uint8_t status = 0xffU;
+    return solar_os_bus_i2c_write_reg(device->i2c_bus, device->address,
+                                     CL32_CORE_REG_STATUS, &status, sizeof(status));
 }
 
 static esp_err_t battery_read(void *user, solar_os_battery_sample_t *sample)
@@ -278,6 +288,7 @@ static void cl32_core_worker(void *arg)
 
 static void clear_device(solar_os_cl32_core_device_t *device)
 {
+    solar_os_power_unregister_off_provider(device);
     if (device == NULL) {
         return;
     }
@@ -351,6 +362,7 @@ esp_err_t solar_os_cl32_core_attach(
         return ESP_ERR_NO_MEM;
     }
 
+    (void)solar_os_power_register_off_provider(name, power_off, &cl32_core);
     ESP_LOGI(TAG,
              "%s attached on %s address 0x%02x as %s and %s",
              name,

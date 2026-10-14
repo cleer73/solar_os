@@ -841,6 +841,9 @@ ftp
 ftp HOST [PORT] [--user USER --password PASSWORD] [--remote PATH] [--local PATH]
 ```
 
+Press Tab after a host prefix to complete aliases from `.ssh/hosts` on the
+default storage.
+
 Anonymous login is the default (`anonymous` with `solaros@` as its password).
 Specify both `--user` and `--password` for an authenticated server. Passwords
 are plaintext on the network and remain in shell history when entered on the
@@ -854,10 +857,14 @@ the socket supplies that distinction, and as server unavailable otherwise.
 
 Controls:
 
-- Arrows navigate the active pane. `Tab`, Left, and Right switch panes.
+- Up/Down selects an item. `PgUp`/`PgDn` moves by one visible page, and
+  Home/End selects the first/last item. `Tab`, Left, and Right switch panes.
 - `F2`/`n` opens the connection form. `Tab` or Up/Down selects a field, Enter
   connects, and Esc cancels the form.
-- `Enter` opens a directory. `r` refreshes the remote and local listings.
+- `Enter` opens a directory; Backspace opens its parent. `r` refreshes the
+  remote and local listings. `h` toggles hidden files and directories in both
+  panes. Hidden items are shown initially; the title shows `hidden:on` or
+  `hidden:off`.
 - `F3`/`V` views a local file. For a remote file, FTP downloads a temporary hidden
   copy into the current local folder, opens its registered viewer, and removes
   the copy when control returns to FTP.
@@ -893,6 +900,9 @@ sftp
 sftp [user@]HOST[:PATH] [PORT] [--user USER] [--password PASSWORD] [--remote PATH] [--local PATH]
 ```
 
+Press Tab after a host prefix to complete aliases from `.ssh/hosts` on the
+default storage. Completion preserves a supplied `user@` prefix.
+
 Starting without arguments opens the disconnected file manager. Press `F2`/`n`
 to enter the host, port, user, optional password, and initial remote path. Leave
 the password empty to use the configured SSH key. When `user@` and `--user` are
@@ -906,8 +916,11 @@ reopens the form on the password field instead of showing a low-level error.
 
 Controls are identical to FTP: `F2`/`n` opens connection setup; `F3`/`V` views,
 `F5`/`C` copies, `F6`/`M` moves, `F7`/`k`/`K` creates a directory, and `F8`/`D`
-deletes after confirmation. Transfers are recursive, use the same progress
-popup, retain both pane positions after refresh, and stage downloaded and
+deletes after confirmation. `PgUp`/`PgDn` moves by one visible page, Backspace
+opens the parent
+directory, and `h` toggles hidden files and directories in both panes. Transfers
+are recursive, show progress, retain both pane positions after refresh, and
+stage downloaded and
 uploaded files before replacement. `q`, `F10`, or the app-exit key closes the
 SSH connection and exits.
 
@@ -1646,6 +1659,9 @@ Usage:
 telnet host [port]
 telnet -r host [port]
 ```
+
+Press Tab after a host prefix to complete aliases from `.ssh/hosts` on the
+default storage, including in raw mode.
 
 Controls:
 

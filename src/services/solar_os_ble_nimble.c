@@ -12,6 +12,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "solar_os_hid.h"
 #include "solar_os_ble_keyboard.h"
+#include "solar_os_identity.h"
 
 #define BLE_KEYBOARD_CLIENT_PAUSE_TIMEOUT_MS 1500U
 
@@ -121,6 +122,13 @@ esp_err_t solar_os_ble_nimble_error(int status)
     case BLE_HS_ENOTSYNCED: return ESP_ERR_INVALID_STATE;
     default: return ESP_FAIL;
     }
+}
+
+esp_err_t solar_os_ble_nimble_set_hostname(void)
+{
+    char hostname[SOLAR_OS_IDENTITY_HOSTNAME_MAX];
+    solar_os_identity_get_hostname(hostname, sizeof(hostname));
+    return solar_os_ble_nimble_error(ble_svc_gap_device_name_set(hostname));
 }
 
 void solar_os_ble_nimble_address(ble_addr_t *out, const uint8_t bda[6], uint8_t type)

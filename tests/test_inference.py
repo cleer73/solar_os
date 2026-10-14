@@ -1,10 +1,13 @@
 import ast
 import re
+import runpy
 import sys
 import tempfile
 import tomllib
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -13,6 +16,33 @@ import patch_espdl as overlay
 
 
 class InferenceIntegrationTest(unittest.TestCase):
+    def test_platformio_overlay_runs_for_cached_inference_builds(self):
+        class Environment:
+            def subst(self, value):
+                return str(component_root if value == "$PROJECT_DIR" else build_dir)
+
+        with tempfile.TemporaryDirectory() as directory:
+            component_root = Path(directory)
+            build_dir = component_root / ".pio/build/fixture"
+            config = build_dir / "generated/solar_os/solar_os_config.h"
+            config.parent.mkdir(parents=True)
+            config.write_text("#define SOLAR_OS_PACKAGE_SERVICE_INFERENCE 1\n")
+            scons = types.ModuleType("SCons.Script")
+            scons.GetOption = lambda name: False
+            script = ROOT / "scripts/platformio_espdl.py"
+            with patch.dict(sys.modules, {"SCons.Script": scons}), patch.object(overlay, "patch") as apply:
+                for _ in range(2):
+                    runpy.run_path(str(script), init_globals={"env": Environment(), "Import": lambda name: None})
+                self.assertEqual(apply.call_count, 2)
+                apply.assert_called_with(component_root / "managed_components/espressif__esp-dl")
+                config.write_text("#define SOLAR_OS_PACKAGE_SERVICE_INFERENCE 0\n")
+                runpy.run_path(str(script), init_globals={"env": Environment(), "Import": lambda name: None})
+                self.assertEqual(apply.call_count, 2)
+                config.unlink()
+                scons.GetOption = lambda name: True
+                runpy.run_path(str(script), init_globals={"env": Environment(), "Import": lambda name: None})
+                self.assertEqual(apply.call_count, 2)
+
     def test_worker_overlay_is_repeatable_and_rejects_drift(self):
         with tempfile.TemporaryDirectory() as directory:
             component = Path(directory)
@@ -29,6 +59,10 @@ class InferenceIntegrationTest(unittest.TestCase):
             self.assertEqual(source.read_text(), first)
             self.assertEqual(source.with_name("solar_os_dl_workers.inc").read_bytes(),
                 (ROOT / "scripts/espdl/worker_runtime.inc").read_bytes())
+            self.assertIn("void module_workers_release();", header.read_text())
+            header.write_text("void module_forward_dual_core(Module *op, void *args1, void *args2);")
+            overlay.patch_workers(component)
+            self.assertIn("void module_workers_release();", header.read_text())
             source.write_text(original.replace("kWorkerStackBytes = 2048", "kWorkerStackBytes = 4096"))
             with self.assertRaisesRegex(ValueError, "review overlay"):
                 overlay.patch_workers(component)

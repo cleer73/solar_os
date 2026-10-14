@@ -66,6 +66,9 @@ uint32_t solar_os_sessions_requested_tick_interval_ms(void);
 void solar_os_sessions_dispatch_tick(uint32_t now_ms);
 void solar_os_sessions_dispatch_resume(uint32_t now_ms);
 void solar_os_sessions_process_requests(void);
+void solar_os_sessions_drain_operations(void);
+/* Runtime owner only; keeps contexts alive if an app has not stopped. */
+esp_err_t solar_os_sessions_prepare_shutdown(void);
 void solar_os_sessions_prompt_if_shell_active(void);
 
 esp_err_t solar_os_sessions_create_display_shell(const char *target_name,

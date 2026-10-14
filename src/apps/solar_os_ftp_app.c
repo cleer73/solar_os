@@ -81,6 +81,7 @@ typedef struct {
     char path[SOLAR_OS_STORAGE_PATH_MAX];
     ftp_app_entry_t *entries;
     size_t count;
+    size_t listed_count;
     size_t capacity;
     size_t cursor;
     size_t top;
@@ -171,6 +172,7 @@ typedef struct {
     solar_os_tui_t tui;
     ftp_app_pane_t panes[2];
     uint8_t active;
+    bool show_hidden;
     ftp_app_input_t input_mode;
     char input[FTP_APP_INPUT_MAX];
     size_t input_len;
@@ -323,6 +325,35 @@ static const char *ftp_app_basename(const char *path)
     return slash != NULL ? slash + 1 : path != NULL ? path : "";
 }
 
+/* Keep the complete listing behind the visible entries so toggling hidden
+ * items needs no remote request. Worker listings remain unfiltered for
+ * recursive transfers and deletion. Only foreground panes use this helper. */
+static void ftp_app_filter_hidden(ftp_app_pane_t *pane)
+{
+    pane->count = 0;
+    for (size_t i = 0; i < pane->listed_count; i++) {
+        if (!ftp_app.show_hidden && !pane->entries[i].parent &&
+            pane->entries[i].name[0] == '.') {
+            continue;
+        }
+        if (pane->count != i) {
+            const ftp_app_entry_t entry = pane->entries[pane->count];
+            pane->entries[pane->count] = pane->entries[i];
+            pane->entries[i] = entry;
+        }
+        pane->count++;
+    }
+    if (pane->count > 1U) {
+        qsort(pane->entries, pane->count, sizeof(pane->entries[0]), ftp_app_entry_compare);
+    }
+    if (pane->cursor >= pane->count) {
+        pane->cursor = pane->count > 0 ? pane->count - 1U : 0;
+    }
+    if (pane->top >= pane->count) {
+        pane->top = pane->cursor;
+    }
+}
+
 static esp_err_t ftp_app_load_local(ftp_app_pane_t *pane, const char *path)
 {
     char normalized[SOLAR_OS_STORAGE_PATH_MAX];
@@ -357,8 +388,9 @@ static esp_err_t ftp_app_load_local(ftp_app_pane_t *pane, const char *path)
                                S_ISDIR(st.st_mode) ? 0U : (uint64_t)st.st_size);
     }
     closedir(directory);
-    if (err == ESP_OK && pane->count > 1U) {
-        qsort(pane->entries, pane->count, sizeof(pane->entries[0]), ftp_app_entry_compare);
+    if (err == ESP_OK) {
+        pane->listed_count = pane->count;
+        ftp_app_filter_hidden(pane);
     }
     return err;
 }
@@ -1089,16 +1121,18 @@ static void ftp_app_render(void)
     if (ftp_app.connected) {
         snprintf(title,
                  sizeof(title),
-                 "%s %s:%u  %s  Tab switch  q quit",
+                 "%s %s:%u  %s  hidden:%s  Tab switch  q quit",
                  FTP_APP_COMMAND,
                  ftp_app.host,
                  (unsigned)ftp_app.port,
-                 ftp_app.username);
+                 ftp_app.username,
+                 ftp_app.show_hidden ? "on" : "off");
     } else {
         snprintf(title,
                  sizeof(title),
-                 "%s disconnected  F2 connect  q quit",
-                 FTP_APP_COMMAND);
+                 "%s disconnected  hidden:%s  F2 connect  q quit",
+                 FTP_APP_COMMAND,
+                 ftp_app.show_hidden ? "on" : "off");
     }
     solar_os_tui_fill(&ftp_app.tui, 0, 0, 1, cols, ' ',
                       SOLAR_OS_TUI_ATTR_INVERSE | SOLAR_OS_TUI_ATTR_BOLD);
@@ -1321,9 +1355,11 @@ static void ftp_app_poll(solar_os_context_t *ctx)
             solar_os_memory_free(remote->entries);
             remote->entries = result.remote_entries;
             remote->count = result.remote_count;
+            remote->listed_count = result.remote_count;
             remote->capacity = result.remote_count;
             remote->cursor = 0;
             remote->top = 0;
+            ftp_app_filter_hidden(remote);
             strlcpy(remote->path, result.remote_path, sizeof(remote->path));
             if (same_remote_path) {
                 ftp_app_restore_position(remote, old_remote_cursor, old_remote_top);
@@ -1616,6 +1652,7 @@ static esp_err_t ftp_app_parse_args(solar_os_context_t *ctx,
 static esp_err_t ftp_app_start(solar_os_context_t *ctx)
 {
     memset(&ftp_app, 0, sizeof(ftp_app));
+    ftp_app.show_hidden = true;
     char local_arg[SOLAR_OS_STORAGE_PATH_MAX];
     char remote_path[SOLAR_OS_STORAGE_PATH_MAX];
     bool connect_immediately = false;
@@ -1928,6 +1965,22 @@ static bool ftp_app_input_event(uint8_t ch)
     return true;
 }
 
+static void ftp_app_page(ftp_app_pane_t *pane, bool down)
+{
+    const size_t rows = solar_os_tui_rows(&ftp_app.tui);
+    const size_t reserved = solar_os_tui_screen_fullscreen(&ftp_app.tui) ? 3U : 5U;
+    const size_t page = rows > reserved ? rows - reserved : 1U;
+    const size_t last = pane->count > 0 ? pane->count - 1U : 0;
+    if (pane->cursor > last) {
+        pane->cursor = last;
+    }
+    if (down) {
+        pane->cursor = page < last - pane->cursor ? pane->cursor + page : last;
+    } else {
+        pane->cursor = pane->cursor > page ? pane->cursor - page : 0;
+    }
+}
+
 static bool ftp_app_event(solar_os_context_t *ctx, const solar_os_event_t *event)
 {
     if (event == NULL) {
@@ -2019,12 +2072,34 @@ static bool ftp_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
             pane->cursor++;
         }
         break;
+    case SOLAR_OS_KEY_PAGE_UP:
+        ftp_app_page(pane, false);
+        break;
+    case SOLAR_OS_KEY_PAGE_DOWN:
+        ftp_app_page(pane, true);
+        break;
     case SOLAR_OS_KEY_HOME:
         pane->cursor = 0;
         break;
     case SOLAR_OS_KEY_END:
         pane->cursor = pane->count > 0 ? pane->count - 1U : 0;
         break;
+    case '\b':
+    case 0x7f: {
+        char parent[SOLAR_OS_STORAGE_PATH_MAX];
+        ftp_app_parent(pane->path, parent, sizeof(parent));
+        if (ftp_app.active == 0) {
+            if (ftp_app_change_local_dir(pane, parent) != ESP_OK) {
+                ftp_app_set_message("cannot open local directory");
+            }
+        } else if (ftp_app.connected) {
+            ftp_app_request_t request = {.kind = FTP_APP_WORK_LIST};
+            strlcpy(request.source, parent, sizeof(request.source));
+            strlcpy(request.remote_directory, parent, sizeof(request.remote_directory));
+            (void)ftp_app_submit(&request, "loading remote directory...");
+        }
+        break;
+    }
     case '\r':
     case '\n':
         ftp_app_open_selected();
@@ -2086,6 +2161,12 @@ static bool ftp_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
         }
         break;
     }
+    case 'h':
+    case 'H':
+        ftp_app.show_hidden = !ftp_app.show_hidden;
+        ftp_app_filter_hidden(&ftp_app.panes[0]);
+        ftp_app_filter_hidden(&ftp_app.panes[1]);
+        break;
     case 'r':
     case 'R': {
         ftp_app_request_t request = {.kind = FTP_APP_WORK_LIST};

@@ -842,6 +842,28 @@ static void test_green_async_failure_and_idle_cleanup(void) {
     assert(memcmp(d.shadow, d.buffer, d.buffer_size) == 0);
     epd_scan_worker_deinit(&d.scan_worker); free_budget(&d);
 }
+static void test_power_state_replaces_queued_pulse_frame(void) {
+    epd_ssd1683_t d = display();
+    d.lock = xSemaphoreCreateMutexStatic(&d.lock_storage);
+    assert(epd_ssd1683_set_controller_mode(&d, "pulse-scan=async") == ESP_OK);
+    assert(epd_ssd1683_set_controller_mode(&d, "refresh=pulse") == ESP_OK);
+    assert(ssd1683_u8x8_display_cb(&d.u8g2.u8x8, U8X8_MSG_DISPLAY_REFRESH, 0, NULL) == 1);
+    assert(worker_tick(&d.scan_worker) == ESP_OK);
+    pixel(0, 0, false);
+    assert(ssd1683_u8x8_display_cb(&d.u8g2.u8x8, U8X8_MSG_DISPLAY_REFRESH, 0, NULL) == 1);
+    pixel(20, 10, false); /* Final splash replaces the queued app frame. */
+    assert(epd_ssd1683_present_power_state(&d) == ESP_OK);
+    assert(d.refresh_mode == EPD_SSD1683_REFRESH_PULSE);
+    assert(d.power_state_present && !d.scan_submit_ready && !d.scan_worker.enabled);
+    assert(d.shadow_valid && !memcmp(d.shadow, d.buffer, d.buffer_size));
+    capture_count = 0;
+    assert(worker_tick(&d.scan_worker) == ESP_OK && capture_count == 0);
+    assert(ssd1683_u8x8_display_cb(&d.u8g2.u8x8, U8X8_MSG_DISPLAY_SET_POWER_SAVE, 1, NULL) == 1);
+    assert(epd_ssd1683_resume(&d) == ESP_OK);
+    assert(!d.power_state_present && d.scan_submit_ready);
+    epd_scan_worker_deinit(&d.scan_worker); free_budget(&d);
+}
+
 static void test_green_startup_pulse_defaults(void) {
     epd_ssd1683_config_t config = {.panel_variant = EPD_SSD1683_PANEL_GREEN_STICKER,
         .spi_clock_hz = 10000000, .startup_pulse = true};
@@ -879,6 +901,7 @@ int main(void) {
     test_async_cleanup_during_continuous_changes();
     test_adaptive_cleanup();
     test_async_sleep_and_resume();
+    test_power_state_replaces_queued_pulse_frame();
     test_default_async_activation();
     test_pulse_tuning_preserves_native_idle();
     test_cleanup_failure_and_capability();

@@ -1425,7 +1425,8 @@ static esp_err_t ssd1683_pulse_refresh(epd_ssd1683_t *display)
 
 static void ssd1683_scan_update_accepting(epd_ssd1683_t *display)
 {
-    const bool enabled = display->scan_async && display->refresh_mode == EPD_SSD1683_REFRESH_PULSE &&
+    const bool enabled = !display->power_state_present && display->scan_async &&
+        display->refresh_mode == EPD_SSD1683_REFRESH_PULSE &&
         display->powered && display->controller_ready;
     epd_scan_worker_enable(&display->scan_worker, enabled);
     __atomic_store_n(&display->scan_submit_ready, enabled, __ATOMIC_RELEASE);
@@ -1992,8 +1993,9 @@ static uint8_t ssd1683_u8x8_display_cb(u8x8_t *u8x8,
                 display->controller_ready = false;
                 display->shadow_valid = false;
             }
-        } else if (!display->controller_ready) {
-            err = ssd1683_controller_init(display);
+        } else {
+            display->power_state_present = false;
+            if (!display->controller_ready) err = ssd1683_controller_init(display);
         }
         break;
     case U8X8_MSG_DISPLAY_DRAW_TILE:
@@ -2191,6 +2193,27 @@ esp_err_t epd_ssd1683_init(epd_ssd1683_t *display,
     return ret;
 }
 
+esp_err_t epd_ssd1683_present_power_state(epd_ssd1683_t *display)
+{
+    if (display == NULL || display->buffer == NULL || display->lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    __atomic_store_n(&display->scan_submit_ready, false, __ATOMIC_RELEASE);
+    epd_scan_worker_enable(&display->scan_worker, false);
+    xSemaphoreTake(display->lock, portMAX_DELAY);
+    display->power_state_present = true;
+    /* An in-flight scan may have re-enabled submission before releasing the
+     * panel lock. Discard its queued target again after joining it. */
+    ssd1683_scan_update_accepting(display);
+    const epd_ssd1683_refresh_mode_t previous = display->refresh_mode;
+    display->refresh_mode = EPD_SSD1683_REFRESH_FULL;
+    display->last_error = ssd1683_refresh(display);
+    display->refresh_mode = previous;
+    const esp_err_t err = display->last_error;
+    xSemaphoreGive(display->lock);
+    return err;
+}
+
 esp_err_t epd_ssd1683_resume(epd_ssd1683_t *display)
 {
     if (display == NULL || display->spi == NULL || display->buffer == NULL) {
@@ -2204,6 +2227,7 @@ esp_err_t epd_ssd1683_resume(epd_ssd1683_t *display)
     esp_err_t err = ssd1683_configure_pins(display);
     if (err == ESP_OK) err = ssd1683_controller_init(display);
     display->last_error = err;
+    display->power_state_present = false;
     ssd1683_scan_update_accepting(display);
     if (display->lock != NULL) xSemaphoreGive(display->lock);
     return err;

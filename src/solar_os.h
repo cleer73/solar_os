@@ -165,6 +165,7 @@ struct solar_os_app {
 esp_err_t solar_os_app_start(const solar_os_app_t *app,
                              solar_os_context_t *ctx);
 void solar_os_app_stop(const solar_os_app_t *app, solar_os_context_t *ctx);
+bool solar_os_app_stop_checked(const solar_os_app_t *app, solar_os_context_t *ctx);
 
 typedef enum {
     SOLAR_OS_JOB_KIND_BACKGROUND,

@@ -5,7 +5,7 @@
 #include "../../src/services/solar_os_x4pro_driver.c"
 
 const u8g2_cb_t u8g2_cb_r0 = {0};
-static bool cached, latch_on;
+static bool cached, latch_on, latch_held, deep_hold;
 static uint8_t cached_id;
 static int probes, writes, commits, initializes;
 static epd_xteink_controller_t detected = EPD_XTEINK_UC8179;
@@ -17,7 +17,12 @@ size_t strlcpy(char *dst, const char *src, size_t size)
 esp_err_t gpio_config(const gpio_config_t *c)
 { assert(c->pin_bit_mask == 2 && c->mode == GPIO_MODE_OUTPUT); return ESP_OK; }
 esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level)
-{ assert(pin == 1 && level == 1); latch_on = true; return ESP_OK; }
+{ assert(pin == 1 && level <= 1 && !latch_held); latch_on = level != 0; return ESP_OK; }
+esp_err_t gpio_hold_en(gpio_num_t pin)
+{ assert(pin == 1 && !latch_on); latch_held = true; return ESP_OK; }
+esp_err_t gpio_hold_dis(gpio_num_t pin)
+{ assert(pin == 1); latch_held = false; return ESP_OK; }
+void gpio_deep_sleep_hold_en(void) { deep_hold = true; }
 bool solar_os_expansion_find_spi_bus(const char *name, solar_os_expansion_spi_bus_t *bus, size_t *index)
 { (void)index; if (strcmp(name,"spi0")) return false; bus->mosi_pin=11; return true; }
 bool solar_os_expansion_spi_cs_allowed(const char *name, int pin)
@@ -92,8 +97,10 @@ int main(void)
     assert(registered->ops->set_power_save(registered, true)==ESP_OK && device->light.suspended);
     assert(registered->ops->set_power_save(registered, false)==ESP_OK && !device->light.suspended);
     assert(device->light.percent==42);
+    assert(registered->ops->shutdown(registered)==ESP_OK && !latch_on && latch_held && deep_hold);
     reboot(); detected=EPD_XTEINK_UC8279; probe_error=ESP_FAIL;
     assert(attach()==ESP_OK && probes==0 && commits==0 && !strcmp(registered->controller,"UC8179"));
+    assert(latch_on && !latch_held);
     reboot(); cached=false;
     assert(attach()==ESP_OK && commits==1 && cached_id==EPD_XTEINK_UC8279);
     reboot(); cached=false; detected=EPD_XTEINK_SSD1677;

@@ -61,6 +61,8 @@ typedef struct {
     solar_os_display_surface_presenter_t present_surface;
     void *frame_context;
     solar_os_display_frame_presenter_t present_frame;
+    esp_err_t (*present_power_state)(void *context);
+    void *power_state_context;
 } solar_os_display_target_t;
 
 typedef enum {
@@ -120,6 +122,9 @@ esp_err_t solar_os_display_get_colors(uint32_t *foreground_rgb888,
 esp_err_t solar_os_display_set_foreground_color(uint32_t rgb888);
 esp_err_t solar_os_display_set_background_color(uint32_t rgb888);
 esp_err_t solar_os_display_suspend_primary(void);
+esp_err_t solar_os_display_show_power_state(const char *status);
+void solar_os_display_clear_power_state(void);
+esp_err_t solar_os_display_shutdown(void);
 esp_err_t solar_os_display_resume_primary(void);
 bool solar_os_display_primary_suspended(void);
 esp_err_t solar_os_display_set_palette_inverted(const char *name, bool inverted);

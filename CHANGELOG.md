@@ -2,6 +2,26 @@
 
 ## 4.x
 
+- **4.16.11** — 2026-10-13 — Added `shutdown` on all targets, with
+  app, job, and radio cleanup and persistent storage flushing and unmounting.
+  Uses hardware cutoff on CL32, Waveshare ESP32-S3-ePaper-3.97, and
+  T-LoRa-Pager, turns off supported peripheral rails, and otherwise enters
+  deep sleep. Shutdown allows only physical power/KEY wake and starts a
+  fresh boot; RTC and scheduled timer wake are disabled.
+  Added state splashes: **Suspended**, **Sleeping**, and **Powered off**,
+  including a completed native refresh before e-paper power-down.
+  Suspend and light-sleep wake redraw foreground and auxiliary displays.
+  Fixed ESP-DL patch application in cached PlatformIO builds after managed
+  dependency restoration.
+- **4.16.10** — 2026-10-13 — Added RTSP client Basic and Digest MD5
+  authentication with inline URL credentials or up to four saved accounts
+  managed by `rtsp-auth`. Player titles and connection messages hide URL
+  passwords. FTP, SFTP, and Telnet now complete hostname aliases from
+  `.ssh/hosts`, including SFTP `user@` prefixes and Telnet raw mode.
+  FTP and SFTP gain `PgUp`/`PgDn` paging, Backspace parent navigation,
+  and `h` to toggle hidden files and directories in both panes.
+  The default BLE device name now uses the configured hostname and is
+  restored when a BLE peripheral app closes.
 - **4.16.9** — 2026-10-13 — Added the SolarWriter board profile for the
   Elecrow 5.79-inch CrowPanel with microphone, shared DAC/amplifier output,
   and battery gauge. Added reusable INMP441 expansion audio with 16 kHz mono

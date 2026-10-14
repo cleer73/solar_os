@@ -255,6 +255,7 @@ static esp_err_t ili9341_configure_control_pins(tft_ili9341_t *display) {
                         "rst high failed");
   }
   if (gpio_valid(display->config.power_pin)) {
+    (void)gpio_hold_dis(display->config.power_pin);
     ESP_RETURN_ON_ERROR(
         gpio_set_level(display->config.power_pin,
                        display->config.power_active_high ? 1 : 0),
@@ -1324,6 +1325,20 @@ esp_err_t tft_ili9341_init(tft_ili9341_t *display,
   u8g2_SetPowerSave(&display->u8g2, 0);
 
   return display->last_error;
+}
+
+esp_err_t tft_ili9341_shutdown(tft_ili9341_t *display) {
+  if (display == NULL) return ESP_ERR_INVALID_ARG;
+  u8g2_SetPowerSave(&display->u8g2, 1);
+  if (!gpio_valid(display->config.power_pin)) return ESP_OK;
+  const esp_err_t err = gpio_set_level(display->config.power_pin,
+      display->config.power_active_high ? 0 : 1);
+  if (err == ESP_OK) {
+    const esp_err_t hold_err = gpio_hold_en(display->config.power_pin);
+    if (hold_err != ESP_OK) return hold_err;
+    gpio_deep_sleep_hold_en();
+  }
+  return err;
 }
 
 esp_err_t tft_ili9341_resume(tft_ili9341_t *display) {

@@ -1,4 +1,5 @@
 #include "solar_os_task.h"
+#include "solar_os_shutdown.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -193,6 +194,7 @@ bool solar_os_task_can_create(uint32_t stack_depth,
                               solar_os_task_role_t role,
                               bool external_stack)
 {
+    if (role != SOLAR_OS_TASK_ROLE_SYSTEM && solar_os_shutdown_requested()) return false;
     if (stack_depth == 0 || !task_role_valid(role)) {
         return false;
     }
@@ -508,6 +510,7 @@ bool solar_os_task_wait_done(TaskHandle_t task,
     while (task_done == NULL || !*task_done) {
         const TickType_t elapsed = xTaskGetTickCount() - start;
         if (timeout_ticks == 0 || elapsed >= timeout_ticks) {
+            solar_os_shutdown_note_failure(ESP_ERR_TIMEOUT);
             return false;
         }
 

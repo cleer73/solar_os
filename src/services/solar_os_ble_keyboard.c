@@ -1966,7 +1966,10 @@ esp_err_t solar_os_ble_backend_init(void)
      * for runtime application services. They do not start advertising. */
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    esp_err_t peripheral_ret = solar_os_ble_nimble_hid_prepare();
+    esp_err_t peripheral_ret = solar_os_ble_nimble_set_hostname();
+    if (peripheral_ret == ESP_OK) {
+        peripheral_ret = solar_os_ble_nimble_hid_prepare();
+    }
     if (peripheral_ret != ESP_OK) {
         (void)solar_os_ble_hid_deinit();
         (void)nimble_port_deinit();
