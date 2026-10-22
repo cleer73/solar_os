@@ -81,15 +81,16 @@ static void task_record_failure(solar_os_task_role_t role,
                                 bool external_stack)
 {
     const uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    const uint32_t external_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    solar_os_memory_status_t memory;
+    solar_os_memory_get_status(&memory);
     const uint32_t internal_free =
         (uint32_t)heap_caps_get_free_size(internal_caps);
     const uint32_t internal_largest =
         (uint32_t)heap_caps_get_largest_free_block(internal_caps);
     const uint32_t external_free =
-        (uint32_t)heap_caps_get_free_size(external_caps);
+        (uint32_t)memory.external.free;
     const uint32_t external_largest =
-        (uint32_t)heap_caps_get_largest_free_block(external_caps);
+        (uint32_t)memory.external.largest_free;
 
     portENTER_CRITICAL(&task_stats_lock);
     if (denied) {
@@ -174,7 +175,11 @@ static bool task_internal_admitted(uint32_t stack_depth, solar_os_task_role_t ro
 static bool task_external_admitted(uint32_t stack_depth, solar_os_task_role_t role)
 {
     const uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    const uint32_t external_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    /* WithCaps stack allocations use the wrapped capability allocator, which
+     * can draw from managed PSRAM as well as the SDK heap. Admission must use
+     * the same capacity, including a contiguous block for the entire stack. */
+    solar_os_memory_status_t memory;
+    solar_os_memory_get_status(&memory);
     size_t internal_required = SOLAR_OS_TASK_INTERNAL_OVERHEAD_BYTES;
     if (role == SOLAR_OS_TASK_ROLE_BACKGROUND &&
         !task_add_size(internal_required,
@@ -185,8 +190,8 @@ static bool task_external_admitted(uint32_t stack_depth, solar_os_task_role_t ro
     return heap_caps_get_free_size(internal_caps) >= internal_required &&
            heap_caps_get_largest_free_block(internal_caps) >=
                SOLAR_OS_TASK_INTERNAL_OVERHEAD_BYTES &&
-           heap_caps_get_free_size(external_caps) >= stack_depth &&
-           heap_caps_get_largest_free_block(external_caps) >= stack_depth;
+           memory.external.free >= stack_depth &&
+           memory.external.largest_free >= stack_depth;
 }
 #endif
 
@@ -214,16 +219,17 @@ void solar_os_task_get_admission_status(
         return;
     }
     const uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    const uint32_t external_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    solar_os_memory_status_t memory;
+    solar_os_memory_get_status(&memory);
     *status = (solar_os_task_admission_status_t){
         .internal_free_bytes =
             (uint32_t)heap_caps_get_free_size(internal_caps),
         .internal_largest_block_bytes =
             (uint32_t)heap_caps_get_largest_free_block(internal_caps),
         .external_free_bytes =
-            (uint32_t)heap_caps_get_free_size(external_caps),
+            (uint32_t)memory.external.free,
         .external_largest_block_bytes =
-            (uint32_t)heap_caps_get_largest_free_block(external_caps),
+            (uint32_t)memory.external.largest_free,
         .background_internal_reserve_bytes =
             SOLAR_OS_INTERNAL_LAUNCH_RESERVE_BYTES,
         .task_internal_overhead_bytes =

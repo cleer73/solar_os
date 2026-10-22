@@ -257,7 +257,9 @@ struct os_mbuf *ble_hs_mbuf_from_flat(const void *data, uint16_t len)
 {
     if (fake.mbuf_fail) return NULL;
     struct os_mbuf *om = calloc(1, sizeof(*om)); assert(om);
-    om->data = malloc(len ? len : 1); assert(om->data); om->len = len; memcpy(om->data, data, len); return om;
+    om->data = malloc(len ? len : 1); assert(om->data); om->len = len;
+    if (len) memcpy(om->data, data, len);
+    return om;
 }
 int os_mbuf_append(struct os_mbuf *om, const void *data, uint16_t len)
 {

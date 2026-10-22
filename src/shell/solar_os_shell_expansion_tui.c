@@ -328,6 +328,7 @@ static void expansion_tui_format_binding(
                  solar_os_expansion_binding_kind_name(binding->kind),
                  binding->target);
         break;
+    case SOLAR_OS_EXPANSION_BINDING_BYTE_STREAM:
     case SOLAR_OS_EXPANSION_BINDING_SCALAR_STREAM:
         snprintf(line, line_len, "%s = %s", binding->role, binding->target);
         break;
@@ -432,6 +433,8 @@ static void expansion_tui_render_device_detail(void)
     expansion_tui_draw_help(
         expansion_tui.device.origin == SOLAR_OS_EXPANSION_ORIGIN_RUNTIME ?
             "arrows scroll  S startup  D detach  P pin map  esc back" :
+        expansion_tui.device.detachable ?
+            "arrows scroll  D detach  P pin map  esc back" :
             "arrows scroll  fixed device  P pin map  esc back");
     expansion_tui_finish_render(false);
 }
@@ -756,12 +759,11 @@ static bool expansion_tui_first_bus_value(solar_os_expansion_binding_kind_t kind
             strlcpy(value, bus.name, value_len);
             return true;
         }
-    } else if (kind == SOLAR_OS_EXPANSION_BINDING_SCALAR_STREAM) {
+    } else if (kind == SOLAR_OS_EXPANSION_BINDING_SCALAR_STREAM || kind == SOLAR_OS_EXPANSION_BINDING_BYTE_STREAM) {
         for (size_t i = 0U; i < solar_os_stream_count(); i++) {
             solar_os_stream_info_t stream;
             if (solar_os_stream_get(i, &stream) &&
-                stream.type == SOLAR_OS_STREAM_TYPE_SCALAR &&
-                stream.direction != SOLAR_OS_STREAM_DIRECTION_SINK) {
+                solar_os_expansion_stream_binding_valid(kind, &stream)) {
                 strlcpy(value, stream.id, value_len);
                 return true;
             }
@@ -1137,12 +1139,11 @@ static bool expansion_tui_get_choice(size_t index,
         return false;
     }
 
-    if (spec->kind == SOLAR_OS_EXPANSION_BINDING_SCALAR_STREAM) {
+    if (spec->kind == SOLAR_OS_EXPANSION_BINDING_SCALAR_STREAM || spec->kind == SOLAR_OS_EXPANSION_BINDING_BYTE_STREAM) {
         for (size_t i = 0U; i < solar_os_stream_count(); i++) {
             solar_os_stream_info_t stream;
             if (!solar_os_stream_get(i, &stream) ||
-                stream.type != SOLAR_OS_STREAM_TYPE_SCALAR ||
-                stream.direction == SOLAR_OS_STREAM_DIRECTION_SINK) {
+                !solar_os_expansion_stream_binding_valid(spec->kind, &stream)) {
                 continue;
             }
             if (index == current++) {
@@ -1184,6 +1185,7 @@ static bool expansion_tui_field_has_choices(size_t field)
         (expansion_tui_kind_is_pin(spec->kind) ||
          expansion_tui_kind_protocol(spec->kind, &protocol) ||
          spec->kind == SOLAR_OS_EXPANSION_BINDING_SCALAR_STREAM ||
+         spec->kind == SOLAR_OS_EXPANSION_BINDING_BYTE_STREAM ||
          spec->allowed_value_count > 0U);
 }
 
@@ -1411,6 +1413,7 @@ static bool expansion_tui_binding_from_spec(
         case SOLAR_OS_EXPANSION_BINDING_ADC:
         case SOLAR_OS_EXPANSION_BINDING_PWM:
         case SOLAR_OS_EXPANSION_BINDING_SPI_CS:
+        case SOLAR_OS_EXPANSION_BINDING_BYTE_STREAM:
         case SOLAR_OS_EXPANSION_BINDING_SCALAR_STREAM:
         case SOLAR_OS_EXPANSION_BINDING_PARAMETER:
             role = spec->key;
@@ -1442,11 +1445,11 @@ static bool expansion_tui_binding_from_spec(
         if (!solar_os_bus_find(text, SOLAR_OS_BUS_PROTOCOL_PS2, NULL)) return false;
         strlcpy(binding->target, text, sizeof(binding->target));
         return true;
+    case SOLAR_OS_EXPANSION_BINDING_BYTE_STREAM:
     case SOLAR_OS_EXPANSION_BINDING_SCALAR_STREAM: {
         solar_os_stream_info_t stream;
         if (solar_os_stream_get_info(text, &stream) != ESP_OK ||
-            stream.type != SOLAR_OS_STREAM_TYPE_SCALAR ||
-            stream.direction == SOLAR_OS_STREAM_DIRECTION_SINK) {
+            !solar_os_expansion_stream_binding_valid(spec->kind, &stream)) {
             return false;
         }
         strlcpy(binding->target, text, sizeof(binding->target));

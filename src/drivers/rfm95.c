@@ -420,6 +420,9 @@ static void rfm95_resolve_config(const rfm95_t *dev,
                                  solar_os_radio_config_t *resolved)
 {
     *resolved = *requested;
+    if (resolved->rx_gain == SOLAR_OS_RADIO_RX_GAIN_DEFAULT) {
+        resolved->rx_gain = SOLAR_OS_RADIO_RX_GAIN_BOOSTED;
+    }
 
     if (rfm95_is_lora(resolved)) {
         uint8_t bandwidth = 0;
@@ -634,7 +637,9 @@ static esp_err_t rfm95_configure_common_locked(rfm95_t *dev,
         ret = rfm95_configure_power_locked(dev, config->tx_power_dbm);
     }
     if (ret == ESP_OK) {
-        ret = rfm95_write_reg_locked(dev, REG_LNA, 0x23);
+        /* Automatic gain remains enabled; control HF LNA boost independently. */
+        ret = rfm95_write_reg_locked(dev, REG_LNA,
+            config->rx_gain == SOLAR_OS_RADIO_RX_GAIN_BOOSTED ? 0x23 : 0x20);
     }
     return ret;
 }
@@ -884,6 +889,11 @@ esp_err_t rfm95_configure(rfm95_t *dev, const solar_os_radio_config_t *config)
 {
     if (dev == NULL || config == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (config->rx_gain != SOLAR_OS_RADIO_RX_GAIN_DEFAULT &&
+        config->rx_gain != SOLAR_OS_RADIO_RX_GAIN_POWER_SAVING &&
+        config->rx_gain != SOLAR_OS_RADIO_RX_GAIN_BOOSTED) {
+        return ESP_ERR_NOT_SUPPORTED;
     }
 
     solar_os_radio_config_t resolved;

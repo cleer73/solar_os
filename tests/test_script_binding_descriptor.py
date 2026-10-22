@@ -29,7 +29,7 @@ LUA_BINDINGS = LUA_SOURCE + (
 ).read_text(encoding="utf-8")
 PYTHON_BINDINGS += (REPOSITORY / "src/apps/solar_os_python_media.inc").read_text(encoding="utf-8")
 LUA_BINDINGS += (REPOSITORY / "src/apps/solar_os_lua_media.inc").read_text(encoding="utf-8")
-for stem in ("image_rgb", "tensor_image", "inference", "pipeline", "imlib"):
+for stem in ("image_rgb", "tensor_image", "inference", "pipeline", "imlib", "dlp", "emotion"):
     PYTHON_BINDINGS += (REPOSITORY / f"src/apps/solar_os_python_{stem}.inc").read_text(encoding="utf-8")
     LUA_BINDINGS += (REPOSITORY / f"src/apps/solar_os_lua_{stem}.inc").read_text(encoding="utf-8")
 DESCRIPTOR = (REPOSITORY / "src/apps/solar_os_script_api.inc").read_text(
@@ -54,7 +54,7 @@ class ScriptBindingDescriptorTest(unittest.TestCase):
             DESCRIPTOR,
             re.MULTILINE,
         )
-        self.assertEqual(len(modules), 57)
+        self.assertEqual(len(modules), 59)
         self.assertEqual(len(modules), len(set(modules)))
         self.assertNotRegex(PYTHON_SOURCE, r'python_new_submodule\(module,\s*"')
         self.assertNotRegex(LUA_SOURCE, r'solua_new_submodule\(L,\s*solaros,\s*"')
@@ -85,6 +85,21 @@ class ScriptBindingDescriptorTest(unittest.TestCase):
                 lua_handler,
             )
 
+    def test_dlp_teardown_does_not_depend_on_http(self):
+        for source, prefix in ((PYTHON_SOURCE, "python"), (LUA_SOURCE, "solua")):
+            scopes = []
+            calls = 0
+            for line in source.splitlines():
+                directive = line.strip()
+                if re.match(r"#\s*if(?:def|ndef)?\b", directive):
+                    scopes.append(directive)
+                elif re.match(r"#\s*endif\b", directive):
+                    scopes.pop()
+                if f"{prefix}_dlp_destroy();" in line:
+                    calls += 1
+                    self.assertFalse(any("HTTP_CLIENT" in scope for scope in scopes))
+            self.assertEqual(calls, 3)
+
     def test_named_and_nested_handlers_exist_in_both_interpreters(self):
         named = re.findall(
             r"SOLAR_OS_SCRIPT_API_FUNCTION_NAMED\(\s*"
@@ -102,7 +117,7 @@ class ScriptBindingDescriptorTest(unittest.TestCase):
             DESCRIPTOR,
             re.MULTILINE,
         )
-        self.assertEqual(len(nested), 42)
+        self.assertEqual(len(nested), 48)
         self.assertTrue({("ble", "hid", name, name) for name in
                          ("hosts", "connect", "forget", "disconnect")}.issubset(set(nested)))
         for module, submodule, _public_name, native_name in nested:
@@ -203,7 +218,7 @@ class ScriptBindingDescriptorTest(unittest.TestCase):
             + submodule_constant_count
             + subnested_count
             + hid_keycode_count * hid_keycode_include_count,
-            854,
+            878,
         )
 
     def test_tui_and_gfx_export_modified_horizontal_navigation_keys(self):

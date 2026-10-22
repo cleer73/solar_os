@@ -11,13 +11,20 @@
 
 static const char * const messages_commands[] = {
     "status", "conversations", "list", "send", "read", "delete",
-    "clear", "outbox", "cancel",
+    "clear", "outbox", "cancel", "join", "leave", "query", "connect", "disconnect", "remove", "classes", "instances", "add", "configure",
 };
 
 static void messages_usage(solar_os_shell_io_t *io)
 {
     solar_os_shell_io_writeln(io, "usage:");
     solar_os_shell_io_writeln(io, "  messages status");
+    solar_os_shell_io_writeln(io, "  messages classes|instances");
+    solar_os_shell_io_writeln(io, "  messages add <class> <instance> <settings...>");
+    solar_os_shell_io_writeln(io, "  messages configure <instance> <settings...>");
+    solar_os_shell_io_writeln(io, "  messages remove <instance|id> (delete history)");
+    solar_os_shell_io_writeln(io, "  messages join|query <instance> <target>");
+    solar_os_shell_io_writeln(io, "  messages leave <conversation-id>");
+    solar_os_shell_io_writeln(io, "  messages connect|disconnect <instance>");
     solar_os_shell_io_writeln(io, "  messages conversations");
     solar_os_shell_io_writeln(io, "  messages list <conversation-id>");
     solar_os_shell_io_writeln(
@@ -27,10 +34,12 @@ static void messages_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io, "  messages delete <message-id>");
     solar_os_shell_io_writeln(
         io,
-        "  messages clear <gateway|meshcore|link|all>");
+        "  messages clear <instance|all>");
     solar_os_shell_io_writeln(io, "  messages outbox");
     solar_os_shell_io_writeln(io, "  messages cancel <message-id>");
 }
+
+static bool messages_parse_u32(const char *text, uint32_t *value);
 
 static bool messages_parse_provider(
     const char *text,
@@ -42,6 +51,13 @@ static bool messages_parse_provider(
     if (strcmp(text, "all") == 0) {
         *provider = 0;
         return true;
+    }
+    solar_os_messaging_provider_id_t instance = solar_os_messaging_provider_find(text);
+    if (instance) { *provider = instance; return true; }
+    solar_os_messaging_provider_status_t status;
+    if (messages_parse_u32(text, &instance) &&
+        solar_os_messaging_provider_get_status(instance, &status) == ESP_OK) {
+        *provider = instance; return true;
     }
     if (strcmp(text, "gateway") == 0) {
         *provider = SOLAR_OS_MESSAGING_PROVIDER_GATEWAY;
@@ -92,12 +108,12 @@ static void messages_status(solar_os_shell_io_t *io)
     solar_os_messaging_status_t status;
     const esp_err_t error = solar_os_messaging_get_status(&status);
     if (error != ESP_OK) {
-        solar_os_shell_io_printf(io,
+        solar_os_shell_io_table_printf(io,
                                  "messages: unavailable: %s\n",
                                  solar_os_shell_error_text(error));
         return;
     }
-    solar_os_shell_io_printf(
+    solar_os_shell_io_table_printf(
         io,
         "Conversations: %u/%u\n"
         "Messages: %u/%u (%u unread)\n"
@@ -119,18 +135,15 @@ static void messages_status(solar_os_shell_io_t *io)
         status.dropped_messages,
         status.dropped_outbox);
     if (status.storage_error != ESP_OK) {
-        solar_os_shell_io_printf(io,
+        solar_os_shell_io_table_printf(io,
                                  "Storage error: %s\n",
                                  solar_os_shell_error_text(status.storage_error));
     }
-    for (solar_os_messaging_provider_id_t provider =
-             SOLAR_OS_MESSAGING_PROVIDER_GATEWAY;
-         provider <= SOLAR_OS_MESSAGING_PROVIDER_LINK;
-         provider++) {
-        solar_os_messaging_provider_status_t provider_status;
-        if (solar_os_messaging_provider_get_status(provider,
-                                                   &provider_status) == ESP_OK) {
-            solar_os_shell_io_printf(
+    solar_os_messaging_provider_id_t provider = 0;
+    solar_os_messaging_provider_status_t provider_status;
+    while (solar_os_messaging_provider_next(&provider, &provider_status)) {
+        {
+            solar_os_shell_io_table_printf(
                 io,
                 "Provider %-8s: %s%s%s%s\n",
                 provider_status.name,
@@ -151,7 +164,7 @@ static void messages_outbox(solar_os_shell_io_t *io)
         SOLAR_OS_MEMORY_EXTERNAL_REQUIRED,
         "messages.shell.outbox");
     if (requests == NULL) {
-        solar_os_shell_io_writeln(io, "outbox: no PSRAM for snapshot");
+        solar_os_shell_io_table_writeln(io, "outbox: no PSRAM for snapshot");
         return;
     }
     const size_t count = solar_os_messaging_outbox_snapshot(
@@ -159,7 +172,7 @@ static void messages_outbox(solar_os_shell_io_t *io)
         SOLAR_OS_MESSAGING_OUTBOX_CAPACITY);
     for (size_t i = 0; i < count; i++) {
         const solar_os_messaging_outbound_t *request = &requests[i];
-        solar_os_shell_io_printf(
+        solar_os_shell_io_table_printf(
             io,
             "%016" PRIx64 "  %-8s conversation=%" PRIu32
             " attempts=%u  %s\n",
@@ -170,7 +183,7 @@ static void messages_outbox(solar_os_shell_io_t *io)
             request->body);
     }
     if (count == 0U) {
-        solar_os_shell_io_writeln(io, "Outbox is empty");
+        solar_os_shell_io_table_writeln(io, "Outbox is empty");
     }
     solar_os_memory_free(requests);
 }
@@ -183,7 +196,7 @@ static void messages_conversations(solar_os_shell_io_t *io)
                                SOLAR_OS_MEMORY_EXTERNAL_REQUIRED,
                                "messages.shell.conversations");
     if (conversations == NULL) {
-        solar_os_shell_io_writeln(io, "messages: no PSRAM for snapshot");
+        solar_os_shell_io_table_writeln(io, "messages: no PSRAM for snapshot");
         return;
     }
     const size_t count = solar_os_messaging_conversation_snapshot(
@@ -194,7 +207,7 @@ static void messages_conversations(solar_os_shell_io_t *io)
             &conversations[i];
         char label[SOLAR_OS_MESSAGING_TITLE_MAX];
         solar_os_messaging_conversation_label(conversation, label, sizeof(label));
-        solar_os_shell_io_printf(
+        solar_os_shell_io_table_printf(
             io,
             "%" PRIu32 "  %-8s %-9s unread=%" PRIu32
             " security=0x%02" PRIx32 "  %s\n",
@@ -206,7 +219,7 @@ static void messages_conversations(solar_os_shell_io_t *io)
             label);
     }
     if (count == 0) {
-        solar_os_shell_io_writeln(io, "No conversations");
+        solar_os_shell_io_table_writeln(io, "No conversations");
     }
     solar_os_memory_free(conversations);
 }
@@ -221,7 +234,7 @@ static bool messages_list_visit(
     void *user)
 {
     messages_list_context_t *context = user;
-    solar_os_shell_io_printf(
+    solar_os_shell_io_table_printf(
         context->io,
         "%016" PRIx64 "  %-3s %-9s sec=0x%02" PRIx32 "  %s%s%s\n",
         message->key,
@@ -315,6 +328,35 @@ void solar_os_shell_cmd_messages(solar_os_context_t *ctx,
     if (io == NULL) {
         return;
     }
+    if (argc == 2 && strcmp(argv[1], "classes") == 0) {
+        char cursor[16] = ""; solar_os_messaging_class_status_t status;
+        while (solar_os_messaging_class_next(cursor, &status)) {
+            solar_os_shell_io_printf(io, "%s%s\n", status.name, status.creatable ? " (configurable)" : "");
+            strlcpy(cursor, status.name, sizeof(cursor));
+        }
+        return;
+    }
+    if (argc == 2 && strcmp(argv[1], "instances") == 0) {
+        solar_os_messaging_provider_id_t cursor = 0; solar_os_messaging_provider_status_t status;
+        while (solar_os_messaging_provider_next(&cursor, &status))
+            solar_os_shell_io_table_printf(io, "%" PRIu32 " %s %s: %s, %s\n", cursor, status.class_name,
+                status.name, status.connected ? "connected" : status.running ? "running" : "stopped", status.detail);
+        return;
+    }
+    if (argc >= 4 && strcmp(argv[1], "add") == 0) {
+        solar_os_messaging_provider_id_t id;
+        esp_err_t error = solar_os_messaging_instance_add(argv[2], argv[3], argc - 4, (const char *const *)(argv + 4), &id);
+        if (error == ESP_OK) solar_os_shell_io_printf(io, "messages: saved instance %s (%" PRIu32 ")\n", argv[3], id);
+        else solar_os_shell_io_printf(io, "messages: %s\n", solar_os_shell_error_text(error));
+        return;
+    }
+    if (argc >= 3 && strcmp(argv[1], "configure") == 0) {
+        solar_os_messaging_provider_id_t id;
+        esp_err_t error = messages_parse_provider(argv[2], &id) && id ?
+            solar_os_messaging_instance_configure(id, argc - 3, (const char *const *)(argv + 3)) : ESP_ERR_NOT_FOUND;
+        solar_os_shell_io_printf(io, "messages: %s\n", error == ESP_OK ? "configuration saved" : solar_os_shell_error_text(error));
+        return;
+    }
     if (argc == 2 && strcmp(argv[1], "status") == 0) {
         messages_status(io);
         return;
@@ -328,6 +370,13 @@ void solar_os_shell_cmd_messages(solar_os_context_t *ctx,
         return;
     }
     uint32_t conversation_id = 0;
+    if (argc == 3 && strcmp(argv[1], "remove") == 0) {
+        solar_os_messaging_provider_id_t instance;
+        esp_err_t error = messages_parse_provider(argv[2], &instance) && instance ?
+            solar_os_messaging_instance_remove(instance) : ESP_ERR_NOT_FOUND;
+        solar_os_shell_io_printf(io, "messages: %s\n", error == ESP_OK ?
+            "instance and history removed" : solar_os_shell_error_text(error)); return;
+    }
     if (argc == 3 && strcmp(argv[1], "list") == 0 &&
         messages_parse_u32(argv[2], &conversation_id)) {
         messages_list(io, conversation_id);
@@ -357,6 +406,25 @@ void solar_os_shell_cmd_messages(solar_os_context_t *ctx,
                                  "messages: %s\n",
                                  error == ESP_OK ? "deleted" :
                                      solar_os_shell_error_text(error));
+        return;
+    }
+    if (argc == 3 && strcmp(argv[1], "leave") == 0 && messages_parse_u32(argv[2], &conversation_id)) {
+        esp_err_t error = solar_os_messaging_leave(conversation_id);
+        solar_os_shell_io_printf(io, "messages: %s\n", error == ESP_OK ? "leave requested" : solar_os_shell_error_text(error)); return;
+    }
+    if (argc == 3 && (strcmp(argv[1], "connect") == 0 || strcmp(argv[1], "disconnect") == 0)) {
+        solar_os_messaging_provider_id_t instance = 0;
+        esp_err_t error = messages_parse_provider(argv[2], &instance) && instance ?
+            solar_os_messaging_connect(instance, strcmp(argv[1], "connect") == 0) : ESP_ERR_NOT_FOUND;
+        solar_os_shell_io_printf(io, "messages: %s\n", error == ESP_OK ? "connection setting saved" : solar_os_shell_error_text(error)); return;
+    }
+    if (argc == 4 && (strcmp(argv[1], "join") == 0 || strcmp(argv[1], "query") == 0)) {
+        solar_os_messaging_provider_id_t instance = 0;
+        (void)messages_parse_provider(argv[2], &instance);
+        esp_err_t error = strcmp(argv[1], "join") == 0 ? solar_os_messaging_join(instance, argv[3], &conversation_id) :
+            solar_os_messaging_open_direct(instance, argv[3], &conversation_id);
+        if (error == ESP_OK) solar_os_shell_io_printf(io, "messages: conversation %" PRIu32 "\n", conversation_id);
+        else solar_os_shell_io_printf(io, "messages: %s\n", solar_os_shell_error_text(error));
         return;
     }
     solar_os_messaging_provider_id_t provider = 0;
@@ -389,7 +457,7 @@ void solar_os_shell_cmd_messages(solar_os_context_t *ctx,
                                    "messages",
                                    argc,
                                    argv,
-                                   "messages status|conversations|list|send|read|delete|clear|outbox|cancel",
+                                   "messages classes|instances|add|configure|status|conversations|list|send|read|delete|clear|outbox|cancel|join|leave|query|connect|disconnect|remove",
                                    messages_commands,
                                    sizeof(messages_commands) / sizeof(messages_commands[0]));
 }

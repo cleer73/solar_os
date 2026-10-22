@@ -11,7 +11,6 @@
 #define SOLAR_OS_MESSAGING_MESSAGE_CAPACITY 64U
 #define SOLAR_OS_MESSAGING_OUTBOX_CAPACITY 16U
 #define SOLAR_OS_MESSAGING_EVENT_CAPACITY 80U
-#define SOLAR_OS_MESSAGING_PROVIDER_CAPACITY 3U
 #define SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX 64U
 #define SOLAR_OS_MESSAGING_SENDER_MAX 40U
 #define SOLAR_OS_MESSAGING_STORE_DIR ".messages"
@@ -36,7 +35,47 @@ typedef struct {
     esp_err_t last_error;
     char name[SOLAR_OS_MESSAGING_LABEL_MAX];
     char detail[SOLAR_OS_MESSAGING_ERROR_MAX];
+    char class_name[16];
+    uint32_t capabilities;
+    bool connection_oriented;
+    bool removed;
 } solar_os_messaging_provider_status_t;
+
+typedef enum {
+    SOLAR_OS_MESSAGING_JOIN_NONE,
+    SOLAR_OS_MESSAGING_JOIN_LEFT,
+    SOLAR_OS_MESSAGING_JOIN_PENDING,
+    SOLAR_OS_MESSAGING_JOIN_JOINED,
+    SOLAR_OS_MESSAGING_JOIN_FAILED,
+} solar_os_messaging_join_state_t;
+
+/* Class descriptors have static lifetime. Operations lease instance contexts
+ * until completion; successful removal destroys them after excluding workers.
+ * Operations run outside the Messaging lock. */
+typedef struct {
+    const char *name;
+    uint32_t capabilities;
+    bool connection_oriented;
+    esp_err_t (*join)(void *context, const char *target);
+    /* Group backends can resolve/configure a subscription and return its
+     * canonical conversation instead of allocating a room before the call. */
+    esp_err_t (*join_open)(void *context, const char *target,
+                           solar_os_conversation_id_t *conversation);
+    esp_err_t (*leave)(void *context, const char *target);
+    esp_err_t (*direct_open)(void *context, const char *target,
+                             solar_os_conversation_id_t *conversation);
+    esp_err_t (*connect)(void *context, bool enabled);
+    esp_err_t (*create)(const char *name, int argc, const char *const *argv,
+                        solar_os_messaging_provider_id_t *id);
+    esp_err_t (*configure)(void *context, int argc, const char *const *argv);
+    esp_err_t (*normalize_target)(void *context, const char *target,
+                                  char *normalized, size_t size);
+    /* Prepare excludes transport work until finish, including on failure.
+     * No Messaging locks are held by either callback. Finish cannot fail;
+     * when removed is true it destroys the context, otherwise it resumes it. */
+    esp_err_t (*remove_prepare)(void *context);
+    void (*remove_finish)(void *context, bool removed);
+} solar_os_messaging_provider_class_t;
 
 typedef struct {
     solar_os_conversation_id_t id;
@@ -51,6 +90,8 @@ typedef struct {
     char title[SOLAR_OS_MESSAGING_TITLE_MAX];
     char provider_key[SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX];
     bool history_only;
+    solar_os_messaging_join_state_t join_state;
+    char join_error[SOLAR_OS_MESSAGING_ERROR_MAX];
 } solar_os_messaging_conversation_t;
 
 typedef struct {
@@ -148,6 +189,51 @@ esp_err_t solar_os_messaging_get_status(solar_os_messaging_status_t *status);
 esp_err_t solar_os_messaging_provider_register(
     solar_os_messaging_provider_id_t provider,
     const char *name);
+esp_err_t solar_os_messaging_class_register(
+    const solar_os_messaging_provider_class_t *provider_class);
+esp_err_t solar_os_messaging_instance_register(
+    solar_os_messaging_provider_id_t id, const char *class_name,
+    const char *name, void *context);
+/* Retain an instance during setup of another resource that refers to it.
+ * Removal refuses active leases. Release exactly once after successful retain. */
+esp_err_t solar_os_messaging_instance_retain(solar_os_messaging_provider_id_t id, void **lease);
+void solar_os_messaging_instance_release(void *lease);
+/* Cursor is an instance ID, initially zero. No caller-sized provider array. */
+bool solar_os_messaging_provider_next(solar_os_messaging_provider_id_t *cursor,
+    solar_os_messaging_provider_status_t *status);
+solar_os_messaging_provider_id_t solar_os_messaging_provider_find(const char *name);
+bool solar_os_messaging_provider_is_class(solar_os_messaging_provider_id_t id,
+                                         const char *class_name);
+typedef struct {
+    char name[16];
+    uint32_t capabilities;
+    bool creatable;
+} solar_os_messaging_class_status_t;
+/* Pass an empty string initially, then the previous status.name. */
+bool solar_os_messaging_class_next(const char *after, solar_os_messaging_class_status_t *status);
+esp_err_t solar_os_messaging_profile_save(solar_os_messaging_provider_id_t id,
+                                         const void *data, size_t size);
+esp_err_t solar_os_messaging_profile_load(solar_os_messaging_provider_id_t id,
+                                         void *data, size_t size);
+esp_err_t solar_os_messaging_instance_create(const char *class_name,
+    const char *name, const void *config, size_t size,
+    solar_os_messaging_provider_id_t *id);
+/* Remove an instance, pending sends, messages, Inbox projections and credentials.
+ * A small credential-free record reserves its identity and retries interrupted
+ * history deletion after reboot. */
+esp_err_t solar_os_messaging_instance_remove(solar_os_messaging_provider_id_t id);
+esp_err_t solar_os_messaging_instance_add(const char *class_name, const char *name,
+    int argc, const char *const *argv, solar_os_messaging_provider_id_t *id);
+esp_err_t solar_os_messaging_instance_configure(solar_os_messaging_provider_id_t id,
+    int argc, const char *const *argv);
+esp_err_t solar_os_messaging_join(solar_os_messaging_provider_id_t instance,
+    const char *target, solar_os_conversation_id_t *conversation);
+esp_err_t solar_os_messaging_leave(solar_os_conversation_id_t conversation);
+esp_err_t solar_os_messaging_open_direct(solar_os_messaging_provider_id_t instance,
+    const char *target, solar_os_conversation_id_t *conversation);
+esp_err_t solar_os_messaging_connect(solar_os_messaging_provider_id_t instance, bool enabled);
+esp_err_t solar_os_messaging_join_update(solar_os_messaging_provider_id_t instance,
+    const char *target, solar_os_messaging_join_state_t state, const char *error);
 esp_err_t solar_os_messaging_provider_claim(
     solar_os_messaging_provider_id_t provider,
     const char *detail);

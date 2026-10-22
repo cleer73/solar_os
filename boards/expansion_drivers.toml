@@ -1,6 +1,7 @@
 schema = 1
 
 [drivers.cardkb]
+keyboard = true
 summary = "I2C keyboard"
 package = "expansion_cardkb"
 targets = ["esp32", "esp32s3"]
@@ -21,6 +22,7 @@ required = true
 allowed = [0x5f]
 
 [drivers.inputronic-keyboard]
+keyboard = true
 summary = "Soldered Inputronic 8x10 keyboard"
 package = "expansion_inputronic_keyboard"
 targets = ["esp32", "esp32s3"]
@@ -53,6 +55,7 @@ hint = "gpio"
 role = "irq"
 
 [drivers.tdeck-keyboard]
+keyboard = true
 summary = "LilyGO T-Deck raw-matrix keyboard"
 package = "expansion_tdeck_keyboard"
 targets = ["esp32s3"]
@@ -73,6 +76,7 @@ required = true
 allowed = [0x55]
 
 [drivers.stc8h-keyboard]
+keyboard = true
 summary = "Elecrow STC8H companion-MCU keypad"
 package = "expansion_stc8h_keyboard"
 targets = ["esp32s3"]
@@ -105,6 +109,7 @@ kind = "pwm"
 hint = "gpio"
 
 [drivers.tab5-keyboard]
+keyboard = true
 summary = "M5Stack Tab5 70-key keyboard"
 package = "expansion_tab5_keyboard"
 targets = ["esp32", "esp32s3"]
@@ -172,6 +177,7 @@ min = 1
 max = 10
 
 [drivers.lilygo-pager-keyboard]
+keyboard = true
 summary = "LilyGO T-LoRa-Pager 4x10 keyboard"
 package = "expansion_lilygo_pager_keyboard"
 targets = ["esp32", "esp32s3"]
@@ -205,6 +211,7 @@ hint = "gpio"
 role = "backlight"
 
 [drivers.cl32-core]
+keyboard = true
 summary = "CL-32 board controller"
 package = "board_cl32_core"
 targets = ["esp32s3"]
@@ -852,6 +859,83 @@ hint = "0x3c|0x3d"
 required = true
 allowed = [0x3c, 0x3d]
 
+[drivers.spi-dlp]
+summary = "Negotiated SDLP SPI display"
+package = "expansion_spi_dlp"
+targets = ["esp32", "esp32s3"]
+capabilities = ["gfx", "expansion_spi", "expansion_gpio"]
+default_name = "display0"
+
+[[drivers.spi-dlp.bindings]]
+key = "compressed"
+hint = "0|1"
+kind = "parameter"
+role = "compressed"
+min = 0
+max = 1
+
+[[drivers.spi-dlp.bindings]]
+key = "spi"
+kind = "spi_bus"
+hint = "bus"
+required = true
+
+[[drivers.spi-dlp.bindings]]
+key = "cs"
+kind = "spi_cs"
+hint = "gpio"
+required = true
+
+[[drivers.spi-dlp.bindings]]
+key = "ready"
+kind = "gpio"
+hint = "gpio"
+required = false
+role = "ready"
+
+[[drivers.spi-dlp.bindings]]
+key = "reset"
+kind = "gpio"
+hint = "gpio"
+required = false
+role = "reset"
+
+[[drivers.spi-dlp.bindings]]
+key = "clock"
+kind = "parameter"
+hint = "khz"
+required = false
+role = "clock"
+min = 100
+max = 40000
+
+[[drivers.spi-dlp.bindings]]
+key = "reset-ms"
+kind = "parameter"
+hint = "ms"
+required = false
+role = "reset-ms"
+min = 1
+max = 1000
+
+[[drivers.spi-dlp.bindings]]
+key = "boot-ms"
+kind = "parameter"
+hint = "ms"
+required = false
+role = "boot-ms"
+min = 100
+max = 60000
+
+[[drivers.spi-dlp.bindings]]
+key = "reset-active"
+kind = "parameter"
+hint = "0|1"
+required = false
+role = "reset-active"
+min = 0
+max = 1
+
 [drivers.pcd8544]
 summary = "84x48 SPI LCD"
 package = "expansion_pcd8544"
@@ -1274,6 +1358,30 @@ hint = "0x51"
 required = true
 allowed = [0x51]
 [[drivers.pcf8563.bindings]]
+key = "irq"
+kind = "gpio"
+hint = "gpio"
+
+[drivers.ds3231]
+summary = "DS3231 real-time clock"
+package = "driver_ds3231"
+targets = ["esp32", "esp32s3"]
+capabilities = ["i2c"]
+board_capabilities = ["rtc"]
+board_driver = "rtc_ds3231"
+default_name = "rtc0"
+[[drivers.ds3231.bindings]]
+key = "i2c"
+kind = "i2c_bus"
+hint = "bus"
+required = true
+[[drivers.ds3231.bindings]]
+key = "addr"
+kind = "i2c_address"
+hint = "0x68"
+required = true
+allowed = [0x68]
+[[drivers.ds3231.bindings]]
 key = "irq"
 kind = "gpio"
 hint = "gpio"
@@ -1777,6 +1885,7 @@ min = 0
 max = 1000000
 
 [drivers.ps2-keyboard]
+keyboard = true
 summary = "PS/2 keyboard"
 package = "expansion_ps2_keyboard"
 targets = ["esp32", "esp32s3"]
@@ -1787,6 +1896,38 @@ key = "ps2"
 kind = "ps2_bus"
 hint = "bus"
 required = true
+
+[drivers.trackball]
+summary = "Four-channel GPIO trackball"
+package = "expansion_trackball"
+targets = ["esp32", "esp32s3"]
+capabilities = ["expansion_gpio"]
+default_name = "trackball0"
+[[drivers.trackball.bindings]]
+key = "up"
+kind = "gpio"
+hint = "gpio"
+required = true
+[[drivers.trackball.bindings]]
+key = "down"
+kind = "gpio"
+hint = "gpio"
+required = true
+[[drivers.trackball.bindings]]
+key = "left"
+kind = "gpio"
+hint = "gpio"
+required = true
+[[drivers.trackball.bindings]]
+key = "right"
+kind = "gpio"
+hint = "gpio"
+required = true
+[[drivers.trackball.bindings]]
+key = "pull"
+kind = "parameter"
+hint = "0=none|1=up|2=down"
+allowed = [0, 1, 2]
 
 [drivers.ps2-mouse]
 summary = "PS/2 mouse"
@@ -2318,3 +2459,30 @@ hint = "1: X4 Pro, 2: X4 Classic (800x480)"
 role = "panel"
 required = true
 allowed = [1, 2]
+
+[drivers.stream-dlp]
+summary = "DLP display on an existing duplex byte stream"
+package = "expansion_stream_dlp"
+targets = ["esp32", "esp32s3"]
+default_name = "display0"
+[[drivers.stream-dlp.bindings]]
+key = "compressed"
+hint = "0|1"
+kind = "parameter"
+role = "compressed"
+min = 0
+max = 1
+
+[[drivers.stream-dlp.bindings]]
+key = "stream"
+kind = "byte_stream"
+hint = "duplex-byte-stream"
+required = true
+role = "stream"
+[[drivers.stream-dlp.bindings]]
+key = "timeout-ms"
+kind = "parameter"
+hint = "ms"
+role = "timeout-ms"
+min = 100
+max = 60000

@@ -86,6 +86,10 @@ esp_err_t solar_os_sessions_create_display_app(const solar_os_app_t *app,
                                                uint8_t *session_id,
                                                char *busy_owner,
                                                size_t busy_owner_len);
+/* Create a display app retaining the caller's directory for relative paths. */
+esp_err_t solar_os_sessions_create_display_app_at(const solar_os_app_t *app,
+    const char *target_name, int argc, char **argv, const char *cwd,
+    uint8_t *session_id, char *busy_owner, size_t busy_owner_len);
 esp_err_t solar_os_sessions_focus_display(const char *target_name);
 bool solar_os_sessions_input_focus(char *target_name, size_t target_name_len);
 bool solar_os_sessions_active_for_display(const char *target_name, uint8_t *session_id);

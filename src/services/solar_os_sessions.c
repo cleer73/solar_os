@@ -113,6 +113,7 @@ typedef struct {
     solar_os_session_operation_type_t type;
     const solar_os_app_t *app;
     const char *target_name;
+    const char *cwd;
     int argc;
     char **argv;
     uint8_t close_session_id;
@@ -143,6 +144,7 @@ static esp_err_t session_create_display_app_internal(
     const char *target_name,
     int argc,
     char **argv,
+    const char *cwd,
     uint8_t *session_id,
     char *busy_owner,
     size_t busy_owner_len);
@@ -849,7 +851,8 @@ static void session_discard_graphics_snapshot(solar_os_session_entry_t *session)
 static void session_capture_graphics_snapshot(solar_os_session_entry_t *session)
 {
     if (session == NULL || !session->graphics_active || session->app == NULL ||
-        session->app->resume != NULL) {
+        (session->app->resume != NULL &&
+         !(session->app->flags & SOLAR_OS_APP_FLAG_RESUME_SNAPSHOT))) {
         session_discard_graphics_snapshot(session);
         return;
     }
@@ -1153,12 +1156,19 @@ static bool session_claim_display(solar_os_session_entry_t *session)
 
     solar_os_shell_io_t *io = solar_os_context_shell_io(session_state.ctx);
     if (io != NULL && solar_os_shell_io_kind(io) != SOLAR_OS_SHELL_IO_KIND_NONE) {
-        solar_os_shell_io_printf(io,
-                                 "%s: already running on %s\n",
-                                 app_display_name(session->app),
-                                 busy_owner[0] != '\0' ? busy_owner : "another session");
+        if (err == ESP_ERR_INVALID_STATE && busy_owner[0] != '\0') {
+            solar_os_shell_io_printf(io, "%s: already running on %s\n",
+                                     app_display_name(session->app), busy_owner);
+        } else {
+            solar_os_shell_io_printf(io, "%s: cannot start: %s\n",
+                                     app_display_name(session->app),
+                                     err == ESP_ERR_NO_MEM ? "not enough memory" :
+                                         esp_err_to_name(err));
+        }
         solar_os_shell_io_flush(io);
     }
+    SOLAR_OS_LOGW(TAG, "App %s claim failed: %s", app_display_name(session->app),
+                  esp_err_to_name(err));
     return false;
 }
 
@@ -1220,7 +1230,7 @@ static bool display_claim_app(const solar_os_app_t *app, bool *claimed)
         return true;
     }
 
-    if (err == ESP_ERR_INVALID_STATE) {
+    if (err == ESP_ERR_INVALID_STATE && busy_owner[0] != '\0') {
         solar_os_shell_io_t *io = solar_os_context_shell_io(session_state.ctx);
         if (io != NULL && solar_os_shell_io_kind(io) != SOLAR_OS_SHELL_IO_KIND_NONE) {
             solar_os_shell_io_printf(io,
@@ -1362,6 +1372,8 @@ static bool start_or_resume_session(solar_os_session_entry_t *session)
             return false;
         }
     } else if (session->app->resume != NULL) {
+        if (session->app->flags & SOLAR_OS_APP_FLAG_RESUME_SNAPSHOT)
+            session_restore_graphics_snapshot(session);
         session->app->resume(session_state.ctx);
     } else {
         session_restore_graphics_snapshot(session);
@@ -1434,6 +1446,8 @@ static bool start_or_resume_detached_session(solar_os_session_entry_t *session)
             return false;
         }
     } else if (session->app->resume != NULL) {
+        if (session->app->flags & SOLAR_OS_APP_FLAG_RESUME_SNAPSHOT)
+            session_restore_graphics_snapshot(session);
         session->app->resume(session_state.ctx);
     } else {
         session_restore_graphics_snapshot(session);
@@ -1699,18 +1713,18 @@ static bool close_session(solar_os_session_entry_t *session, bool preserve_conte
     }
 
     if (was_foreground) {
-        if (preserve_caller_context) {
-            session_context_restore(&previous);
-            return true;
-        }
+        /* Closing from an auxiliary console still has to resume the display's
+         * parent. Preserve the caller's context only after restoring that session. */
+        bool resumed = true;
         if (return_session != NULL) {
-            return switch_to_session_or_shell(return_session);
+            resumed = switch_to_session_or_shell(return_session);
+        } else if (session_state.shell_terminal != NULL) {
+            resumed = switch_to_session(ensure_shell_session(), false);
+        } else {
+            session_restore_base_context();
         }
-        if (session_state.shell_terminal != NULL) {
-            return switch_to_session(ensure_shell_session(), false);
-        }
-        session_restore_base_context();
-        return true;
+        if (preserve_caller_context) session_context_restore(&previous);
+        return resumed;
     }
     if (preserve_caller_context) {
         session_context_restore(&previous);
@@ -2066,6 +2080,8 @@ static void dispatch_session_event(solar_os_session_entry_t *session,
         session->terminal_redraw_requested = false;
         session_prepare_context(session);
         if (session->app->resume != NULL) {
+            if (session->app->flags & SOLAR_OS_APP_FLAG_RESUME_SNAPSHOT)
+                session_restore_graphics_snapshot(session);
             session->app->resume(session_state.ctx);
         } else if (session->app->event != NULL) {
             const solar_os_event_t resume_event = {
@@ -3076,6 +3092,7 @@ static void session_process_operation_requests(void)
                                                     request->target_name,
                                                     request->argc,
                                                     request->argv,
+                                                    request->cwd,
                                                     &request->session_id,
                                                     request->busy_owner,
                                                     sizeof(request->busy_owner));
@@ -3470,6 +3487,7 @@ static esp_err_t session_create_display_app_internal(
     const char *target_name,
     int argc,
     char **argv,
+    const char *cwd,
     uint8_t *session_id,
     char *busy_owner,
     size_t busy_owner_len)
@@ -3519,6 +3537,9 @@ static esp_err_t session_create_display_app_internal(
     if (args_err != ESP_OK) {
         return args_err;
     }
+    if (strlcpy(session_state.ctx->launch_cwd, cwd ? cwd : "",
+                sizeof(session_state.ctx->launch_cwd)) >= sizeof(session_state.ctx->launch_cwd))
+        return ESP_ERR_INVALID_SIZE;
 
     char previous_focus[SOLAR_OS_DISPLAY_TARGET_NAME_MAX];
     const bool had_input_focus =
@@ -3582,12 +3603,21 @@ esp_err_t solar_os_sessions_create_display_app(const solar_os_app_t *app,
                                                char *busy_owner,
                                                size_t busy_owner_len)
 {
+    return solar_os_sessions_create_display_app_at(app, target_name, argc, argv,
+        NULL, session_id, busy_owner, busy_owner_len);
+}
+
+esp_err_t solar_os_sessions_create_display_app_at(const solar_os_app_t *app,
+    const char *target_name, int argc, char **argv, const char *cwd,
+    uint8_t *session_id, char *busy_owner, size_t busy_owner_len)
+{
     if (solar_os_shutdown_requested()) return ESP_ERR_INVALID_STATE;
     if (xTaskGetCurrentTaskHandle() == session_scheduler_task) {
         return session_create_display_app_internal(app,
                                                    target_name,
                                                    argc,
                                                    argv,
+                                                   cwd,
                                                    session_id,
                                                    busy_owner,
                                                    busy_owner_len);
@@ -3605,6 +3635,7 @@ esp_err_t solar_os_sessions_create_display_app(const solar_os_app_t *app,
         .type = SOLAR_OS_SESSION_OPERATION_CREATE_DISPLAY_APP,
         .app = app,
         .target_name = target_name,
+        .cwd = cwd,
         .argc = argc,
         .argv = argv,
         .complete = xSemaphoreCreateBinary(),
@@ -3853,7 +3884,7 @@ void solar_os_sessions_print_list(solar_os_shell_io_t *io, void *user)
         return;
     }
 
-    solar_os_shell_io_writeln(io,
+    solar_os_shell_io_table_writeln(io,
                               "ID  TITLE        APP      STATE     OWNER    TIME");
     for (size_t i = 0; i < SOLAR_OS_SESSION_MAX; i++) {
         solar_os_session_entry_t *session = &session_state.sessions[i];
@@ -3868,7 +3899,7 @@ void solar_os_sessions_print_list(solar_os_shell_io_t *io, void *user)
             session->display_target[0] != '\0' ?
                 session->display_target : "display";
         if (session->app->event != NULL) {
-            solar_os_shell_io_printf(io,
+            solar_os_shell_io_table_printf(io,
                                      "%-3u %-12.12s %-8.8s %-9.9s %-8.8s "
                                      "%" PRIu32 "/%" PRIu32 "ms %" PRIu32
                                      "/%" PRIu32 "us n=%" PRIu32 " !%" PRIu32 "\n",
@@ -3884,7 +3915,7 @@ void solar_os_sessions_print_list(solar_os_shell_io_t *io, void *user)
                                      session->tick_stats.dispatch_count,
                                      session->tick_stats.deadline_miss_count);
         } else {
-            solar_os_shell_io_printf(io,
+            solar_os_shell_io_table_printf(io,
                                      "%-3u %-12.12s %-8.8s %-9.9s %-8.8s -\n",
                                      (unsigned)session->id,
                                      session->title,

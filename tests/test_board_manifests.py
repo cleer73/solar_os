@@ -45,6 +45,63 @@ class BoardManifestTest(unittest.TestCase):
                 board = load_board_manifest(path, self.manifest_dir)
                 validate_board(board, self.drivers)
 
+    def test_owned_keyboard_metadata_selects_key_defaults(self) -> None:
+        for name, expected in (
+            ("t_deck_plus", 1), ("t_lora_pager", 1), ("cl_32", 1),
+            ("thinknode_m9", 1), ("ttgo_vga32_v14", 1),
+            ("solar_term", 0), ("esp32_s3_devkitc1_n16r8", 0), ("odroid_go", 0),
+        ):
+            with self.subTest(board=name):
+                board = load_board_manifest(self.manifest_dir / f"{name}.toml", self.manifest_dir)
+                header = generate_header(board, self.drivers)
+                self.assertIn(f"#define SOLAR_OS_BOARD_HAS_WIRED_KEYBOARD {expected}", header)
+
+    def test_stream_dlp_generates_typed_stream_binding_on_headless_board(self) -> None:
+        board = load_board_manifest(
+            self.manifest_dir / "esp32_s3_devkitc1_n16r8.toml", self.manifest_dir)
+        board.setdefault("devices", []).append({
+            "driver": "stream-dlp", "name": "remote0",
+            "bindings": {"stream": "uart0", "timeout-ms": 3000, "compressed": 1}})
+        validate_board(board, self.drivers)
+        header = generate_header(board, self.drivers)
+        self.assertIn("SOLAR_OS_EXPANSION_BINDING_BYTE_STREAM", header)
+        self.assertIn('.target = "uart0"', header)
+        self.assertIn('"timeout-ms"', header)
+        self.assertIn('.role = "compressed"', header)
+        self.assertIn('.value = 1', header)
+        for value in (-1, 2):
+            board["devices"][-1]["bindings"]["compressed"] = value
+            with self.assertRaises(ManifestError):
+                validate_board(board, self.drivers)
+        board["devices"][-1]["bindings"]["compressed"] = 1
+        self.assertIn("expansion_stream_dlp", required_packages(board, self.drivers))
+        for invalid in ("", 17):
+            with self.subTest(value=invalid):
+                board["devices"][-1]["bindings"]["stream"] = invalid
+                with self.assertRaises(ManifestError):
+                    validate_board(board, self.drivers)
+
+    def test_ds3231_overlay_and_fixed_address(self) -> None:
+        board = load_board_manifest(self.manifest_dir / "esp32_s3_devkitc1_n16r8.toml", self.manifest_dir)
+        device = {"driver": "ds3231", "name": "rtc0",
+                  "bindings": {"i2c": "i2c0", "addr": 0x68}}
+        board.setdefault("devices", []).append(device)
+        validate_board(board, self.drivers)
+        self.assertIn("driver_ds3231", required_packages(board, self.drivers))
+        self.assertIn('.driver = "ds3231", .name = "rtc0"', generate_header(board, self.drivers))
+        for pin in board["pins"]:
+            if pin["gpio"] == 10:
+                pin.update(policy="fixed", user=False, adc=False, pwm=False)
+        device["bindings"]["irq"] = 10
+        validate_board(board, self.drivers)
+        self.assertIn('.role = "irq"', generate_header(board, self.drivers))
+        for key, bad_value in (("addr", 0x69), ("i2c", "missing")):
+            original = device["bindings"][key]
+            device["bindings"][key] = bad_value
+            with self.assertRaises(ManifestError):
+                validate_board(board, self.drivers)
+            device["bindings"][key] = original
+
     def test_inmp441_capture_and_shared_playback_bindings(self) -> None:
         board = load_board_manifest(self.manifest_dir / "esp32_s3_devkitc1_n16r8.toml", self.manifest_dir)
         for pin in board["pins"]:
@@ -84,11 +141,16 @@ class BoardManifestTest(unittest.TestCase):
         self.assertEqual(board["board"]["name"], "SolarWriter")
         self.assertEqual(board["target"]["platformio_board"], "solar_writer")
         devices = {device["name"]: device for device in board["devices"]}
+        self.assertEqual(devices["display0"]["bindings"]["startup-pulse"], 1)
         self.assertEqual(devices["audio0"]["bindings"],
                          {"i2s": 1, "bck": 14, "ws": 15, "din": 17, "dout": 16, "slot": 1})
         self.assertEqual(devices["battery0"]["bindings"]["addr"], 0x0b)
         self.assertEqual(devices["battery0"]["bindings"]["capacity"], 3000)
-        self.assertEqual({"display0", "storage0", "audio0", "battery0"}, set(devices))
+        self.assertEqual(devices["rtc0"]["driver"], "ds3231")
+        self.assertEqual(devices["rtc0"]["bindings"], {"i2c": "i2c0", "addr": 0x68})
+        self.assertEqual({"display0", "storage0", "audio0", "battery0", "rtc0"}, set(devices))
+        self.assertIn("rtc", board["build"]["capabilities"])
+        self.assertIn("rtc_ds3231", board["build"]["drivers"])
         bus = next(bus for bus in board["buses"] if bus["name"] == "i2c0")
         self.assertEqual((bus["sda"], bus["scl"], bus["speed_hz"]), (8, 9, 100000))
         for pin in board["pins"]:
@@ -104,6 +166,11 @@ class BoardManifestTest(unittest.TestCase):
         self.assertIn("SOLAR_OS_BOARD_USER_GPIO_LIST \"18 19 20 38\"", header)
         self.assertIn("expansion_inmp441", required_packages(board, self.drivers))
         self.assertIn("lc709203f", required_packages(board, self.drivers))
+        self.assertIn("driver_ds3231", required_packages(board, self.drivers))
+        self.assertIn('.driver = "ds3231", .name = "rtc0"', header)
+        cmake = generate_cmake(board, self.drivers)
+        self.assertIn("boards/drivers/rtc_ds3231.cmake", cmake)
+        self.assertIn("set(SOLAR_OS_BOARD_HAS_RTC ON)", cmake)
         image = json.loads((ROOT / "boards/solar_writer.json").read_text())
         base = json.loads((ROOT / "boards/elecrow_crowpanel_esp32_s3_5_79_epaper.json").read_text())
         self.assertEqual(image["build"], base["build"])
@@ -550,6 +617,7 @@ bindings = { gpio = 7 }
         )
         header = generate_header(board, self.drivers)
         self.assertIn('#define SOLAR_OS_BOARD_DISPLAY_CONTROLLER "SSD1683x2"', header)
+        self.assertIn('.role = "startup-pulse", .value = 1', header)
         self.assertIn("#define SOLAR_OS_BOARD_DISPLAY_WIDTH 792", header)
         self.assertIn("#define SOLAR_OS_BOARD_DISPLAY_HEIGHT 272", header)
         self.assertIn('.role = "panel", .value = 4', header)
@@ -782,13 +850,32 @@ bindings = { gpio = 7 }
         buses = {bus["name"]: bus for bus in board["buses"]}
         self.assertNotIn("uart1", buses)
         self.assertEqual(buses["uart0"]["port"], "UART_NUM_1")
+        self.assertEqual(buses["uart0"]["baud_rate"], "9600")
+        gnss = next(device for device in board["devices"] if device["name"] == "gnss0")
+        self.assertEqual(gnss["driver"], "nmea")
+        self.assertEqual(gnss["bindings"], {"uart": "uart0", "alt_baud": 38400})
+        self.assertTrue(gnss["detachable"])
+        self.assertEqual({pin["connector"] for pin in board["connectors"]}, {"GROVE"})
+        self.assertEqual(
+            {pin["gpio"] for pin in board["connectors"] if pin["kind"] == "gpio"},
+            {43, 44},
+        )
+        self.assertEqual({pin["kind"] for pin in board["connectors"]},
+                         {"gpio", "power", "ground"})
+        self.assertFalse(any(device.get("detachable", False)
+                             for device in board["devices"] if device["name"] not in ("gnss0", "trackball0")))
 
         defines = board["defines"]
         self.assertEqual(
             defines["SOLAR_OS_BOARD_KEY_SHORT_INPUT_KEY"],
             "SOLAR_OS_KEY_ENTER",
         )
-        self.assertNotIn("GPIO_NUM_0", defines["SOLAR_OS_BOARD_BUTTONS"])
+        self.assertNotIn("SOLAR_OS_BOARD_BUTTONS", defines)
+        self.assertNotIn("buttons", board["build"]["capabilities"])
+        trackball = next(device for device in board["devices"] if device["name"] == "trackball0")
+        self.assertEqual(trackball["driver"], "trackball")
+        self.assertEqual(trackball["bindings"], {"up": 3, "down": 15, "left": 1, "right": 2, "pull": 1})
+        self.assertTrue(trackball["detachable"])
 
         header = generate_header(board, self.drivers)
         self.assertIn(
@@ -801,12 +888,19 @@ bindings = { gpio = 7 }
         )
         self.assertIn(".config.uart = {.port = UART_NUM_1", header)
         self.assertIn(
-            '.driver = "ublox-mia-m10q", .name = "gnss0"',
+            '.driver = "nmea", .name = "gnss0"',
             header,
         )
 
         packages = required_packages(board, self.drivers)
-        self.assertIn("ublox_mia_m10q", packages)
+        self.assertIn("nmea_gnss", packages)
+        self.assertIn("expansion_trackball", packages)
+        self.assertIn("job_pointer_arrows", packages)
+
+        self.assertIn('.name = "gnss0", .detachable = true', header)
+        gnss["detachable"] = "true"
+        with self.assertRaisesRegex(ManifestError, "detachable must be a boolean"):
+            validate_board(board, self.drivers)
 
     def test_waveshare_sim7670_v2_claims_fixed_peripherals(self) -> None:
         board = load_board_manifest(

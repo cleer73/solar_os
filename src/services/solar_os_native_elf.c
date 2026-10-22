@@ -32,6 +32,7 @@ static const char *const native_host_symbols[] = {
     "solar_os_native_host_v1",
     "solar_os_native_job_host_v1",
     "solar_os_native_driver_host_v1",
+    "solar_os_native_library_host_v1",
 };
 
 typedef struct {
@@ -134,7 +135,7 @@ static bool app_manifest_valid(const solar_os_native_app_manifest_v2_t *app)
         app->struct_size != sizeof(*app) ||
         (app->app_class != SOLAR_OS_NATIVE_APP_CLASS_TUI &&
          app->app_class != SOLAR_OS_NATIVE_APP_CLASS_GUI) ||
-        (app->flags & ~SOLAR_OS_NATIVE_APP_RESUMABLE) != 0U ||
+        (app->flags & ~(SOLAR_OS_NATIVE_APP_RESUMABLE | SOLAR_OS_NATIVE_APP_POINTER_EVENTS)) != 0U ||
         app->worker_stack_bytes < 2048U || app->worker_stack_bytes > 65536U ||
         app->worker_priority < 1U || app->worker_priority > 4U ||
         app->minimum_internal_bytes > 512U * 1024U ||

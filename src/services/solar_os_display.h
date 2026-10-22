@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "solar_os_display_surface.h"
+#include "solar_os_display_maintenance.h"
 #include "solar_os_gfx.h"
 #include "solar_os_terminal.h"
 #include "u8g2.h"
@@ -50,6 +51,9 @@ typedef struct {
     uint32_t surface_formats;
     uint32_t frame_formats;
     uint16_t preferred_stream_fps;
+    /* Minimum caller task stack for synchronous presentation, bytes; 0 uses
+     * the presenter's default. Protocol-backed targets may nest substantial I/O. */
+    uint16_t presentation_stack_bytes;
     uint32_t max_stream_pixels_per_second;
     u8g2_t *u8g2;
     const u8g2_cb_t *base_rotation;
@@ -63,7 +67,23 @@ typedef struct {
     solar_os_display_frame_presenter_t present_frame;
     esp_err_t (*present_power_state)(void *context);
     void *power_state_context;
+    esp_err_t (*relax)(void *context, solar_os_display_relax_phase_t phase);
+    void *relax_context;
 } solar_os_display_target_t;
+
+typedef struct {
+    uint32_t cycles;
+    bool cancelled;
+} solar_os_display_relax_result_t;
+
+/* Exclusive, synchronous native black/white cycles under the caller's claim.
+ * Cancellation is polled between hardware refreshes and during holds. END is
+ * always attempted after a successful BEGIN, including after a frame error.
+ */
+esp_err_t solar_os_display_relax(const char *name, const char *owner, unsigned seconds,
+                                 bool (*should_cancel)(void *), void *user,
+                                 solar_os_display_relax_result_t *result,
+                                 char *busy_owner, size_t busy_owner_len);
 
 typedef enum {
     SOLAR_OS_DISPLAY_PRESENT_TEXT,

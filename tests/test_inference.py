@@ -92,15 +92,29 @@ class InferenceIntegrationTest(unittest.TestCase):
         selected = flavors.enable_required_packages(catalog,
             {name: False for name in catalog.packages}, {"service_inference"})
         for target in ("esp32", "esp32s3", "esp32c3", "esp32p4"):
-            for capabilities in (set(), {"psram"}):
+            for capabilities in (set(), {"psram", "wifi"}):
                 _, packages = flavors.apply_board_capability_pruning(catalog, groups,
                     flavors.apply_target_pruning(catalog, selected, target), capabilities)
                 self.assertEqual(packages["service_inference"], target == "esp32s3" and bool(capabilities))
                 for dependency in ("service_camera", "service_image", "service_vision"):
                     self.assertFalse(packages[dependency])
-        for name in ("core", "rover", "netrunner", "writerdeck", "full"):
+        for name in ("writerdeck", "full"):
             flavor = tomllib.loads((ROOT / f"flavors/{name}.toml").read_text())
-            self.assertEqual(flavor["groups"].get("inference", False), name == "full")
+            self.assertTrue(flavor["groups"].get("inference", False))
+            self.assertFalse(flavor["groups"].get("inference_backend", False))
+
+    def test_builtin_backend_remains_selectable_for_custom_profiles(self):
+        catalog = flavors.load_catalog(ROOT / "packages/solar_os_packages.toml")
+        groups = {name: name in ("inference", "inference_backend") for name in catalog.groups}
+        selected = flavors.enable_required_packages(catalog,
+            dict.fromkeys(catalog.packages, False), {"backend_inference_espdl"})
+        _, packages = flavors.apply_board_capability_pruning(catalog, groups,
+            flavors.apply_target_pruning(catalog, selected, "esp32s3"), {"psram", "wifi"})
+        self.assertTrue(packages["backend_inference_espdl"])
+        self.assertTrue(packages["service_inference"])
+        self.assertIn("esp-dl", flavors.collect_requires(catalog, groups, packages))
+        self.assertIn("services/solar_os_inference_espdl.cpp",
+                      flavors.collect_sources(catalog, groups, packages))
 
     def test_documented_python_examples_parse(self):
         for example in re.findall(r"```python\n(.*?)```", (ROOT / "doc/manual/inference.md").read_text(), re.S):

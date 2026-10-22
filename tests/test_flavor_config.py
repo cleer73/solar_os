@@ -74,7 +74,7 @@ class FlavorConfigTest(unittest.TestCase):
 
         argv = [
             "os_builder",
-            "--input", str(REPOSITORY / "flavors" / "rover.toml"),
+            "--input", str(REPOSITORY / "flavors" / "writerdeck.toml"),
             "--output", "renamed.toml",
         ]
         with mock.patch.object(sys, "argv", argv), mock.patch.object(
@@ -82,10 +82,10 @@ class FlavorConfigTest(unittest.TestCase):
         ), redirect_stdout(io.StringIO()):
             self.assertEqual(flavor_config.main(), 0)
 
-        self.assertEqual(captured["name"], "rover")
+        self.assertEqual(captured["name"], "writerdeck")
         self.assertEqual(
             captured["description"],
-            "Custom SolarOS flavor created for Rover.",
+            "Compact SolarOS build with package installation, Python, Playground, writing, media and communications.",
         )
 
     def test_builder_metadata_overrides_remain_explicit(self):
@@ -99,7 +99,7 @@ class FlavorConfigTest(unittest.TestCase):
 
         argv = [
             "os_builder",
-            "--input", str(REPOSITORY / "flavors" / "rover.toml"),
+            "--input", str(REPOSITORY / "flavors" / "writerdeck.toml"),
             "--output", "renamed.toml",
             "--name", "renamed",
             "--description", "Explicit description.",

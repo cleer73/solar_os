@@ -1182,6 +1182,13 @@ static void port_shell_run(port_shell_state_t *state)
         port_shell_send_tick(state, now_ms);
         port_shell_process_requests(state);
         port_shell_process_app_operations(state);
+
+        /* Stream ports may return immediately even with a read timeout, and
+         * disconnected ports can keep returning an error. Give the idle task
+         * and the console requesting our close a chance to run in either case. */
+        if (read_len == 0) {
+            vTaskDelay(1);
+        }
     }
 
     SOLAR_OS_LOGI(TAG,
@@ -1939,7 +1946,7 @@ void solar_os_port_shell_print_list(solar_os_shell_io_t *io)
                  "%s/%s",
                  entry->port_name[0] != '\0' ? entry->port_name : "?",
                  solar_os_shell_terminal_profile_name(entry->terminal_profile));
-        solar_os_shell_io_printf(io,
+        solar_os_shell_io_table_printf(io,
                                  "%-3u %-12.12s %-8s %-9.9s %-8.8s "
                                  "%" PRIu32 "/%" PRIu32 "ms %" PRIu32
                                  "/%" PRIu32 "us n=%" PRIu32 " !%" PRIu32 "\n",
@@ -1961,7 +1968,7 @@ void solar_os_port_shell_print_list(solar_os_shell_io_t *io)
             }
             const char *app_state = app->active ? "active" :
                 app->suspended ? "suspended" : "ready";
-            solar_os_shell_io_printf(
+            solar_os_shell_io_table_printf(
                 io,
                 "%-3u %-12.12s %-8.8s %-9.9s %-8.8s "
                 "%" PRIu32 "/%" PRIu32 "ms %" PRIu32

@@ -305,6 +305,17 @@ foreach(SOLAR_OS_KEYMAP_PACKAGE IN LISTS SOLAR_OS_KEYMAP_REQUIRED_PACKAGES)
         message(FATAL_ERROR "Custom keymap requires package ${SOLAR_OS_KEYMAP_PACKAGE} in the selected flavor")
     endif()
 endforeach()
+if(SOLAR_OS_PACKAGE_SERVICE_NATIVE_MODULES)
+    set(SOLAR_OS_NATIVE_ELF_PATCH "${SOLAR_OS_PROJECT_DIR}/scripts/patch_native_elf.py")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SOLAR_OS_NATIVE_ELF_PATCH}")
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${SOLAR_OS_NATIVE_ELF_PATCH}"
+        "${SOLAR_OS_PROJECT_DIR}/managed_components/espressif__elf_loader"
+        RESULT_VARIABLE SOLAR_OS_NATIVE_ELF_PATCH_RESULT)
+    if(NOT SOLAR_OS_NATIVE_ELF_PATCH_RESULT EQUAL 0)
+        message(FATAL_ERROR "SolarOS native ELF overlay failed")
+    endif()
+endif()
+
 if(SOLAR_OS_PACKAGE_SERVICE_INFERENCE)
     set(SOLAR_OS_ESPDL_DIR "${SOLAR_OS_PROJECT_DIR}/managed_components/espressif__esp-dl")
     set(SOLAR_OS_ESPDL_PATCH "${SOLAR_OS_PROJECT_DIR}/scripts/patch_espdl.py")
@@ -485,6 +496,9 @@ set(SOLAR_OS_FLAVOR_STAMP
 )
 
 set(SOLAR_OS_EXTRA_INCLUDE_DIRS)
+if(SOLAR_OS_PACKAGE_SERVICE_DISPLAY_LINK)
+    list(APPEND SOLAR_OS_EXTRA_INCLUDE_DIRS "../protocol/display_link/include")
+endif()
 if(SOLAR_OS_PACKAGE_SERVICE_MESHCORE)
     list(APPEND SOLAR_OS_EXTRA_INCLUDE_DIRS
         "../src/vendor/meshcore"
@@ -537,6 +551,13 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     SOLAR_OS_VERSION="${SOLAR_OS_VERSION}"
     SOLAR_OS_FLAVOR_STAMP="${SOLAR_OS_FLAVOR_STAMP}"
 )
+if(SOLAR_OS_MODULE_REPOSITORY_URL)
+    if(NOT SOLAR_OS_MODULE_REPOSITORY_URL MATCHES "^https?://[A-Za-z0-9:/._%~-]+$")
+        message(FATAL_ERROR "Invalid SolarOS module repository URL")
+    endif()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        SOLAR_OS_MODULE_REPOSITORY_URL="${SOLAR_OS_MODULE_REPOSITORY_URL}")
+endif()
 
 if(SOLAR_OS_BOARD_GENERATED)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE

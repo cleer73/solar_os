@@ -222,6 +222,14 @@ Notes:
   the Link error.
 - This is the clean base for USB-to-UART converter style workflows.
 
+## irc-sync
+
+Maintains enabled native IRC instances over verified TLS. Each instance has
+independent reconnect and channel membership state. Configure profiles with
+`irc`, then run `job start irc-sync`. The job accepts no arguments.
+Use `irc status` for each connection and `job stop irc-sync` to stop all IRC
+connections. Chat and retained messages remain available. See [Native IRC](messaging.irc.md).
+
 ## gateway-sync
 
 Background synchronizer for the gateway messaging provider. Start and stop it
@@ -1235,6 +1243,63 @@ release events. Recognized characters are published by a virtual keyboard
 source named `graffiti` and therefore go to the current input focus. `job
 status graffiti` reports recognized, rejected, and dropped stroke counts plus
 the current case state.
+
+## pointer-arrows
+
+Consume one named pointer source and hold arrow keys while it moves:
+
+```sh
+job start pointer-arrows source=trackball0
+job status pointer-arrows
+job stop pointer-arrows
+```
+
+Set `min-vector=1..65535` to require a minimum net vector length in each
+evaluation window. The default is `2`; larger values reduce sensitivity.
+For example, restart T-Deck navigation with:
+
+```sh
+job stop pointer-arrows
+job start pointer-arrows source=trackball0 min-vector=4
+```
+
+Length is `sqrt(dx*dx + dy*dy)` in the source's movement units. For `trackball0`,
+one interrupt edge contributes one unit on its axis. Movement below the minimum
+releases a held arrow and is discarded at the end of the window; it does not
+accumulate across windows. The option also applies to the last partial window
+when movement stops or a touch is released.
+
+The job exclusively captures that source's pointer events, including contact
+and button boundaries. They are withheld from foreground pointer consumers and
+the pointer filter while the job runs. Other pointer sources remain available.
+Pointer buttons do not produce keyboard keys. Release any held button or touch
+before starting the job.
+
+Movement is evaluated in fixed 80 ms windows, starting with the first movement
+event. Each window that meets the minimum selects the dominant net direction
+and presses that arrow. Continued movement in the same direction keeps the key
+held, using the normal `setterm keyrate` repeat settings. A direction or modifier
+change releases the old key before pressing the new one. Opposite movement
+cancels within a window;
+equal diagonals use the most recently moved axis. A zero net vector releases
+the arrow. Trackball windows retain the modifiers from their last interrupt
+edge. Other pointer sources use keyboard modifiers when samples are processed.
+
+After 80 ms without a movement event, the held key is released. A short roll
+that meets the minimum produces a press and release. Touch release ends an
+absolute-pointer gesture immediately. Stopping the job, source loss, or a
+capture reset also releases held keys and cancels repeat.
+
+Relative pointers supply deltas directly. Absolute pointers are measured from
+each contact's initial position; a new contact starts a new baseline. Only one
+contact is tracked at a time. Job status reports the captured source, minimum
+vector length, direction evaluations that meet it, capture resets, and
+evaluation and inactivity intervals.
+
+Stopping releases capture and discards unevaluated movement. If stopped during a
+held button or contact, pointer delivery resumes after its release. Source
+closure or loss of readiness stops the job and releases its resources. T-Deck
+starts this job for `trackball0` before the shell and startup script run.
 
 ## gpio-keys
 

@@ -153,6 +153,64 @@ static void io_write_row(size_t row, const char *text, uint8_t attr)
     solar_os_tui_write_cell(&io.tui, row, 0, cols, text, attr);
 }
 
+typedef struct {
+    const char *heading;
+    size_t minimum;
+    size_t preferred;
+} io_column_t;
+
+static const io_column_t pin_columns[] = {
+    {"PIN", 6U, 6U}, {"ASSIGNMENT", 10U, 22U}, {"OWNER", 8U, 18U},
+    {"POLICY", 6U, 12U}, {"ROLE", 8U, 80U},
+};
+static const io_column_t bus_columns[] = {
+    {"NAME", 5U, 10U}, {"TYPE", 4U, 7U}, {"STATE", 8U, 8U},
+    {"ROUTING", 12U, 80U}, {"LEASES", 6U, 6U},
+};
+static const io_column_t claim_columns[] = {
+    {"RESOURCE", 8U, 20U}, {"OWNER", 8U, 24U}, {"LABEL", 8U, 80U},
+};
+
+/* Headers and data use identical cell boundaries. Keep the leading columns
+ * useful on small screens, and add optional columns only when they fit. */
+static void io_write_columns(size_t row, const io_column_t *columns,
+                              const char *const *values, size_t count, uint8_t attr)
+{
+    const size_t cols = solar_os_tui_cols(&io.tui);
+    size_t widths[5] = {0};
+    if (cols == 0U || count > sizeof(widths) / sizeof(widths[0])) {
+        return;
+    }
+    const size_t margin = cols >= 16U ? 1U : 0U;
+    size_t remaining = cols - margin;
+    size_t visible = 0U;
+    for (size_t i = 0U; i < count; i++) {
+        const size_t gap = i > 0U ? 1U : 0U;
+        if (remaining <= gap ||
+            (i > 0U && remaining - gap < columns[i].minimum)) {
+            break;
+        }
+        const size_t available = remaining - gap;
+        widths[i] = columns[i].minimum < available ? columns[i].minimum : available;
+        remaining -= gap + widths[i];
+        visible++;
+    }
+    for (size_t i = 0U; i < visible && remaining > 0U; i++) {
+        const size_t extra = columns[i].preferred - widths[i];
+        const size_t added = extra < remaining ? extra : remaining;
+        widths[i] += added;
+        remaining -= added;
+    }
+    io_write_row(row, "", attr);
+    size_t col = margin;
+    for (size_t i = 0U; i < visible; i++) {
+        solar_os_tui_write_cell(&io.tui, row, col, widths[i],
+                                values != NULL ? values[i] : columns[i].heading,
+                                attr);
+        col += widths[i] + 1U;
+    }
+}
+
 static size_t io_expansion_pin_count(void)
 {
     size_t count = 0;
@@ -469,6 +527,12 @@ static void io_render_title(void)
              sizeof(title),
              " Expansion I/O  [%s]  Layout | Pins | Buses | Claims",
              io_view_name(io.view));
+    if (strlen(title) > cols) {
+        snprintf(title, sizeof(title), " I/O [%s]  Tab views", io_view_name(io.view));
+        if (strlen(title) > cols) {
+            snprintf(title, sizeof(title), " I/O [%s]", io_view_name(io.view));
+        }
+    }
     solar_os_tui_fill(&io.tui,
                       0,
                       0,
@@ -577,7 +641,8 @@ static void io_render_layout(void)
     solar_os_connector_layout_info_t layout;
     solar_os_connector_pin_info_t selected;
     if (!solar_os_connector_layout_get_info(&layout) ||
-        !io_selected_connector_pin(&selected)) {
+        !io_selected_connector_pin(&selected) ||
+        cols == 0U || layout.columns == 0U || layout.rows == 0U) {
         io_write_row(2, " No physical connector map for this board.", SOLAR_OS_TUI_ATTR_NORMAL);
         return;
     }
@@ -590,7 +655,8 @@ static void io_render_layout(void)
     const size_t grid_rows = content_rows > 1U ? content_rows - 1U : 1U;
     const size_t visible_rows = layout.rows < grid_rows ? layout.rows : grid_rows;
     const size_t row_start = io_scroll_start(selected.row, layout.rows, visible_rows);
-    size_t visible_columns = cols / 8U;
+    const size_t minimum_cell_width = layout.columns <= 2U ? 18U : 8U;
+    size_t visible_columns = cols / minimum_cell_width;
     if (visible_columns == 0) {
         visible_columns = 1;
     }
@@ -655,45 +721,30 @@ static void io_render_layout(void)
 
 static void io_render_pins(void)
 {
-    const size_t cols = solar_os_tui_cols(&io.tui);
     const size_t count = io_expansion_pin_count();
     const size_t visible = io_content_rows();
     const size_t selected = io.selected[IO_VIEW_PINS];
     const size_t start = io_scroll_start(selected, count, visible);
 
-    io_write_row(1, " PIN    ASSIGNMENT             OWNER              POLICY / ROLE", SOLAR_OS_TUI_ATTR_BOLD);
+    const size_t column_count = sizeof(pin_columns) / sizeof(pin_columns[0]);
+    io_write_columns(1U, pin_columns, NULL, column_count, SOLAR_OS_TUI_ATTR_BOLD);
     for (size_t row = 0; row < visible; row++) {
         const size_t index = start + row;
-        char line[192] = "";
+        const uint8_t attr = index == selected ? SOLAR_OS_TUI_ATTR_INVERSE : SOLAR_OS_TUI_ATTR_NORMAL;
+        io_write_row(2U + row, "", attr);
         if (index < count) {
             solar_os_pin_info_t pin;
+            char number[16];
             char assignment[48];
             char owner[32];
             if (io_expansion_pin_get(index, &pin)) {
                 io_pin_summary(&pin, assignment, sizeof(assignment), owner, sizeof(owner));
-                if (cols >= 72U) {
-                    snprintf(line,
-                             sizeof(line),
-                             " GPIO%-2d %-22s %-18s %s / %s",
-                             pin.pin,
-                             assignment,
-                             owner,
-                             solar_os_pin_policy_name(pin.policy),
-                             pin.role != NULL ? pin.role : "");
-                } else {
-                    snprintf(line,
-                             sizeof(line),
-                             " GPIO%-2d %-16s %-15s %s",
-                             pin.pin,
-                             assignment,
-                             owner,
-                             solar_os_pin_policy_name(pin.policy));
-                }
+                snprintf(number, sizeof(number), "GPIO%d", pin.pin);
+                const char *values[] = {number, assignment, owner,
+                    solar_os_pin_policy_name(pin.policy), pin.role != NULL ? pin.role : ""};
+                io_write_columns(2U + row, pin_columns, values, column_count, attr);
             }
         }
-        io_write_row(2U + row,
-                     line,
-                     index == selected ? SOLAR_OS_TUI_ATTR_INVERSE : SOLAR_OS_TUI_ATTR_NORMAL);
     }
 }
 
@@ -757,43 +808,28 @@ static void io_bus_description(const solar_os_bus_info_t *bus, char *buffer, siz
 
 static void io_render_buses(void)
 {
-    const size_t cols = solar_os_tui_cols(&io.tui);
     const size_t count = solar_os_bus_count();
     const size_t visible = io_content_rows();
     const size_t selected = io.selected[IO_VIEW_BUSES];
     const size_t start = io_scroll_start(selected, count, visible);
 
-    io_write_row(1, " NAME       TYPE     ROUTING                         STATE", SOLAR_OS_TUI_ATTR_BOLD);
+    const size_t column_count = sizeof(bus_columns) / sizeof(bus_columns[0]);
+    io_write_columns(1U, bus_columns, NULL, column_count, SOLAR_OS_TUI_ATTR_BOLD);
     for (size_t row = 0; row < visible; row++) {
         const size_t index = start + row;
-        char line[192] = "";
+        const uint8_t attr = index == selected ? SOLAR_OS_TUI_ATTR_INVERSE : SOLAR_OS_TUI_ATTR_NORMAL;
+        io_write_row(2U + row, "", attr);
         solar_os_bus_info_t bus;
         if (index < count && solar_os_bus_get(index, &bus)) {
             char routing[80];
+            char leases[16];
             io_bus_description(&bus, routing, sizeof(routing));
             const char *state = !bus.attached ? "detached" : bus.ready ? "ready" : "attached";
-            if (cols >= 72U) {
-                snprintf(line,
-                         sizeof(line),
-                         " %-10s %-8s %-31s %s L%u",
-                         bus.name,
-                         solar_os_bus_protocol_name(bus.protocol),
-                         routing,
-                         state,
-                         (unsigned)bus.lease_count);
-            } else {
-                snprintf(line,
-                         sizeof(line),
-                         " %-8s %-5s %-22s %s",
-                         bus.name,
-                         solar_os_bus_protocol_name(bus.protocol),
-                         routing,
-                         state);
-            }
+            snprintf(leases, sizeof(leases), "%u", (unsigned)bus.lease_count);
+            const char *values[] = {bus.name, solar_os_bus_protocol_name(bus.protocol),
+                state, routing, leases};
+            io_write_columns(2U + row, bus_columns, values, column_count, attr);
         }
-        io_write_row(2U + row,
-                     line,
-                     index == selected ? SOLAR_OS_TUI_ATTR_INVERSE : SOLAR_OS_TUI_ATTR_NORMAL);
     }
 }
 
@@ -804,10 +840,12 @@ static void io_render_claims(void)
     const size_t selected = io.selected[IO_VIEW_CLAIMS];
     const size_t start = io_scroll_start(selected, count, visible);
 
-    io_write_row(1, " RESOURCE             OWNER                    LABEL", SOLAR_OS_TUI_ATTR_BOLD);
+    const size_t column_count = sizeof(claim_columns) / sizeof(claim_columns[0]);
+    io_write_columns(1U, claim_columns, NULL, column_count, SOLAR_OS_TUI_ATTR_BOLD);
     for (size_t row = 0; row < visible; row++) {
         const size_t index = start + row;
-        char line[192] = "";
+        const uint8_t attr = index == selected ? SOLAR_OS_TUI_ATTR_INVERSE : SOLAR_OS_TUI_ATTR_NORMAL;
+        io_write_row(2U + row, "", attr);
         solar_os_resource_claim_t claim;
         if (index < count && solar_os_resource_get_claim(index, &claim)) {
             char resource[48];
@@ -825,16 +863,9 @@ static void io_render_claims(void)
                          solar_os_resource_kind_name(claim.kind),
                          claim.primary);
             }
-            snprintf(line,
-                     sizeof(line),
-                     " %-20s %-24s %s",
-                     resource,
-                     claim.owner,
-                     claim.label);
+            const char *values[] = {resource, claim.owner, claim.label};
+            io_write_columns(2U + row, claim_columns, values, column_count, attr);
         }
-        io_write_row(2U + row,
-                     line,
-                     index == selected ? SOLAR_OS_TUI_ATTR_INVERSE : SOLAR_OS_TUI_ATTR_NORMAL);
     }
 }
 
@@ -868,6 +899,7 @@ static void io_render_browse(void)
         io_write_row(rows - 2U, io.message, SOLAR_OS_TUI_ATTR_NORMAL);
         solar_os_tui_draw_help(
             &io.tui,
+            cols < 72U ? "Tab Enter:act Q:exit" :
             io.view == IO_VIEW_LAYOUT
                 ? " Tab views  arrows move  Enter actions  N new bus  R refresh  Q exit"
                 : " Tab views  arrows select  Enter actions  N new bus  R refresh  Q exit");
@@ -1222,6 +1254,7 @@ static void io_render_actions(void)
     }
     if (rows > 0) {
         solar_os_tui_draw_help(&io.tui,
+                               cols < 40U ? "Arrows Enter:OK Esc" :
                                " arrows select  Enter apply  Esc back");
     }
     solar_os_tui_refresh(&io.tui);
@@ -1394,6 +1427,7 @@ static void io_render_protocols(void)
     }
     if (rows > 0) {
         solar_os_tui_draw_help(&io.tui,
+                               cols < 48U ? "Arrows Enter:OK Esc" :
                                " arrows select  Enter continue  Esc back");
     }
     solar_os_tui_refresh(&io.tui);
@@ -1521,6 +1555,10 @@ static void io_render_form(void)
     const size_t content_rows = solar_os_tui_screen_content_rows(&io.tui, 1U, 2U);
     const size_t visible = content_rows > 0U ? content_rows : 1U;
     const size_t start = io_scroll_start(io.form.selected, count, visible);
+    const size_t label_width = cols >= 40U ? 10U : cols >= 24U ? 8U :
+        cols >= 16U ? 6U : cols / 3U;
+    const size_t value_width = cols > label_width + 6U ? cols - label_width - 6U : 0U;
+    size_t name_cursor = 0U;
     char title[64];
     snprintf(title, sizeof(title), " Create %s bus", solar_os_bus_protocol_name(io.form.protocol));
     solar_os_tui_clear(&io.tui);
@@ -1532,8 +1570,19 @@ static void io_render_form(void)
             char label[24];
             char value[64];
             io_form_field(index, label, sizeof(label), value, sizeof(value));
-            if (value[0] != '\0') {
-                snprintf(line, sizeof(line), " %-10s [ %s ]", label, value);
+            if (value[0] != '\0' || index == 0U) {
+                const size_t value_len = strlen(value);
+                const char *shown = value;
+                if (index == 0U && io.form.editing_name && value_len > value_width) {
+                    shown += value_len - value_width;
+                }
+                snprintf(line, sizeof(line), " %-*.*s [ %.*s ]",
+                         (int)label_width, (int)label_width, label,
+                         (int)value_width, shown);
+                if (index == 0U) {
+                    name_cursor = label_width + 4U +
+                        (value_len < value_width ? value_len : value_width);
+                }
             } else {
                 snprintf(line, sizeof(line), " [ %s ]", label);
             }
@@ -1551,8 +1600,13 @@ static void io_render_form(void)
         solar_os_tui_draw_help(
             &io.tui,
                        io.form.editing_name
-                           ? " type name  Enter accept  Esc cancel"
-                           : " arrows fields/values  Enter edit/create  Esc back");
+                           ? (cols < 40U ? "Type Enter:OK Esc" :
+                              " type name  Enter accept  Esc cancel")
+                           : (cols < 56U ? "Arrows Enter:OK Esc" :
+                              " arrows fields/values  Enter edit/create  Esc back"));
+    }
+    if (io.form.editing_name && name_cursor < cols) {
+        solar_os_tui_move(&io.tui, 1U, name_cursor);
     }
     solar_os_tui_set_cursor_visible(&io.tui, io.form.editing_name);
     solar_os_tui_refresh(&io.tui);
@@ -1845,6 +1899,7 @@ static void io_render(void)
         }
         if (rows > 0U) {
             solar_os_tui_draw_help(&io.tui,
+                                   cols < 40U ? "Arrows Enter:OK Esc" :
                                    " arrows select  Enter apply  Esc back");
         }
         solar_os_tui_refresh(&io.tui);

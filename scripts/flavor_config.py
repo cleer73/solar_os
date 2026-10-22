@@ -39,7 +39,7 @@ from solaros_update_layout import UpdateLayout as LayoutContext, layouts_for_fla
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_INPUT = ROOT / "flavors" / "core.toml"
+DEFAULT_INPUT = ROOT / "flavors" / "writerdeck.toml"
 DEFAULT_OUTPUT = ROOT / "flavors" / "custom.toml"
 BUILD_ROOT = ROOT / ".pio" / "build"
 MANIFEST_DIR = ROOT / "boards" / "manifests"

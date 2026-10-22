@@ -25,15 +25,106 @@ Zero is the invalid value for every identifier. Public snapshot and visitor
 APIs copy records while holding the owning service lock, release the lock, and
 only then invoke callers or perform I/O.
 
-## Providers
+## Provider classes and instances
 
-The assigned provider identifiers are:
+A provider class supplies protocol capabilities and operations. Independent
+instances carry stable numeric IDs, names, configuration, status, and runtime
+contexts. Classes and instances register at runtime; enumeration follows the
+registry rather than protocol enums or fixed provider arrays. Several IRC and
+Gateway instances can run simultaneously, with independent transport state,
+room membership, queues, and reconnect handling. Link projections bind separate
+instances to named Link transports, each with its own send and acknowledgement
+tracker. MeshCore instances carry separate local-radio or BLE-companion runtime
+contexts. Each MeshCore job maintains all enabled bindings of its transport type;
+both jobs can run concurrently. Duplicate physical-radio or companion bindings
+are rejected. Hardware transport workers retain their resource ownership rules.
 
-| ID | Name | Purpose |
+The original IDs retain their meaning as default instances:
+
+| Instance ID | Name | Purpose |
 | --- | --- | --- |
 | 1 | `gateway` | Existing SolarOS gateway Chat protocol |
 | 2 | `meshcore` | MeshCore companion/chat provider |
 | 3 | `link` | SolarOS Link text, direct, and broadcast projection |
+
+Additional instance IDs are allocated from 4 through 255, preserving the
+byte-sized identity field in existing Contacts and Credentials files. This
+identity-space bound is independent of the number of protocol classes;
+runtime memory admission still limits active connections. Conversation keys,
+contact endpoints, events, and outbound requests reference an instance, so
+matching channel names or nicknames on different connections remain separate.
+The existing history record layout remains compatible.
+
+Classes expose optional create, configure, join, leave, direct-open, connect, and target
+normalization operations. Messaging dispatches them outside its global lock.
+Group backends can resolve a subscription and return its canonical conversation
+through `join_open`, so membership does not allocate a placeholder room.
+Chat and scripts consume common membership states: none, left, pending, joined,
+and failed with a bounded reason. Class descriptors have static lifetime;
+instance contexts are leased until each operation finishes. Removal is refused
+while an operation is in progress. A class's `remove_prepare` excludes workers
+until `remove_finish` commits destruction or resumes them after a storage error.
+Registry labels remain stable and instance IDs are never reused.
+
+`solar_os_messaging_instance_remove` requires lifecycle hooks before removing a
+bound instance, including a default instance. It replaces the profile with a checked zero-payload record,
+then destroys its runtime context, cancels queued work, and deletes its retained
+messages, conversations, and Inbox projections. A reset after committing the
+record completes the history purge during Messaging initialization. The record retains only ID, name, and class; no
+connection settings or credentials remain. A committed record takes precedence
+over a stale backup during recovery. Failure before committing the record leaves
+the original profile and transport intact. File operations never hold the
+Messaging state lock. IRC also excludes configuration edits and its worker
+during the replacement, then frees the retired instance's PSRAM context.
+
+Saved connection profiles use checked, versioned files in `.chat/profiles` on
+mounted storage. The selected volume remains fixed during a boot. Temporary
+files are verified before replacement and an interrupted replacement can
+recover its backup. Gateway configuration migrates from NVS only after a
+verified file round trip; legacy keys remain intact when saving fails. IRC
+does not add NVS records. Its authentication settings are stored in its profile
+and excluded from status and scripting enumeration.
+
+Shared credentials, user radio profiles, and configured ESP-NOW peers use checked
+files in `.settings` on mounted storage. Each store pins its selected volume for
+the boot and recovers an interrupted replacement from a valid backup. Legacy NVS
+blobs remain until a valid file has been committed. New settings writes use files;
+there is no NVS fallback for mutations. Removing an instance also deletes its
+shared credential records, and boot recovery repeats that purge for retired IDs.
+
+`messages classes` lists registered classes; `messages instances` lists active
+instances. `messages add gateway NAME URL [TOKEN]` creates a disabled Gateway
+instance and `messages configure NAME URL [TOKEN]` changes its connection.
+Use `messages connect NAME`, `messages join NAME ROOM`, and `messages remove NAME`
+for its lifecycle. Chat exposes the same settings through `/add gateway NAME URL
+[TOKEN]` and `/configure NAME URL [TOKEN]`. Configuration commands are omitted
+from shell and Chat input history. `gateway` commands address the default Gateway.
+`job start gateway-sync` maintains all enabled Gateway instances.
+
+All installed backends expose setup through the same class registry. IRC accepts
+`HOST PORT NICK`, MeshCore accepts `radio RADIO PROFILE` or `ble ADDRESS TYPE [PIN]`,
+and Link accepts `TRANSPORT`. The `solaros.messages` Python and Lua submodules
+expose `classes()`, `add(class, name, settings)`, and `configure(instance, settings)`;
+settings are bounded lists/tables in shell argument order. Enumeration excludes
+authentication material.
+
+`messages add link NAME TRANSPORT` binds a Chat instance to a named Link
+transport; two Chat instances cannot bind the same transport. Its transport job
+must run with `chat=on`. `messages connect NAME` enables the projection and
+`messages join NAME broadcast` selects its broadcast conversation. Direct
+targets use hexadecimal device IDs with `messages query NAME DEVICE_ID`.
+`messages configure NAME TRANSPORT` changes the binding. Removal detaches only
+that Chat projection and deletes its history; a shared transport and its byte
+streams continue running. Legacy `chat=on` starts reuse the saved projection for
+that transport, or allocate one when no binding exists. The first legacy
+projection uses default ID 3 when available. Bindings and enabled state are
+saved in mounted storage.
+
+Native IRC provides live TLS sessions with optional SASL, channels, private
+messages, reconnect/rejoin, bounded buffers, and paced sends. It requests no
+history or echo-message capabilities. A completed socket write becomes `sent`,
+without a recipient-delivery claim. Interrupted sends fail without automatic
+replay. See `manual/messaging.irc.md` for setup and controls.
 
 A provider owns transport configuration, connection state, wire identifiers,
 and provider-specific metadata. Generic services own contacts, trust,
@@ -84,9 +175,8 @@ provider, kind, and label. Secret reads name one exact record and copy into a
 caller-provided buffer.
 
 Secret bytes are never published to Inbox, logs, autocomplete, native agent
-tools, Python, or Lua. Temporary secret buffers must be wiped. SolarOS
-currently stores NVS without flash encryption; physical flash access can
-therefore recover these records.
+tools, Python, or Lua. Temporary secret buffers must be wiped. The mounted
+credential file is unencrypted; access to its volume can recover these records.
 
 SSH keys, native-agent API keys, and existing tokens are not migrated into this
 service in this release.

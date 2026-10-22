@@ -1,15 +1,19 @@
 #include "solar_os_display.h"
+#include "solar_os_backlight.h"
 #include "solar_os_splash.h"
 
 #include <string.h>
 
 #include "esp_check.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "nvs.h"
 #include "solar_os_board_caps.h"
 #include "solar_os_gfx_internal.h"
 #include "solar_os_memory.h"
+#include "solar_os_log.h"
 #include "solar_os_terminal_preferences.h"
 
 #if SOLAR_OS_BOARD_HAS_DISPLAY
@@ -48,6 +52,7 @@ typedef struct {
     bool overlay_active;
     bool overlay_pending;
     bool power_state_active;
+    bool relax_active;
     uint8_t *overlay_buffer;
     uint8_t overlay_tile_x;
     uint8_t overlay_tile_y;
@@ -93,7 +98,7 @@ static bool display_overlay_active(size_t slot_index, uint32_t generation)
     portENTER_CRITICAL(&display_targets_lock);
     const display_target_slot_t *slot = &display_targets[slot_index];
     if (slot->active && slot->generation == generation) {
-        active = slot->overlay_active || slot->power_state_active;
+        active = slot->overlay_active || slot->power_state_active || slot->relax_active;
     }
     portEXIT_CRITICAL(&display_targets_lock);
     return active;
@@ -101,7 +106,7 @@ static bool display_overlay_active(size_t slot_index, uint32_t generation)
 
 static void display_draw_overlay_locked(const display_target_slot_t *slot)
 {
-    if (slot == NULL || slot->power_state_active || !slot->overlay_active || slot->overlay_buffer == NULL ||
+    if (slot == NULL || slot->power_state_active || slot->relax_active || !slot->overlay_active || slot->overlay_buffer == NULL ||
         slot->target.u8g2 == NULL || slot->overlay_tile_width == 0U ||
         slot->overlay_tile_height == 0U) {
         return;
@@ -262,6 +267,13 @@ static void display_load_colors(void)
 static solar_os_board_display_t *display_handle;
 static uint8_t display_brightness = DISPLAY_DEFAULT_BRIGHTNESS;
 static bool display_primary_suspended;
+
+static esp_err_t display_board_relax(void *context,
+                                      solar_os_display_relax_phase_t phase)
+{
+    solar_os_board_display_t *display = context;
+    return display->ops->relax(display, phase);
+}
 
 static esp_err_t display_board_present_surface(
     void *context,
@@ -471,6 +483,10 @@ static esp_err_t display_register_board_target(solar_os_board_display_t *display
     target.max_stream_pixels_per_second =
         solar_os_board_display_max_stream_pixels_per_second(display);
     target.u8g2 = solar_os_board_display_u8g2(display);
+    if (display->ops->relax != NULL) {
+        target.relax = display_board_relax;
+        target.relax_context = display;
+    }
     if (target.surface_formats != 0U) {
         target.surface_context = display;
         target.present_surface = display_board_present_surface;
@@ -520,6 +536,7 @@ esp_err_t solar_os_display_init(solar_os_board_display_t *display)
     if (err == ESP_ERR_NOT_SUPPORTED) {
         return ESP_OK;
     }
+    if (err == ESP_OK) (void)solar_os_backlight_display_changed(display_brightness);
     return err;
 #endif
 }
@@ -894,6 +911,104 @@ esp_err_t solar_os_display_release(const char *name, const char *owner)
     return ESP_OK;
 }
 
+static bool display_relax_cancelled(size_t index, uint32_t generation,
+                                     bool (*should_cancel)(void *), void *user)
+{
+    portENTER_CRITICAL(&display_targets_lock);
+    const display_target_slot_t *slot = &display_targets[index];
+    bool cancelled = slot->generation != generation || slot->power_state_active;
+#if SOLAR_OS_BOARD_HAS_DISPLAY
+    cancelled |= slot->board_display == display_handle && display_primary_suspended;
+#endif
+    portEXIT_CRITICAL(&display_targets_lock);
+    return cancelled || (should_cancel != NULL && should_cancel(user));
+}
+
+static bool display_relax_hold(size_t index, uint32_t generation,
+                                bool (*should_cancel)(void *), void *user,
+                                int64_t deadline)
+{
+    const int64_t hold_until = esp_timer_get_time() + 1000000;
+    while (esp_timer_get_time() < hold_until && esp_timer_get_time() < deadline) {
+        if (display_relax_cancelled(index, generation, should_cancel, user)) return false;
+        TickType_t ticks = pdMS_TO_TICKS(50);
+        vTaskDelay(ticks != 0 ? ticks : 1);
+    }
+    return !display_relax_cancelled(index, generation, should_cancel, user);
+}
+
+esp_err_t solar_os_display_relax(const char *name, const char *owner, unsigned seconds,
+                                 bool (*should_cancel)(void *), void *user,
+                                 solar_os_display_relax_result_t *result,
+                                 char *busy_owner, size_t busy_owner_len)
+{
+    if (result == NULL || seconds < 1 || seconds > 86400) return ESP_ERR_INVALID_ARG;
+    *result = (solar_os_display_relax_result_t){0};
+    esp_err_t err = solar_os_display_claim(name, owner, busy_owner, busy_owner_len);
+    if (err != ESP_OK) return err;
+
+    portENTER_CRITICAL(&display_targets_lock);
+    const int found = display_find_slot_locked(name);
+    display_target_slot_t *slot = found >= 0 ? &display_targets[found] : NULL;
+    if (slot == NULL || slot->power_state_active || slot->overlay_active || slot->relax_active) {
+        err = ESP_ERR_INVALID_STATE;
+    } else if (slot->target.relax == NULL || slot->target.relax_context == NULL) {
+        err = ESP_ERR_NOT_SUPPORTED;
+    }
+    solar_os_display_target_t target = {0};
+    SemaphoreHandle_t mutex = NULL;
+    uint32_t generation = 0;
+    if (err == ESP_OK) {
+        target = slot->target;
+        mutex = slot->present_mutex;
+        generation = slot->generation;
+        slot->relax_active = true;
+        slot->refs++;
+    }
+    portEXIT_CRITICAL(&display_targets_lock);
+    if (err != ESP_OK) {
+        (void)solar_os_display_release(name, owner);
+        return err;
+    }
+
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    err = target.relax(target.relax_context, SOLAR_OS_DISPLAY_RELAX_BEGIN);
+    if (err == ESP_OK) {
+        const int64_t deadline = esp_timer_get_time() + (int64_t)seconds * 1000000;
+        while (esp_timer_get_time() < deadline) {
+            if (display_relax_cancelled((size_t)found, generation, should_cancel, user)) {
+                result->cancelled = true;
+                break;
+            }
+            err = target.relax(target.relax_context, SOLAR_OS_DISPLAY_RELAX_BLACK);
+            if (err != ESP_OK) break;
+            if (!display_relax_hold((size_t)found, generation, should_cancel, user, deadline)) {
+                result->cancelled = true;
+                break;
+            }
+            /* Complete the black/white pair even if the requested time ends
+             * after black; only cancellation or a hardware error interrupts it.
+             */
+            err = target.relax(target.relax_context, SOLAR_OS_DISPLAY_RELAX_WHITE);
+            if (err != ESP_OK) break;
+            ++result->cycles;
+            if (!display_relax_hold((size_t)found, generation, should_cancel, user, deadline)) {
+                result->cancelled = true;
+                break;
+            }
+        }
+        const esp_err_t restore = target.relax(target.relax_context, SOLAR_OS_DISPLAY_RELAX_END);
+        if (restore != ESP_OK) err = restore;
+    }
+    portENTER_CRITICAL(&display_targets_lock);
+    slot->relax_active = false;
+    portEXIT_CRITICAL(&display_targets_lock);
+    xSemaphoreGive(mutex);
+    display_release_slot_ref((size_t)found, generation);
+    (void)solar_os_display_release(name, owner);
+    return err;
+}
+
 bool solar_os_display_brightness_supported(void)
 {
 #if !SOLAR_OS_BOARD_HAS_DISPLAY || !SOLAR_OS_BOARD_HAS_DISPLAY_BRIGHTNESS
@@ -944,6 +1059,9 @@ esp_err_t solar_os_display_set_brightness(uint8_t percent)
     }
 
     display_brightness = percent;
+    const esp_err_t backlight_err = solar_os_backlight_display_changed(percent);
+    if (backlight_err != ESP_OK)
+        SOLAR_OS_LOGW("display", "follow backlight failed: %s", esp_err_to_name(backlight_err));
     ret = display_save_brightness(percent);
     return ret;
 #endif
@@ -1080,6 +1198,8 @@ void solar_os_display_clear_power_state(void)
 
 esp_err_t solar_os_display_shutdown(void)
 {
+    const esp_err_t backlight_err = solar_os_backlight_set_suspended(true);
+    if (backlight_err != ESP_OK) return backlight_err;
     const esp_err_t err = solar_os_display_suspend_primary();
     if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED &&
         err != ESP_ERR_INVALID_STATE) return err;
@@ -1097,6 +1217,10 @@ esp_err_t solar_os_display_shutdown(void)
             portEXIT_CRITICAL(&display_targets_lock);
             continue;
         }
+        /* Direct shutdown can bypass the power-state splash. Signal an
+         * auxiliary recovery before waiting for its presentation mutex.
+         */
+        if (slot->relax_active) slot->power_state_active = true;
         u8g2_t *u8g2 = slot->target.u8g2;
         const uint32_t generation = slot->generation;
         SemaphoreHandle_t mutex = slot->present_mutex;
@@ -1121,12 +1245,18 @@ esp_err_t solar_os_display_suspend_primary(void)
     portENTER_CRITICAL(&display_targets_lock);
     const bool already_suspended = display_primary_suspended;
     display_primary_suspended = true;
+    const int found = display_find_slot_locked(DISPLAY_BOARD_TARGET_NAME);
+    SemaphoreHandle_t relax_mutex = found >= 0 && display_targets[found].relax_active ?
+        display_targets[found].present_mutex : NULL;
     portEXIT_CRITICAL(&display_targets_lock);
     if (already_suspended) {
         return ESP_OK;
     }
 
+    /* A relaxation observes the suspend flag and restores before power-down. */
+    if (relax_mutex != NULL) xSemaphoreTake(relax_mutex, portMAX_DELAY);
     const esp_err_t err = solar_os_board_display_set_power_save(display_handle, true);
+    if (relax_mutex != NULL) xSemaphoreGive(relax_mutex);
     if (err != ESP_OK) {
         portENTER_CRITICAL(&display_targets_lock);
         display_primary_suspended = false;
@@ -1296,6 +1426,10 @@ esp_err_t solar_os_display_set_controller_mode(const char *name, const char *mod
     }
     slot_index = (size_t)found_index;
     display_target_slot_t *slot = &display_targets[slot_index];
+    if (slot->relax_active) {
+        portEXIT_CRITICAL(&display_targets_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     controller_context = slot->target.controller_context;
     controller_mode = slot->target.controller_mode;
     set_controller_mode = slot->target.set_controller_mode;
@@ -1491,7 +1625,7 @@ esp_err_t solar_os_display_present_mono_xbm(u8g2_t *u8g2,
         portEXIT_CRITICAL(&display_targets_lock);
         return ESP_OK;
     }
-    if (slot->overlay_active || slot->power_state_active) {
+    if (slot->overlay_active || slot->power_state_active || slot->relax_active) {
         portEXIT_CRITICAL(&display_targets_lock);
         return ESP_OK;
     }
@@ -1568,7 +1702,7 @@ esp_err_t solar_os_display_present_surface(
         return ESP_ERR_INVALID_STATE;
     }
 #endif
-    if (slot->overlay_active || slot->power_state_active) {
+    if (slot->overlay_active || slot->power_state_active || slot->relax_active) {
         portEXIT_CRITICAL(&display_targets_lock);
         return ESP_OK;
     }
@@ -1670,7 +1804,7 @@ esp_err_t solar_os_display_present_frame(
         portEXIT_CRITICAL(&display_targets_lock);
         return ESP_ERR_NOT_SUPPORTED;
     }
-    if (slot->overlay_active || slot->power_state_active) {
+    if (slot->overlay_active || slot->power_state_active || slot->relax_active) {
         portEXIT_CRITICAL(&display_targets_lock);
         return ESP_OK;
     }
@@ -1898,7 +2032,7 @@ void solar_os_display_present(u8g2_t *u8g2, solar_os_display_present_mode_t mode
             display_targets[found_index].board_display == display_handle &&
             display_primary_suspended;
 #endif
-        if (slot->overlay_active || slot->power_state_active) {
+        if (slot->overlay_active || slot->power_state_active || slot->relax_active) {
             portEXIT_CRITICAL(&display_targets_lock);
             return;
         }
@@ -2012,6 +2146,7 @@ void solar_os_display_present_overlay(u8g2_t *u8g2,
         suspended =
             slot->board_display == display_handle && display_primary_suspended;
 #endif
+        suspended |= slot->relax_active;
         if (!suspended) {
             generation = slot->generation;
             present_mutex = slot->present_mutex;
@@ -2033,7 +2168,7 @@ void solar_os_display_present_overlay(u8g2_t *u8g2,
         uint8_t *previous_overlay = NULL;
         portENTER_CRITICAL(&display_targets_lock);
         display_target_slot_t *slot = &display_targets[slot_index];
-        if (slot->active && slot->generation == generation && !slot->power_state_active) {
+        if (slot->active && slot->generation == generation && !slot->power_state_active && !slot->relax_active) {
             previous_overlay = slot->overlay_buffer;
             slot->overlay_buffer = overlay_buffer;
             slot->overlay_tile_x = tile_x;

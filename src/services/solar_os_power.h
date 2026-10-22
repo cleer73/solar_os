@@ -27,6 +27,11 @@ typedef enum {
     SOLAR_OS_POWER_KEY_ACTION_OFF,
     SOLAR_OS_POWER_KEY_ACTION_SLEEP,
     SOLAR_OS_POWER_KEY_ACTION_SUSPEND,
+    SOLAR_OS_POWER_KEY_ACTION_DEEPSLEEP,
+    SOLAR_OS_POWER_KEY_ACTION_BLE_PAIR,
+    SOLAR_OS_POWER_KEY_ACTION_ENTER,
+    SOLAR_OS_POWER_KEY_ACTION_APP_EXIT,
+    SOLAR_OS_POWER_KEY_ACTION_DEFAULT,
 } solar_os_power_key_action_t;
 
 typedef struct {
@@ -34,6 +39,7 @@ typedef struct {
     solar_os_power_profile_t profile;
     solar_os_power_profile_t effective_profile;
     solar_os_power_key_action_t key_action;
+    solar_os_power_key_action_t key_long_action;
     uint32_t idle_sleep_ms;
     uint32_t cpu_min_mhz;
     uint32_t cpu_max_mhz;
@@ -64,6 +70,7 @@ esp_err_t solar_os_power_hold_automatic_light_sleep(uint32_t duration_ms);
 void solar_os_power_poll(void);
 esp_err_t solar_os_power_set_idle_sleep_ms(uint32_t idle_sleep_ms);
 esp_err_t solar_os_power_set_key_action(solar_os_power_key_action_t action);
+esp_err_t solar_os_power_set_key_long_action(solar_os_power_key_action_t action);
 void solar_os_power_note_activity(uint32_t now_ms);
 bool solar_os_power_should_idle_sleep(uint32_t now_ms);
 void solar_os_power_note_sleep_enter(uint32_t now_ms);

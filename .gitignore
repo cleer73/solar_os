@@ -21,6 +21,9 @@ dependencies.lock
 
 scripts/__pycache__/
 tests/__pycache__/
+tests/hil/__pycache__/
+modules/experimental/*/__pycache__/
+modules/espdl/__pycache__/
 tests/host/ble_nimble_test
 tests/host/ble_multi_peer_test
 tests/host/ble_hid_test
@@ -28,6 +31,12 @@ tests/host/cw2017_test
 tests/host/rtc_pcf8563_test
 tests/host/nmea_test
 tests/host/nmea_gnss_test
+tests/host/shell_table_test
+tests/host/io_layout_test
+tests/host/power_key_test
+tests/host/power_key_wired_test
+tests/host/power_key_input_test
+tests/host/power_key_custom_test
 
 /tests/host/epd_uc8179_test
 /tests/host/uc8179_expansion_test
@@ -70,3 +79,9 @@ tests/host/tab5_keyboard_test
 tests/host/apple2_vm_test
 tests/host/apple2_vm_entry_test
 tests/host/indexed_raster_test
+tests/host/irc_protocol_test
+tests/host/gateway_config_test
+tests/host/messaging_service_test
+tests/host/link_messaging_test
+tests/host/chat_settings_test
+tests/host/meshcore_instances_test

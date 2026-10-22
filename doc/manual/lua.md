@@ -45,11 +45,12 @@ Open a topic below, or use its ID with `man` on the device, for example
 | [GPIO and peripherals](lua.hardware.md) | `solaros.gpio`, `solaros.onewire`, `solaros.led`, `solaros.adc`, `solaros.pwm`, `solaros.servo`, `solaros.i2c`, `solaros.spi`, `solaros.uart`, `solaros.neopixel`, `solaros.battery`, `solaros.sensors`, `solaros.gnss`, `solaros.nfc` |
 | [Buses and expansion](lua.buses.md) | `solaros.buses`, `solaros.expansion` |
 | [Audio and control](lua.audio.md) | `solaros.audio`, `solaros.speech`, `solaros.synth`, `solaros.dsp`, `solaros.controls`, `solaros.parameters`, `solaros.midi`, `solaros.osc` |
+| [Emotion engine](emotion.md) | `solaros.emotion` facial animation and reaction sounds |
 | [Input and clipboard](lua.input.md) | `solaros.input`, `solaros.hid`, `solaros.clipboard` |
 | [Apps, jobs, and identity](lua.system.md) | `solaros.identity`, `solaros.jobs`, `solaros.sessions`, `solaros.apps` |
 | [Contacts and messages](lua.messaging.md) | `solaros.contacts`, `solaros.messages` |
 | [Text user interfaces](lua.tui.md) | `solaros.tui` |
-| [Graphics and raster images](lua.gfx.md) | `solaros.gfx`, `solaros.image` |
+| [Graphics, raster images, and DLP connections](lua.gfx.md) | `solaros.gfx`, `solaros.image`, `solaros.dlp` |
 | [Camera, streams, and RTSP](lua.media.md) | `solaros.streams`, `solaros.camera`, `solaros.rtsp` |
 | [Computer vision](vision.md) | `solaros.vision` |
 | [Model inference](inference.md) | `solaros.inference` |

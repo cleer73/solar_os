@@ -9,6 +9,50 @@ packages_any = ["service_contacts", "service_credentials"]
 +++
 # Messaging identities and security
 
+Provider classes describe protocols; named instances describe individual
+connections. Multiple IRC instances can share a class while keeping server
+settings, rooms, nicknames, and message routing separate. Chat groups by
+instance and accepts `chat INSTANCE`, `chat CLASS`, or a conversation ID.
+Use `/join INSTANCE TARGET`, `/query INSTANCE NICK`, and `/leave` in Chat,
+or `messages join|query INSTANCE TARGET` and `messages leave CONVERSATION_ID`
+from the shell. See [Native IRC](messaging.irc.md).
+
+`messages remove INSTANCE` (name or ID), or `/remove INSTANCE` in Chat, removes
+a configurable provider instance. It closes the connection, stops retries,
+cancels queued sends, and removes the saved connection settings and credentials.
+Local messages, conversations, and associated Inbox notifications are deleted.
+Gateway, MeshCore, and Link support removing their default instances too.
+Removal requires writable mounted storage.
+
+`messages classes` lists provider classes; `messages instances` lists configured
+connections. `messages add gateway NAME URL [TOKEN]` creates a Gateway connection.
+`messages add link NAME TRANSPORT` creates a Link projection. Enable it with
+`messages connect NAME`, and run the corresponding transport job. Chat accepts
+the same arguments after `/add`, and changes settings with `/configure NAME ...`.
+MeshCore settings are `messages add meshcore NAME radio RADIO PROFILE` or
+`messages add meshcore NAME ble ADDRESS TYPE [PIN]`; see [MeshCore](meshcore.md).
+
+| Class | Settings after `messages add CLASS NAME` | Worker |
+| --- | --- | --- |
+| `gateway` | `URL [TOKEN]` | `gateway-sync` |
+| `irc` | `HOST PORT NICK` | `irc-sync` |
+| `meshcore` | `radio RADIO PROFILE` or `ble ADDRESS TYPE [PIN]` | `meshcore` or `meshcore-ble` |
+| `link` | `TRANSPORT` | Its `radio-link` or `espnow-link` transport with `chat=on` |
+
+New instances start disabled. Use `messages connect NAME` and start the worker.
+`messages configure NAME SETTINGS...` changes connection settings; IRC also
+accepts `sasl ACCOUNT PASSWORD`, `sasl off`, `pass PASSWORD|off`, and `ca FILE|default`.
+Chat exposes `/classes`, `/instances`, `/add CLASS NAME SETTINGS...`,
+`/configure NAME SETTINGS...`, and `/remove NAME`. Python and Lua expose the same
+class registry and instance operations through `solaros.messages`.
+
+A small record containing only the retired instance ID, name, and class stays
+on mounted storage. Retired IDs are never reused, so contacts and retained
+messages cannot be routed through a different account. Creating the same name
+again creates an independent instance. `messages clear INSTANCE_ID` deletes
+history without removing an active instance. Interrupted removals finish deleting
+history on the next boot.
+
 SolarOS separates messaging identity from transport. A contact is one local
 address-book entry, while each gateway, MeshCore, or SolarOS Link address is an
 endpoint with its own trust and capabilities. Linking endpoints does not copy
@@ -30,9 +74,9 @@ remain usable for the current boot; check `contacts status` for save errors.
 Imports keep existing contacts and report skipped entries when full.
 
 The credential store holds provider keys and tokens. Secret values are not
-shown in Inbox, logs, autocomplete, agent tools, Python, or Lua. NVS is not
-encrypted in the current firmware, so physical flash access can reveal stored
-secrets. SSH keys, agent API keys, and other provider tokens keep their separate
+shown in Inbox, logs, autocomplete, agent tools, Python, or Lua. They are saved in
+`.settings/credentials.bin` on mounted storage. Existing NVS records migrate only
+after a checked file is committed. The file is not encrypted. SSH keys, agent API keys, and other provider tokens keep their separate
 stores.
 
 See `contacts` for the TUI and mutation commands. `chat` is the unified
@@ -70,7 +114,8 @@ messages list CONVERSATION_ID
 messages send CONVERSATION_ID TEXT [--allow-untrusted]
 messages read CONVERSATION_ID
 messages delete MESSAGE_ID
-messages clear gateway|meshcore|link|all
+messages remove INSTANCE
+messages clear INSTANCE|INSTANCE_ID|all
 messages outbox
 messages cancel MESSAGE_ID
 outbox [list]

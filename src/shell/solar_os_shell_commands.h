@@ -32,6 +32,7 @@ void solar_os_shell_cmd_deepsleep(solar_os_context_t *ctx, int argc, char **argv
 void solar_os_shell_cmd_shutdown(solar_os_context_t *ctx, int argc, char **argv);
 void solar_os_shell_cmd_df(solar_os_context_t *ctx, int argc, char **argv);
 void solar_os_shell_cmd_display(solar_os_context_t *ctx, int argc, char **argv);
+void solar_os_shell_cmd_dlp(solar_os_context_t *ctx, int argc, char **argv);
 void solar_os_shell_cmd_help(solar_os_context_t *ctx, int argc, char **argv);
 #if SOLAR_OS_PACKAGE_APP_EMAIL
 void solar_os_shell_cmd_email(solar_os_context_t *ctx, int argc, char **argv);
@@ -75,6 +76,7 @@ void solar_os_shell_cmd_nfc(solar_os_context_t *ctx, int argc, char **argv);
 #endif
 void solar_os_shell_cmd_gpio(solar_os_context_t *ctx, int argc, char **argv);
 #if SOLAR_OS_PACKAGE_SERVICE_GATEWAY
+void solar_os_shell_cmd_irc(solar_os_context_t *ctx, int argc, char **argv);
 void solar_os_shell_cmd_gateway(solar_os_context_t *ctx, int argc, char **argv);
 #endif
 void solar_os_shell_cmd_humidity(solar_os_context_t *ctx, int argc, char **argv);

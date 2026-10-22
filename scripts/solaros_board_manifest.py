@@ -33,6 +33,7 @@ BINDING_KINDS = {
     "uart_port",
     "ps2_bus",
     "scalar_stream",
+    "byte_stream",
     "parameter",
 }
 PIN_BINDING_KINDS = {"gpio", "adc", "pwm", "spi_cs"}
@@ -42,6 +43,7 @@ TARGET_BINDING_KINDS = {
     "uart_port",
     "ps2_bus",
     "scalar_stream",
+    "byte_stream",
 }
 KEYED_LISTS = {
     ("buses",): "name",
@@ -85,6 +87,7 @@ class DriverDef:
     early: bool
     default_name: str
     bindings: tuple[DriverBinding, ...]
+    keyboard: bool = False
 
 
 def _string_list(value: Any, path: str) -> list[str]:
@@ -123,6 +126,8 @@ def load_driver_catalog(path: Path) -> dict[str, DriverDef]:
         if not DEVICE_NAME_RE.fullmatch(name):
             raise ManifestError(f"{prefix} has an invalid driver name")
         package = raw.get("package")
+        if not isinstance(raw.get("keyboard", False), bool):
+            raise ManifestError(f"{prefix}.keyboard must be a boolean")
         if not isinstance(package, str) or not package:
             raise ManifestError(f"{prefix}.package is required")
         targets = tuple(_string_list(raw.get("targets"), f"{prefix}.targets"))
@@ -154,7 +159,7 @@ def load_driver_catalog(path: Path) -> dict[str, DriverDef]:
             if minimum is not None and maximum is not None and minimum > maximum:
                 raise ManifestError(f"{binding_path} has an inverted value range")
             default_role = key if kind in {
-                "gpio", "gpio_line", "adc", "pwm", "parameter", "scalar_stream"
+                "gpio", "gpio_line", "adc", "pwm", "parameter", "scalar_stream", "byte_stream"
             } else ""
             bindings.append(DriverBinding(
                 key=key,
@@ -173,6 +178,7 @@ def load_driver_catalog(path: Path) -> dict[str, DriverDef]:
                for key in raw_board_defines):
             raise ManifestError(f"{prefix}.board_defines contains an invalid macro name")
         result[name] = DriverDef(
+            keyboard=raw.get("keyboard", False),
             name=name,
             summary=str(raw.get("summary") or name),
             package=package,
@@ -461,6 +467,8 @@ def validate_board(board: dict[str, Any], drivers: dict[str, DriverDef]) -> None
         if name in device_names:
             raise ManifestError(f"device {name} is declared more than once")
         device_names.add(name)
+        if not isinstance(device.get("detachable", False), bool):
+            raise ManifestError(f"device {name}.detachable must be a boolean")
         driver = drivers.get(driver_name)
         if driver is None:
             raise ManifestError(f"device {name} uses unknown driver {driver_name!r}")
@@ -710,6 +718,7 @@ def _device_initializer(device: dict[str, Any],
     ]
     return (
         "{.driver = " + _c_string(driver.name) + ", .name = " + _c_string(device["name"]) +
+        (", .detachable = true" if device.get("detachable", False) else "") +
         f", .binding_count = {len(entries)}, .bindings = {{" + ", ".join(entries) + "}}"
     )
 
@@ -767,6 +776,8 @@ def generate_header(board: dict[str, Any], drivers: dict[str, DriverDef]) -> str
 
     devices = board.get("devices", [])
     buses_by_name = {str(bus["name"]): bus for bus in buses}
+    wired_keyboard = any(drivers[device["driver"]].keyboard for device in devices)
+    lines.append(f"#define SOLAR_OS_BOARD_HAS_WIRED_KEYBOARD {int(wired_keyboard)}")
     lines.append(f"#define SOLAR_OS_BOARD_DEFAULT_EXPANSION_DEVICE_COUNT {len(devices)}")
     lines.extend(_macro_lines(
         "SOLAR_OS_BOARD_DEFAULT_EXPANSION_DEVICES",

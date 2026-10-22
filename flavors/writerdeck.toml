@@ -1,6 +1,6 @@
 [flavor]
 name = "writerdeck"
-description = "SolarOS writing, reading, scripting, media, file-transfer, and RTSP viewer build."
+description = "Compact SolarOS build with package installation, Python, Playground, writing, media and communications."
 
 [groups]
 hardware_shell = true
@@ -9,7 +9,6 @@ wifi = true
 bluetooth = true
 sd_storage = true
 audio_support = true
-rtsp = true
 control_bindings = true
 vector_math = true
 gpio = true
@@ -50,6 +49,7 @@ contacts = true
 chat = true
 chat_gateway = true
 gateway_sync = true
+irc = true
 chat_server = true
 agent = true
 espnow = true
@@ -71,3 +71,7 @@ pcm5102 = true
 pcm1808 = true
 inmp441 = true
 es8311 = true
+speech = true
+player = true
+recorder = true
+synth = true

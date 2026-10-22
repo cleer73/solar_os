@@ -20,7 +20,7 @@ The current tree includes these board targets:
 | Target | PlatformIO env | Hardware | Highlights |
 | --- | --- | --- | --- |
 | `solar_term` | `solar_term` | [SolarTerm](https://github.com/nilseuropa/solar_term), built from the Waveshare ESP32-S3-RLCD-4.2 | Primary ST7305 reflective display target with SDMMC, CDC, UART, RTC, SHTC3, battery ADC, ES8311/ES7210 audio, expansion I2C/SPI/UART/GPIO/ADC/PWM, and runtime-routable SPI3 on GPIO1/GPIO2/GPIO3/GPIO17. SolarOS refers to this hardware configuration as SolarTerm. |
-| `solar_writer` | `solar_writer` | SolarWriter, built from the Elecrow CrowPanel 5.79-inch | 792x272 dual-SSD1683 display, INMP441 microphone, shared PCM5102 line output and MAX98357 speaker output, LC709203F fuel gauge, microSD, CH340/UART console, and GPIO21 reserved for jack detect. |
+| `solar_writer` | `solar_writer` | SolarWriter, built from the Elecrow CrowPanel 5.79-inch | 792x272 dual-SSD1683 display, INMP441 microphone, shared PCM5102 line output and MAX98357 speaker output, LC709203F fuel gauge, DS3231 RTC, microSD, CH340/UART console, and GPIO21 reserved for jack detect. |
 | `freenove_esp32_s3_display_4_0` | `freenove_esp32_s3_display_4_0` | Freenove ESP32-S3 Display 4.0-inch (FNK0104S) | Integrated 480x320 ST7796 display, FT6336 capacitive pointer, ES8311 speaker and microphone, four-bit SDMMC, battery ADC, native USB CDC, and UART/I2C/GPIO expansion connectors. |
 | `qdtech_es3c28p` | `qdtech_es3c28p` | [QDtech ES3C28P 2.8-inch ESP32-S3 Touch Display](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display) | Capacitive-touch ESP32-S3R8 target with 16 MB flash, 8 MB PSRAM, a 320x240 landscape ILI9341V display, FT6336 pointer, ES8311 speaker and microphone, four-bit SDMMC, battery ADC, one WS2812B, native USB CDC, and UART/I2C/GPIO expansion connectors. |
 | `qdtech_es3n28p` | `qdtech_es3n28p` | [QDtech ES3N28P 2.8-inch ESP32-S3 Display](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display) | Non-touch ESP32-S3R8 target with 16 MB flash, 8 MB PSRAM, a 320x240 landscape ILI9341V display, ES8311 speaker and microphone, four-bit SDMMC, battery ADC, one WS2812B, native USB CDC, and UART/I2C/GPIO expansion connectors. |
@@ -41,6 +41,45 @@ The current tree includes these board targets:
 | `t_deck_plus` | `t_deck_plus` | LilyGO T-Deck Plus | ESP32-S3FN16R8 target with a 320x240 ST7789 display, GT911 touch, I2C keyboard, five-way trackball, separate I2S speaker output and ES7210 microphone capture, SX1262 LoRa radio, microSD over SDSPI, battery ADC, internal GPS UART, native USB CDC, Wi-Fi, and BLE. |
 | `waveshare_esp32_s3_sim7670g_4g` | `waveshare_esp32_s3_sim7670g_4g` | [Waveshare ESP32-S3-SIM7670G-4G V2.0](https://www.waveshare.com/esp32-s3-sim7670g-4g.htm) | Headless ESP32-S3R8 target with 16 MB flash, 8 MB PSRAM, CH343/UART console, SIM7670G AT, GNSS, and IPv4 PPP access over UART1, MAX17048 battery gauge, one-bit SDMMC, one WS2812B, Wi-Fi, BLE, and expansion GPIO/ADC/PWM/SPI/I2S. Set the DIP switches to CAM OFF, HUB ON, 4G OFF, USB OFF. With CAM off, the unused camera signal pins are available as expansion GPIOs and can form runtime SPI or I2S buses; GPIO15/GPIO16 remain the shared MAX17048 I2C bus and GPIO46 remains blocked as an input-only strapping pin. SolarOS drives GPIO21 active-high to control the modem VBAT rail; leave the 4G switch OFF to avoid contention and permit software power-off/reset. The modem UART belongs exclusively to PPP while connected; disconnect it before AT or GNSS use. Camera support is not included. |
 | `waveshare_esp32_s3_sim7670g_4g_epaper` | `waveshare_esp32_s3_sim7670g_4g` with `SOLAR_OS_BOARD=waveshare_esp32_s3_sim7670g_4g_epaper` | Waveshare ESP32-S3-SIM7670G-4G E-paper workbench | Expansion-export reference target with a fixed M5Stack TAB5 keyboard on the board-owned I2C bus at address `0x6d`, INT on GPIO41, and a fixed primary 400x300 SSD1683 display on SPI2 using GPIO3/GPIO7 through GPIO12. GPIO40 remains available for expansion. |
+
+T-Deck Plus registers its factory L76K or MIA-M10Q receiver as `gnss0` through
+the `nmea` driver, listening at 9600 baud and trying 38400 if needed. Use
+`gnss list` and `gnss fix gnss0` to inspect it. This NMEA path supplies position,
+UTC, and satellite information; position accuracy and PDOP are unavailable.
+The receiver has no independent power control. The standard T-Deck Plus has no
+onboard NFC reader.
+
+The Grove connector is the T-Deck's only expansion connector. Its UART signals
+(ESP32 TX GPIO43, RX GPIO44) are shared with the onboard GNSS receiver. The I/O
+map shows this connector, not the internal display, radio, or audio wiring.
+`gnss0` attaches automatically with `origin=board`, but can be detached to
+release `uart0`:
+
+```text
+expansion detach gnss0
+com uart0
+```
+
+Exit COM with the app-exit key before restoring the board receiver:
+
+```text
+expansion attach gnss0
+```
+
+Restoring it uses the board's original bindings and retains `origin=board`.
+If an external device changed the bus rate, run `uart baud uart0 9600` before
+restoring GNSS so detection starts at the factory rate and can try 38400.
+Detachment lasts until restoration or reboot, including while other board
+devices retry attachment. Detaching stops the GNSS reader and releases the
+software UART claim; the receiver remains powered and electrically connected.
+`gnss disable gnss0` first silences NMEA output on recognized L76K/CASIC and
+MIA-M10Q/UBX receivers. `gnss enable gnss0` restores output. These commands do
+not release `uart0`; detach afterward when another consumer needs it.
+Reattaching the GNSS driver restores muted NMEA output automatically. Settings
+are changed in receiver RAM only, without changing sentence rates or baud.
+Software silencing does not guarantee that the receiver's TX pin becomes high
+impedance. An external transmitter on the same signal still needs electrical
+isolation unless the receiver's hardware specifies a suitable disconnected state.
 
 ## Define a custom board
 
@@ -183,7 +222,7 @@ If you select a firmware flavor explicitly, keep it on the upload invocation as
 well:
 
 ```sh
-SOLAR_OS_BOARD=devkitc1_epaper_workbench SOLAR_OS_FLAVOR=core \
+SOLAR_OS_BOARD=devkitc1_epaper_workbench SOLAR_OS_FLAVOR=writerdeck \
   pio run -e esp32_s3_devkitc1_n16r8 -t upload
 ```
 
@@ -198,8 +237,12 @@ python3 scripts/generate_board_profile.py \
   --validate-only
 ```
 
-Fixed devices attach automatically and report `origin=board`. They cannot be
-detached at runtime. Use the established names when the device provides a
+Board devices attach automatically and report `origin=board`. By default they
+are fixed and cannot be detached at runtime. A manifest can set
+`detachable = true` on an individual `[[devices]]` entry to permit
+`expansion detach <name>` and restoration with `expansion attach <name>`.
+Restoration retains the board origin and manifest bindings. Use the established
+names when the device provides a
 primary board service:
 
 | Hardware role | Fixed device name |
@@ -517,6 +560,7 @@ defaults are not appropriate for the target:
 ```ini
 [env:odroid_go]
 board = odroid_esp32
+custom_solaros_default_flavor = classic
 board_build.cmake_extra_args = -DSOLAR_OS_BOARD=odroid_go -DSDKCONFIG_DEFAULTS=sdkconfig.defaults.odroid_go
 ```
 
@@ -556,9 +600,11 @@ bridge, and the rear microSD slot. It uses `uart0` on GPIO1/GPIO3 as the boot
 shell and a fixed `storage0` one-bit SDMMC attachment on GPIO14 clock, GPIO15
 command, and GPIO2 data.
 The active-low BOOT button on GPIO0 is also the SolarOS KEY. A short press uses
-the configured sleep or suspend action; another short press resumes from
-suspend. A long press forgets the remembered BLE
-keyboard and starts pairing. Do not hold the button during reset or power-up,
+the configured short-press action, which defaults to suspend. Any KEY press
+resumes from suspend. A long press defaults to forgetting the remembered BLE
+keyboard and starting pairing. Configure the two gestures independently with
+`setterm powerkey short <action>` and `setterm powerkey long <action>`.
+Do not hold the button during reset or power-up,
 because GPIO0 low selects the ESP32 serial download boot mode.
 
 The target deliberately leaves the OV2640 camera unsupported. Remove or
@@ -583,7 +629,7 @@ centered 320x200 safe-area mode. Select it when building; the main and virtual
 display dimensions both change to 320x200:
 
 ```sh
-SOLAR_OS_FLAVOR=rover SOLAR_OS_CVBS_MODE=320x200 \
+SOLAR_OS_FLAVOR=classic SOLAR_OS_CVBS_MODE=320x200 \
   pio run -e freenove_esp32_wrover_v3
 ```
 
@@ -591,20 +637,18 @@ Omit `SOLAR_OS_CVBS_MODE` (or set it to `384x288`) to build the default full
 PAL mode. Composite scanout requires the ESP32's full 240 MHz clock, so SolarOS
 clamps all power profiles to that board-specific CPU floor on this target.
 
-Use `os_builder` with the `rover` baseline to make a specialized Game Boy or
+Use `os_builder` with the `classic` profile to make a specialized
 Synth image. Add the required group, remove unrelated groups until the measured
 image fits, then build and flash from the same TUI:
 
 ```sh
 python3 scripts/os_builder.py \
-  --input flavors/rover.toml \
+  --input flavors/classic.toml \
   --board freenove_esp32_wrover_v3 \
   --layout single
 ```
 
-The default full PAL mode gives Game Boy the largest image. The 320x200
-safe-area mode also supports Game Boy; its presenter selects a smaller centered
-raster. For serial diagnostics, run:
+For serial diagnostics, run:
 
 ```text
 job start log uart0 debug
@@ -678,20 +722,20 @@ Updating a high-resolution frame can therefore produce a brief tear while the
 new image is copied. Changing `SOLAR_OS_VGA_MODE` causes PlatformIO to
 reconfigure CMake automatically.
 
-The board has 4 MB flash, so its PlatformIO environment defaults to the focused
-`rover` flavor instead of `full`:
+The board has 4 MB flash, and its PlatformIO environment defaults to the
+`classic` profile:
 
 ```sh
 pio run -e ttgo_vga32_v14
 ```
 
-To create a compact Game Boy or another specialized build, start from `rover`
+To create a specialized build, start from `classic`
 in `os_builder`, adjust the granular groups, and build against this board's
 single-image limit:
 
 ```sh
 python3 scripts/os_builder.py \
-  --input flavors/rover.toml \
+  --input flavors/classic.toml \
   --board ttgo_vga32_v14 \
   --layout single
 ```
@@ -722,6 +766,10 @@ The built-in `odroid_go` target covers the classic ESP32 Hardkernel ODROID-GO.
 It uses an ESP32-WROVER module with 4 MiB PSRAM, the ILI9341 display driver,
 SDSPI storage on the VSPI bus, battery ADC, ESP32 DAC speaker output, digital
 buttons, ADC D-pad input, status LED, PWM display brightness, Wi-Fi, and BLE.
+
+All classic ESP32 targets default to the compact `classic` flavor, including
+Python, Playground, buttons, and ADC D-pad support on ODROID-GO.
+See [Packages and flavors](packages.md).
 
 The board does not have CDC, a board-defined I2C bus, RTC, onboard temperature/humidity sensors, or
 audio input enabled. It boots into the display shell, and `uart0` on GPIO1/GPIO3
@@ -851,13 +899,20 @@ pinout but requires a different reset, initialization, refresh, and sleep
 sequence. SolarOS detects the revision from its post-reset BUSY behavior and
 selects the matching command and waveform path automatically.
 
-The green-sticker revision starts in `refresh=pulse` by default. Its preset is
+The green-sticker revision starts in `refresh=pulse` with the Fastwave phase
+builder adapted to its UC8276 controller. `display mode display0` reports
+`waveform=fastwave-uc8276`. Its preset is
 8 drive cycles, 8 scan frames, raw PLL code 12, asynchronous scanning with a
-10 ms requested interval, supply cycling, fast ramp, and 20000 kHz pulse SPI.
+67 ms new-image interval, supply cycling, fast ramp, and 20000 kHz pulse SPI.
 Fixed cleanup runs every 8 changed targets consumed by the worker.
 It shares per-pixel drive budgets and the scan worker with the other
-pulse-capable panels, using a separate waveform and RAM adapter. Runtime tuning
-remains available through `display mode display0`; internal scan frequency is
+pulse-capable panels. The builder drives only changing pixels, with no reset
+kick and one neutral settle frame. The adapter keeps the UC8276's own voltage,
+PLL, RAM, and power commands. `pulse-period` accepts 67–1000 ms between new
+images. Settling drives run as BUSY permits, independently of this interval.
+New targets can interrupt settling between drives; identical targets retain
+their remaining budgets. The requested interval does not guarantee an achieved rate.
+Runtime tuning remains available through `display mode display0`; internal scan frequency is
 separate from image update rate.
 Use `display mode display0 refresh=auto` to restore the native waveform.
 The original Elecrow 4.2-inch panel currently rejects pulse mode.
@@ -916,7 +971,11 @@ one contiguous 792x272 graphics surface.
 
 The panel uses GPIO12 SCK, GPIO11 MOSI, GPIO47 reset, GPIO46 D/C, GPIO45 chip
 select, GPIO48 BUSY, and GPIO7 display-power enable. The driver follows
-Elecrow's master/slave RAM addressing and temperature-load sequence. Auto mode
+Elecrow's master/slave RAM addressing and temperature-load sequence. The board
+starts in asynchronous monochrome pulse mode with a 67 ms minimum new-image
+interval, held supplies, and automatic cleanup, as described under
+[SolarWriter](#solarwriter). To select the native waveform, use
+`display mode display0 refresh=auto`. Auto mode
 uses one full cleanup refresh after initialization, then transfers changed
 frames with Elecrow's non-flashing `0xDC` partial-update waveform; unchanged
 frames are skipped. Use `display mode display0 refresh=full` when an explicit
@@ -951,7 +1010,8 @@ CrowPanel apply to this board.
 
 The `solar_writer` target combines the Elecrow CrowPanel 5.79-inch N8R8 board
 with a GY-INMP441 microphone, Adafruit PCM5102 DAC, Adafruit I2S Amplifier BFF
-(MAX98357), and Adafruit LC709203F battery gauge. It inherits the CrowPanel's
+(MAX98357), Adafruit LC709203F battery gauge, and DS3231 real-time clock.
+It inherits the CrowPanel's
 792x272 dual-SSD1683 display, microSD, controls, CH340/UART console, Wi-Fi, BLE,
 8 MB flash, and 8 MB OPI PSRAM. The default firmware flavor is `writerdeck`.
 
@@ -959,8 +1019,8 @@ The following connections are fixed in this target:
 
 | Function | GPIO | U5 pin | Module connection |
 | --- | --- | --- | --- |
-| I2C SDA | 8 | 20 | LC709203F SDI/SDA |
-| I2C SCL | 9 | 2 | LC709203F SCL |
+| I2C SDA | 8 | 20 | LC709203F SDI/SDA and DS3231 SDA |
+| I2C SCL | 9 | 2 | LC709203F SCL and DS3231 SCL |
 | Shared I2S bit clock | 14 | 19 | INMP441 SCK, PCM5102 BCK, BFF A2 |
 | Shared I2S word select | 15 | 3 | INMP441 WS, PCM5102 WSEL, BFF A1 |
 | Playback data | 16 | 18 | PCM5102 DIN and BFF A0 |
@@ -969,7 +1029,7 @@ The following connections are fixed in this target:
 
 U5 pins 11–14 supply regulated **3.3 V** and pins 7–10 are GND, as connected
 in Elecrow's published schematic. Power the microphone VDD, PCM5102 VIN,
-fuel-gauge VIN, and amplifier BFF's **5V input pad** from 3.3 V for this
+fuel-gauge VIN, DS3231 VCC, and amplifier BFF's **5V input pad** from 3.3 V for this
 configuration. The BFF's 3V pad does not supply the amplifier. Use short power
 wiring and allow for speaker current when sizing the supply. Higher-power
 speaker operation requires a suitable separate supply with common ground;
@@ -989,9 +1049,12 @@ playback data stream; the DAC provides stereo line output and the amplifier
 plays its default mono mix. The PCM5102 jack requires a line-level load,
 such as powered speakers or a headphone amplifier.
 
-The 5.79-inch dual-SSD1683 display has an optional monochrome pulse mode.
-It uses the shared EPD pixel-budget layer and a waveform specific to this
-panel profile. Select it and tune it with:
+The 5.79-inch dual-SSD1683 display starts in monochrome pulse mode on both
+SolarWriter and the base CrowPanel 5.79-inch target. It uses the shared EPD
+pixel-budget layer and the [Fastwave SSD1683 waveform builder](https://github.com/bootdsc/Fastwave-Eink-Driver/tree/c7d20eeefd0b0a5015b335a54bb9b63b37bca88f/ports/ssd1683-crowpanel-579).
+Mode output identifies this adapter as `waveform=fastwave`. If the scan
+worker cannot start, the display retains native `refresh=auto` mode.
+Inspect the mode with `display mode display0`, or select and tune it with:
 
 ```text
 display mode display0 refresh=pulse
@@ -1001,7 +1064,7 @@ display mode display0 waveform-fr=4
 display mode display0 cleanup-every=64
 display mode display0 cleanup-policy=adaptive
 display mode display0 pulse-scan=async
-display mode display0 pulse-period=10
+display mode display0 pulse-period=67
 display mode display0 pulse-power=hold
 display mode display0 pulse-ramp=fast
 display mode display0 pulse-spi-khz=20000
@@ -1011,9 +1074,16 @@ display mode display0
 Each changed pixel receives `drive-cycles` completed waveform activations
 (1–32). Settled pixels select the neutral waveform; submitting the same target
 does not refill its budget. `pulse-frames` is the scan-frame duration of each
-drive phase (1–32); `waveform-fr` is a raw SSD1683 frame-rate code (1–12), not a
-frequency in Hz. Defaults are 6 cycles, 8 scan frames, code 4, and adaptive
-cleanup with `cleanup-every=64`. Each successful drive accumulates in a per-pixel
+drive phase (1–32); `waveform-fr` is a raw SSD1683 frame-rate code
+(1–5 or 9–12), not a frequency in Hz. Defaults are 6 cycles, 8 scan frames,
+code 4, and adaptive cleanup with `cleanup-every=64`. The builder uses no
+opposite-polarity reset kick, the configured drive duration, and one VSS settle
+frame. Both controllers receive the same generated LUT and nominal source rails
+(+15 V / -15 V), with VCOM set to `0x08`. EOPT is excluded from the
+voltage-register write mask. Grayscale rendering continues to use the existing
+dithering path.
+
+Each successful drive accumulates in a per-pixel
 history since the last native cleanup. Adaptive cleanup runs when the most-driven
 pixel reaches `cleanup-every * drive-cycles` activations (384 at the defaults),
 or after `4 * cleanup-every` changed images (256 at the defaults), whichever
@@ -1045,25 +1115,39 @@ presentation's blocking time. The default `pulse-scan=async` submits the newest
 image to a persistent scan worker. It delivers one pulse per scan and continues
 settling without further presentations. New targets can arrive between cycles;
 queued images coalesce to the latest target. Settling can span several scans.
+The SSD1683 adapter also accepts monochrome raster frames from native foreground
+apps. The shared presenter scales and dithers indexed emulator frames before
+submission. These frames use the same refresh mode and latest-image queue as
+ordinary UI updates; physical cadence and ink settling follow the panel waveform.
 Select asynchronous operation with:
 
 ```text
 display mode display0 pulse-scan=async
-display mode display0 pulse-period=10
+display mode display0 pulse-period=67
 ```
 
-`pulse-period` requests a minimum start-to-start interval of 10–1000 ms;
-the default is 10 ms. Hardware work can exceed that interval, so 10 ms does not
-establish a 100 scans/s capability.
+On this dual-controller panel, `pulse-period` requests a minimum new-image
+interval of 67–1000 ms; the default is 67 ms. Settling drives continue as BUSY
+permits without waiting for another image slot. When its slot is due, a queued
+target replaces the current target between drives, even with older pixels still
+settling. Pixels whose target is unchanged retain their remaining budgets.
+Hardware work and pixel settling can require longer than the requested interval;
+it does not promise 15 fully settled images per second. The six-cycle,
+eight-frame preset retains its settling budget.
 `display mode display0` reports `scan-last-us`, `scan-interval-us`, completed
-`scan-count`, submitted/coalesced image counts, and pending pixel count. These
-measure actual completed scan work; image submission rate is separate from
-scan rate and optical settling.
+`scan-count`, submitted/coalesced image counts, and pending pixel count.
+`frame-count` counts distinct target snapshots processed successfully, including
+native baselines; `frame-interval-us` measures their start-to-start interval.
+Repeated identical submissions do not count as new frames. Drive count,
+new-image count, and optical settling are separate quantities.
 
 Additional panel-specific controls are `pulse-power=<cycle,hold>`,
 `pulse-ramp=<normal,fast>`, and `pulse-spi-khz=<100..20000>`. The default power
 policy is `hold`, which retains the supply stages during a settling sequence
-and powers down when all budgets finish. The normal booster ramp uses
+and powers down when all budgets finish. It enables the analog stages on the
+first pulse of a sequence and uses display-only activations for subsequent
+pulses. A new sequence after idle power-down or reset enables the stages again.
+The normal booster ramp uses
 approximately 40/40/10 ms phases; the default `fast` uses 10/10/10 ms with the
 same current settings and voltage targets. Both ramp settings require optical
 calibration. Pulse SPI speed defaults to 20000 kHz;
@@ -1081,14 +1165,19 @@ paint; asynchronous mode immediately performs a native recovery of the newest
 accepted target. Sleep suspends scans; waking reseeds from a native baseline.
 Use `display mode display0 refresh=auto` to restore the standard waveform;
 the next presentation resets the controller and performs a full cleanup.
+For repeated native black/white recovery cycles, use `display relax display0`
+(60 seconds) or `display relax display0 3600` (one hour). The command restores
+the saved image and pulse settings when it finishes or is interrupted. See
+[Display commands](commands.md#hardware-and-time) for supported panels and cancellation.
 The pattern script `tests/hil/epd_pulse_pattern.py` exercises both transition
 directions and moves patches across both controller halves. Its printed
 messages mark queued presentations; `gfx.present()` returns before physical
 completion. Read the driver timings in `log show` and judge optical settling
 and ghosting on the actual screen.
-`tests/hil/epd_pulse_scan_pattern.py` queues moving-patch targets at 100 ms
-intervals for asynchronous cadence tests, then holds the final image so its
-pixels can settle. Use the driver statistics and physical screen to assess it.
+`tests/hil/epd_pulse_scan_pattern.py` queues targets at 67 ms intervals with
+moving black and dithered patches and a stationary shade ramp, then holds the
+final image so its pixels can settle. Use the driver statistics and physical
+screen to assess contrast, erased trails, static shades, and the panel seam.
 
 `battery0` attaches automatically at I2C address `0x0b`. Battery capacity
 defaults to 3000 mAh and remains configurable:
@@ -1099,6 +1188,24 @@ audio devices
 battery status
 battery capacity 3000
 ```
+
+`rtc0` attaches automatically through the reusable `ds3231` driver at `0x68`
+on the same 100 kHz `i2c0` bus as `battery0`. Its driver is included in every
+SolarWriter flavor. The clock stores UTC and supports calendar dates from
+2000–2099 and second-resolution alarms. Set the clock after first power-up or
+loss of backup power; oscillator-stop status leaves time unreliable until set.
+
+```text
+rtc status
+date
+ntp
+rtc alarm set 07:30:15
+```
+
+`ntp` needs a network connection and the NTP package. INT/SQW is not wired in
+this profile, so RTC alarms have no GPIO wake signal. The DS3231 has no
+countdown timer; use `schedule` for portable timed actions. See
+[DS3231 usage](expansion.md#ds3231-real-time-clock).
 
 GPIO21 is reserved in the pin metadata and is not available for general GPIO
 or PWM. Plug detection and automatic output switching are not enabled in this
@@ -1127,7 +1234,7 @@ display mode display0
 ```
 
 Initial pulse defaults are 3 drive cycles, 8 scan frames, FR code 4,
-asynchronous operation, a 100 ms requested minimum scan interval, supply
+asynchronous operation, a 100 ms requested minimum new-image interval, supply
 cycling, normal booster ramp, the configured board SPI clock, and adaptive
 cleanup with a baseline of 64. These values are a calibration starting point;
 optical contrast, erasure, ghosting, and achieved cadence require inspection
@@ -1241,8 +1348,10 @@ The shared 400 kHz `i2c0` bus uses SDA39/SCL38 and carries GT911 touch
 and CW2017 battery gauge (`battery0`, 0x63). Touch uses reset GPIO4, interrupt
 GPIO10, active-low power GPIO2, and a portrait-to-landscape coordinate transform.
 The capacitive Home pad sends app exit on release. The left/right buttons
-(GPIO0/GPIO7) send Up/Down. GPIO3 is the system key: a short press sends app exit
-and a long press uses the configured power-key action. Holding GPIO0 during
+(GPIO0/GPIO7) send Up/Down. GPIO3 is the system key: a short press defaults to app
+exit. Its short and long actions are independently configurable with
+`setterm powerkey short <action>` and `setterm powerkey long <action>`.
+Holding GPIO0 during
 reset selects the ESP32 bootloader.
 
 The one-bit SDMMC slot (`storage0`) uses CLK41/CMD42/DAT0=40. Its active-low
@@ -1287,9 +1396,11 @@ and also enables expansion GPIO, ADC, PWM, I2C, and SPI. The default I2C bus is
 GPIO8 SDA and GPIO9 SCL. The default SPI bus is FSPI on GPIO12 SCK, GPIO13
 MISO, and GPIO11 MOSI, with chip-select slots on GPIO4, GPIO10, GPIO5, GPIO6,
 and GPIO7.
-Its active-low BOOT button on GPIO0 is also the SolarOS KEY for the configured
-short-press sleep/suspend action, light-sleep wake, and long-press BLE keyboard
-replacement. GPIO0 remains reserved from runtime routing. Do not hold the
+Its active-low BOOT button on GPIO0 is also the SolarOS KEY. The short press
+defaults to suspend and the long press to BLE keyboard replacement. Configure
+either with `setterm powerkey short <action>` or `setterm powerkey long <action>`.
+A press of any duration wakes suspend or sleep. GPIO0 remains reserved from
+runtime routing. Do not hold the
 button during reset or power-up, because that selects download boot mode.
 The N16R8 target defaults to the common 16 MiB OTA `partitions.csv` layout. Its
 serial alternative uses `partitions_16mb_single.csv`. Both retain the same

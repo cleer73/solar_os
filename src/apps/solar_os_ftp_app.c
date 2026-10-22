@@ -75,6 +75,7 @@ typedef struct {
     uint64_t size;
     bool is_directory;
     bool parent;
+    bool selected;
 } ftp_app_entry_t;
 
 typedef struct {
@@ -138,6 +139,7 @@ typedef struct {
 typedef struct {
     ftp_app_work_kind_t kind;
     esp_err_t error;
+    bool operation_done;
     ftp_app_entry_t *remote_entries;
     size_t remote_count;
     char remote_path[SOLAR_OS_STORAGE_PATH_MAX];
@@ -192,6 +194,9 @@ typedef struct {
     volatile bool cancel_requested;
     volatile bool worker_done;
     bool busy;
+    ftp_app_request_t *batch_requests;
+    size_t batch_count;
+    size_t batch_next;
     ftp_app_progress_t progress;
     uint32_t temporary_serial;
     char temporary_view[SOLAR_OS_STORAGE_PATH_MAX];
@@ -334,6 +339,7 @@ static void ftp_app_filter_hidden(ftp_app_pane_t *pane)
     for (size_t i = 0; i < pane->listed_count; i++) {
         if (!ftp_app.show_hidden && !pane->entries[i].parent &&
             pane->entries[i].name[0] == '.') {
+            pane->entries[i].selected = false;
             continue;
         }
         if (pane->count != i) {
@@ -354,6 +360,35 @@ static void ftp_app_filter_hidden(ftp_app_pane_t *pane)
     }
 }
 
+static size_t ftp_app_selection_count(const ftp_app_pane_t *pane)
+{
+    size_t count = 0;
+    for (size_t i = 0; i < pane->count; i++) {
+        if (pane->entries[i].selected && !pane->entries[i].parent) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static void ftp_app_preserve_selection(ftp_app_pane_t *pane,
+                                       const ftp_app_pane_t *previous)
+{
+    if (!ftp_app_paths_equal(pane->path, previous->path)) {
+        return;
+    }
+    for (size_t i = 0; i < pane->count; i++) {
+        for (size_t j = 0; j < previous->count; j++) {
+            if (previous->entries[j].selected && !pane->entries[i].parent &&
+                pane->entries[i].is_directory == previous->entries[j].is_directory &&
+                strcmp(pane->entries[i].name, previous->entries[j].name) == 0) {
+                pane->entries[i].selected = true;
+                break;
+            }
+        }
+    }
+}
+
 static esp_err_t ftp_app_load_local(ftp_app_pane_t *pane, const char *path)
 {
     char normalized[SOLAR_OS_STORAGE_PATH_MAX];
@@ -365,7 +400,8 @@ static esp_err_t ftp_app_load_local(ftp_app_pane_t *pane, const char *path)
     if (directory == NULL) {
         return ESP_ERR_NOT_FOUND;
     }
-    ftp_app_pane_clear(pane);
+    ftp_app_pane_t previous = *pane;
+    memset(pane, 0, sizeof(*pane));
     strlcpy(pane->path, normalized, sizeof(pane->path));
     if (strcmp(normalized, "/") != 0) {
         err = ftp_app_pane_add(pane, "..", true, true, 0);
@@ -391,7 +427,9 @@ static esp_err_t ftp_app_load_local(ftp_app_pane_t *pane, const char *path)
     if (err == ESP_OK) {
         pane->listed_count = pane->count;
         ftp_app_filter_hidden(pane);
+        ftp_app_preserve_selection(pane, &previous);
     }
+    solar_os_memory_free(previous.entries);
     return err;
 }
 
@@ -817,6 +855,7 @@ static void ftp_app_worker(void *arg)
                 strlcpy(result.view_path, request.destination, sizeof(result.view_path));
             }
         }
+        result.operation_done = result.error == ESP_OK;
         if (result.error == ESP_OK && session != NULL) {
             ftp_app_pane_t remote = {0};
             const char *remote_path = request.kind == FTP_APP_WORK_LIST ?
@@ -869,8 +908,15 @@ static void ftp_app_draw_pane(ftp_app_pane_t *pane,
         SOLAR_OS_TUI_ATTR_INVERSE | SOLAR_OS_TUI_ATTR_BOLD : SOLAR_OS_TUI_ATTR_BOLD;
     solar_os_tui_box(&ftp_app.tui, row, col, height, width, SOLAR_OS_TUI_ATTR_NORMAL);
     solar_os_tui_fill(&ftp_app.tui, row, col + 1U, 1U, width - 2U, ' ', title_attr);
+    char title[SOLAR_OS_STORAGE_PATH_MAX + 32U];
+    const size_t selected = ftp_app_selection_count(pane);
+    if (selected > 0) {
+        snprintf(title, sizeof(title), "[%u selected] %s", (unsigned)selected, pane->path);
+    } else {
+        strlcpy(title, pane->path, sizeof(title));
+    }
     solar_os_tui_write_cell(&ftp_app.tui, row, col + 2U, width - 4U,
-                            pane->path, title_attr);
+                            title, title_attr);
     const size_t list_height = height - 2U;
     if (pane->cursor < pane->top) {
         pane->top = pane->cursor;
@@ -887,6 +933,8 @@ static void ftp_app_draw_pane(ftp_app_pane_t *pane,
             continue;
         }
         const ftp_app_entry_t *entry = &pane->entries[item_index];
+        (void)solar_os_tui_putch(&ftp_app.tui, item_row, col + 1U,
+                                 entry->selected ? '*' : ' ', attr | SOLAR_OS_TUI_ATTR_BOLD);
         char name[SOLAR_OS_FTP_NAME_MAX + 2U];
         snprintf(name, sizeof(name), "%s%s", entry->name,
                  entry->is_directory && !entry->parent ? "/" : "");
@@ -898,8 +946,8 @@ static void ftp_app_draw_pane(ftp_app_pane_t *pane,
         }
         const size_t size_width = width >= 18U ? 8U : 0U;
         const size_t name_width = size_width > 0 ? width - size_width - 3U : width - 2U;
-        solar_os_tui_write_cell(&ftp_app.tui, item_row, col + 1U,
-                                name_width, name,
+        solar_os_tui_write_cell(&ftp_app.tui, item_row, col + 2U,
+                                name_width - 1U, name,
                                 entry->is_directory ? attr | SOLAR_OS_TUI_ATTR_BOLD : attr);
         if (size_width > 0) {
             solar_os_tui_write_cell(&ftp_app.tui, item_row,
@@ -1069,7 +1117,7 @@ static void ftp_app_draw_connection(size_t rows, size_t cols)
 static void ftp_app_draw_operation_help(size_t cols)
 {
     static const char help[] =
-        "F2 Connect F3 View F5 Copy F6 Move F7 mKdir F8 Delete Alt+S Search";
+        "F2 Connect F3 View F5 Copy F6 Move F7 mKdir F8 Delete Alt+S Search Space Select";
     static const struct {
         const char *label;
         size_t offset;
@@ -1202,6 +1250,22 @@ static bool ftp_app_selected_path(char *path, size_t path_len)
     return ftp_app_join(path, path_len, pane->path, entry->name);
 }
 
+static void ftp_app_toggle_selection(ftp_app_pane_t *pane)
+{
+    ftp_app_entry_t *entry = ftp_app_selected();
+    if (entry == NULL || entry->parent) {
+        ftp_app_set_message("select: no file selected");
+        return;
+    }
+    entry->selected = !entry->selected;
+    char message[FTP_APP_MESSAGE_MAX];
+    snprintf(message, sizeof(message), "%u selected", (unsigned)ftp_app_selection_count(pane));
+    ftp_app_set_message(message);
+    if (pane->cursor + 1U < pane->count) {
+        pane->cursor++;
+    }
+}
+
 static bool ftp_app_submit(const ftp_app_request_t *request, const char *message)
 {
     if (ftp_app.busy || xQueueSend(ftp_app.requests, request, 0) != pdTRUE) {
@@ -1211,6 +1275,99 @@ static bool ftp_app_submit(const ftp_app_request_t *request, const char *message
     ftp_app.busy = true;
     ftp_app_set_message(message);
     return true;
+}
+
+static void ftp_app_batch_clear(void)
+{
+    solar_os_memory_free(ftp_app.batch_requests);
+    ftp_app.batch_requests = NULL;
+    ftp_app.batch_count = 0;
+    ftp_app.batch_next = 0;
+}
+
+static bool ftp_app_batch_continue(void)
+{
+    if (ftp_app.batch_next >= ftp_app.batch_count) {
+        return false;
+    }
+    const ftp_app_request_t *request = &ftp_app.batch_requests[ftp_app.batch_next];
+    const bool transfer = request->kind != FTP_APP_WORK_DELETE;
+    if (!ftp_app_submit(request, transfer ? "transferring..." : "deleting...")) {
+        return false;
+    }
+    ftp_app.batch_next++;
+    memset(&ftp_app.progress, 0, sizeof(ftp_app.progress));
+    ftp_app.progress.active = transfer;
+    ftp_app.progress.kind = request->kind;
+    strlcpy(ftp_app.progress.item, ftp_app_basename(request->source),
+            sizeof(ftp_app.progress.item));
+    return true;
+}
+
+static void ftp_app_batch_complete_item(void)
+{
+    const ftp_app_request_t *request = &ftp_app.batch_requests[ftp_app.batch_next - 1U];
+    ftp_app_pane_t *pane = &ftp_app.panes[request->remote_source ? 1 : 0];
+    for (size_t i = 0; i < pane->count; i++) {
+        char path[SOLAR_OS_STORAGE_PATH_MAX];
+        if (ftp_app_join(path, sizeof(path), pane->path, pane->entries[i].name) &&
+            ftp_app_paths_equal(path, request->source)) {
+            pane->entries[i].selected = false;
+        }
+    }
+}
+
+/* Snapshot the entire selection before starting work: listing refreshes and
+ * cursor changes must never change the remaining sources or destinations. */
+static void ftp_app_begin_operation(ftp_app_work_kind_t kind)
+{
+    ftp_app_pane_t *pane = &ftp_app.panes[ftp_app.active];
+    const size_t selected = ftp_app_selection_count(pane);
+    const ftp_app_entry_t *current = ftp_app_selected();
+    if (selected == 0 && (current == NULL || current->parent)) {
+        ftp_app_set_message("select a file or directory");
+        return;
+    }
+    const size_t count = selected > 0 ? selected : 1U;
+    if (count > SIZE_MAX / sizeof(ftp_app_request_t)) {
+        ftp_app_set_message("too many selected items");
+        return;
+    }
+    ftp_app_request_t *requests = ftp_app_realloc(NULL, count * sizeof(*requests));
+    if (requests == NULL) {
+        ftp_app_set_message("no memory for selected items");
+        return;
+    }
+    size_t next = 0;
+    for (size_t i = 0; i < pane->count; i++) {
+        const ftp_app_entry_t *entry = &pane->entries[i];
+        if (entry->parent || (selected > 0 ? !entry->selected : i != pane->cursor)) {
+            continue;
+        }
+        ftp_app_request_t *request = &requests[next++];
+        *request = (ftp_app_request_t){
+            .kind = kind,
+            .remote_source = ftp_app.active == 1,
+            .is_directory = entry->is_directory,
+            .size = entry->size,
+        };
+        if (!ftp_app_join(request->source, sizeof(request->source), pane->path, entry->name) ||
+            (kind != FTP_APP_WORK_DELETE &&
+             !ftp_app_join(request->destination, sizeof(request->destination),
+                           ftp_app.panes[ftp_app.active ^ 1U].path, entry->name))) {
+            solar_os_memory_free(requests);
+            ftp_app_set_message("path is too long");
+            return;
+        }
+        strlcpy(request->remote_directory, ftp_app.panes[1].path,
+                sizeof(request->remote_directory));
+    }
+    ftp_app.batch_requests = requests;
+    ftp_app.batch_count = next;
+    ftp_app.batch_next = 0;
+    if (!ftp_app_batch_continue()) {
+        ftp_app_batch_clear();
+    }
 }
 
 static const char *ftp_app_default_viewer(const char *path)
@@ -1332,6 +1489,9 @@ static void ftp_app_poll(solar_os_context_t *ctx)
     while (ftp_app.results != NULL && xQueueReceive(ftp_app.results, &result, 0) == pdTRUE) {
         ftp_app.busy = false;
         ftp_app.progress.active = false;
+        if (ftp_app.batch_requests != NULL && result.operation_done) {
+            ftp_app_batch_complete_item();
+        }
         if (result.error == ESP_OK) {
             if (result.kind == FTP_APP_WORK_CONNECT) {
                 ftp_app.connected = true;
@@ -1352,7 +1512,7 @@ static void ftp_app_poll(solar_os_context_t *ctx)
                 !same_remote_path;
             const size_t old_remote_cursor = remote->cursor;
             const size_t old_remote_top = remote->top;
-            solar_os_memory_free(remote->entries);
+            ftp_app_pane_t previous_remote = *remote;
             remote->entries = result.remote_entries;
             remote->count = result.remote_count;
             remote->listed_count = result.remote_count;
@@ -1361,6 +1521,10 @@ static void ftp_app_poll(solar_os_context_t *ctx)
             remote->top = 0;
             ftp_app_filter_hidden(remote);
             strlcpy(remote->path, result.remote_path, sizeof(remote->path));
+            if (result.kind != FTP_APP_WORK_CONNECT) {
+                ftp_app_preserve_selection(remote, &previous_remote);
+            }
+            solar_os_memory_free(previous_remote.entries);
             if (same_remote_path) {
                 ftp_app_restore_position(remote, old_remote_cursor, old_remote_top);
             } else if (moving_to_remote_parent) {
@@ -1389,6 +1553,10 @@ static void ftp_app_poll(solar_os_context_t *ctx)
             }
             ftp_app_set_message(result.detail[0] != '\0' ?
                                     result.detail : esp_err_to_name(result.error));
+        }
+        if (ftp_app.batch_requests != NULL &&
+            (result.error != ESP_OK || !ftp_app_batch_continue())) {
+            ftp_app_batch_clear();
         }
         redraw = true;
     }
@@ -1424,57 +1592,13 @@ static void ftp_app_open_selected(void)
 
 static void ftp_app_transfer(bool move)
 {
-    ftp_app_entry_t *entry = ftp_app_selected();
-    char source[SOLAR_OS_STORAGE_PATH_MAX];
-    if (entry == NULL || entry->parent || !ftp_app_selected_path(source, sizeof(source))) {
-        ftp_app_set_message("select a file or directory");
-        return;
-    }
-    ftp_app_request_t request = {
-        .kind = move ? FTP_APP_WORK_MOVE : FTP_APP_WORK_COPY,
-        .remote_source = ftp_app.active == 1,
-        .is_directory = entry->is_directory,
-        .size = entry->size,
-    };
-    strlcpy(request.source, source, sizeof(request.source));
-    const ftp_app_pane_t *destination = &ftp_app.panes[ftp_app.active ^ 1U];
-    if (!ftp_app_join(request.destination,
-                      sizeof(request.destination),
-                      destination->path,
-                      entry->name)) {
-        ftp_app_set_message("destination path is too long");
-        return;
-    }
-    strlcpy(request.remote_directory,
-            ftp_app.panes[1].path,
-            sizeof(request.remote_directory));
-    if (ftp_app_submit(&request, move ? "moving..." : "copying...")) {
-        memset(&ftp_app.progress, 0, sizeof(ftp_app.progress));
-        ftp_app.progress.active = true;
-        ftp_app.progress.kind = request.kind;
-        strlcpy(ftp_app.progress.item, entry->name, sizeof(ftp_app.progress.item));
-    }
+    ftp_app_begin_operation(move ? FTP_APP_WORK_MOVE : FTP_APP_WORK_COPY);
 }
 
 static void ftp_app_delete(void)
 {
-    ftp_app_entry_t *entry = ftp_app_selected();
-    char path[SOLAR_OS_STORAGE_PATH_MAX];
-    if (entry == NULL || entry->parent || !ftp_app_selected_path(path, sizeof(path))) {
-        ftp_app.input_mode = FTP_APP_INPUT_NONE;
-        return;
-    }
-    ftp_app_request_t request = {
-        .kind = FTP_APP_WORK_DELETE,
-        .remote_source = ftp_app.active == 1,
-        .is_directory = entry->is_directory,
-    };
-    strlcpy(request.source, path, sizeof(request.source));
-    strlcpy(request.remote_directory,
-            ftp_app.panes[1].path,
-            sizeof(request.remote_directory));
     ftp_app.input_mode = FTP_APP_INPUT_NONE;
-    (void)ftp_app_submit(&request, "deleting...");
+    ftp_app_begin_operation(FTP_APP_WORK_DELETE);
 }
 
 static void ftp_app_create_directory(void)
@@ -2084,6 +2208,9 @@ static bool ftp_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
     case SOLAR_OS_KEY_END:
         pane->cursor = pane->count > 0 ? pane->count - 1U : 0;
         break;
+    case ' ':
+        ftp_app_toggle_selection(pane);
+        break;
     case '\b':
     case 0x7f: {
         char parent[SOLAR_OS_STORAGE_PATH_MAX];
@@ -2153,10 +2280,15 @@ static bool ftp_app_event(solar_os_context_t *ctx, const solar_os_event_t *event
     case 'd':
     case 'D': {
         ftp_app_entry_t *entry = ftp_app_selected();
-        if (entry != NULL && !entry->parent) {
+        const size_t selected = ftp_app_selection_count(pane);
+        if (selected > 0 || (entry != NULL && !entry->parent)) {
             ftp_app.input_mode = FTP_APP_INPUT_DELETE;
             char message[FTP_APP_MESSAGE_MAX];
-            snprintf(message, sizeof(message), "delete %s? y/N", entry->name);
+            if (selected > 0) {
+                snprintf(message, sizeof(message), "delete %u selected items? y/N", (unsigned)selected);
+            } else {
+                snprintf(message, sizeof(message), "delete %s? y/N", entry->name);
+            }
             ftp_app_set_message(message);
         }
         break;
@@ -2194,6 +2326,7 @@ static void ftp_app_release_cleanup(void)
     if (ftp_app_state == NULL) {
         return;
     }
+    ftp_app_batch_clear();
     if (ftp_app.temporary_view[0] != '\0') {
         (void)unlink(ftp_app.temporary_view);
     }

@@ -60,9 +60,14 @@ print(solaros.sensors.humidity())
 Available when the firmware includes a GNSS receiver service.
 
 - `list()`: return registered receivers with `name`, `driver`, `power_control`,
-  and `powered`.
+  `powered`, `enable_control`, and `enabled`. Output enable state is separate
+  from the supply state.
 - `power(enabled[, name])`: change a driver-managed receiver power rail,
   defaulting to the first receiver, and return the requested state.
+- `enable([name])` / `disable([name])`: enable or silence NMEA output through
+  recognized UBX/CASIC configuration support. Return `True` or `False`
+  respectively. Unsupported receivers raise an error; a disable request
+  retains the UART claim and does not power down or electrically isolate it.
 - `fix([name[, timeout_ms]])`: poll a receiver, defaulting to the first one and
   a 1000 ms timeout. The result contains fix and UTC validity, date and time,
   fix type, `satellites_valid` and satellite count, longitude and latitude in

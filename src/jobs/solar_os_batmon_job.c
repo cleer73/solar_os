@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -157,6 +158,7 @@ static void batmon_check_low_voltage_sleep(solar_os_context_t *ctx)
 static esp_err_t batmon_start(solar_os_context_t *ctx, int argc, char **argv)
 {
     (void)ctx;
+    batmon.last_error = ESP_ERR_INVALID_ARG;
 
     if (argc > 2) {
         return ESP_ERR_INVALID_ARG;
@@ -167,6 +169,11 @@ static esp_err_t batmon_start(solar_os_context_t *ctx, int argc, char **argv)
         return ESP_ERR_INVALID_ARG;
     }
 
+    batmon.last_error = solar_os_battery_monitor_start(interval_sec * 1000U);
+    if (batmon.last_error != ESP_OK) {
+        batmon.running = false;
+        return batmon.last_error;
+    }
     batmon.running = true;
     batmon.interval_ms = interval_sec * 1000U;
     batmon.next_sample_ms = 0;
@@ -174,7 +181,6 @@ static esp_err_t batmon_start(solar_os_context_t *ctx, int argc, char **argv)
     batmon.fail_count = 0;
     batmon.low_voltage_samples = 0;
     batmon.low_voltage_sleep_requested = false;
-    batmon.last_error = solar_os_battery_monitor_start(batmon.interval_ms);
 
     SOLAR_OS_LOGI(TAG, "started: interval=%" PRIu32 "s", interval_sec);
     (void)solar_os_jobs_note_resource(solar_os_batmon_job.name,
@@ -182,6 +188,15 @@ static esp_err_t batmon_start(solar_os_context_t *ctx, int argc, char **argv)
                                       "battery",
                                       "monitor");
     return batmon.last_error;
+}
+
+static void batmon_error_detail(char *buffer, size_t buffer_len)
+{
+    if (buffer != NULL && buffer_len > 0U) {
+        strlcpy(buffer, batmon.last_error == ESP_ERR_NOT_SUPPORTED ?
+                    "battery provider unavailable; check expansion status and boot logs" :
+                    "", buffer_len);
+    }
 }
 
 static void batmon_stop(solar_os_context_t *ctx)
@@ -234,6 +249,7 @@ const solar_os_job_t solar_os_batmon_job = {
     .start = batmon_start,
     .stop = batmon_stop,
     .event = batmon_event,
+    .error_detail = batmon_error_detail,
     .tick_interval_ms = 250U,
     .tick_deadline_ms = 10U,
 };

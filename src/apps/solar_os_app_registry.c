@@ -68,6 +68,9 @@
 #if SOLAR_OS_PACKAGE_APP_CLOCK
 #include "solar_os_clock.h"
 #endif
+#if SOLAR_OS_PACKAGE_APP_DLP
+#include "solar_os_dlp_app.h"
+#endif
 #if SOLAR_OS_PACKAGE_APP_SYNTH
 #include "solar_os_synth_app.h"
 #endif
@@ -165,6 +168,9 @@
      .min_argc = app_min, .max_argc = app_max}
 
 static const solar_os_app_registry_entry_t registered_apps[] = {
+#if SOLAR_OS_PACKAGE_APP_DLP
+    APP_ENTRY("dlp", "DLP display receiver", &solar_os_dlp_app, SOLAR_OS_APP_CAP_GRAPHICS | SOLAR_OS_APP_CAP_DISPLAY, "dlp stream=<byte-stream>", 2, 2),
+#endif
 #if SOLAR_OS_PACKAGE_APP_APLAY
     APP_ENTRY("aplay", "play WAV/MP3 audio", &solar_os_aplay_app, SOLAR_OS_APP_CAP_TEXT | SOLAR_OS_APP_CAP_DISPLAY | SOLAR_OS_APP_CAP_PORT, "aplay [-v volume] <file.wav|file.mp3>", 2, 4),
 #endif
@@ -175,10 +181,10 @@ static const solar_os_app_registry_entry_t registered_apps[] = {
     APP_ENTRY("recorder", "interactive WAV recorder", &solar_os_recorder_app, SOLAR_OS_APP_CAP_TEXT | SOLAR_OS_APP_CAP_GRAPHICS | SOLAR_OS_APP_CAP_DISPLAY | SOLAR_OS_APP_CAP_PORT, "recorder [--tui] [file.wav]", 1, 3),
 #endif
 #if SOLAR_OS_PACKAGE_APP_CHAT
-    APP_ENTRY("chat", "provider-neutral conversation client", &solar_os_chat_app, SOLAR_OS_APP_CAP_TEXT | SOLAR_OS_APP_CAP_DISPLAY | SOLAR_OS_APP_CAP_PORT, "chat [gateway|meshcore|link|conversation-id]", 1, 2),
+    APP_ENTRY("chat", "provider-neutral conversation client", &solar_os_chat_app, SOLAR_OS_APP_CAP_TEXT | SOLAR_OS_APP_CAP_DISPLAY | SOLAR_OS_APP_CAP_PORT, "chat [instance|class|conversation-id]", 1, 2),
 #endif
 #if SOLAR_OS_PACKAGE_APP_CONTACTS
-    APP_ENTRY("contacts", "provider-neutral contact browser", &solar_os_contacts_app, SOLAR_OS_APP_CAP_TEXT | SOLAR_OS_APP_CAP_DISPLAY | SOLAR_OS_APP_CAP_PORT, "contacts", 1, 1),
+    APP_ENTRY("contacts", "provider-neutral address book", &solar_os_contacts_app, SOLAR_OS_APP_CAP_TEXT | SOLAR_OS_APP_CAP_DISPLAY | SOLAR_OS_APP_CAP_PORT, "contacts", 1, 1),
 #endif
 #if SOLAR_OS_PACKAGE_APP_AGENT
     APP_ENTRY("agent", "native LLM agent", &solar_os_agent_app, SOLAR_OS_APP_CAP_TEXT | SOLAR_OS_APP_CAP_DISPLAY | SOLAR_OS_APP_CAP_PORT, "agent [--tts] [new|resume <id>|ask <prompt...>] | agent script <file> [args...]", 1, 0),

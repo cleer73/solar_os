@@ -30,6 +30,8 @@ typedef struct {
     bool reverse_direct_palette;
     /* Preserve supplied colors on direct targets; mono polarity still applies. */
     bool literal_direct_palette;
+    /* Convert supplied colors to mono luma without terminal polarity. */
+    bool literal_mono_palette;
     bool clear_background_on_resume;
     uint8_t background_index;
 } solar_os_frame_presenter_config_t;
@@ -52,6 +54,14 @@ esp_err_t solar_os_frame_presenter_deinit(solar_os_frame_presenter_t *presenter)
 bool solar_os_frame_presenter_submit(solar_os_frame_presenter_t *presenter,
                                      const uint8_t *data,
                                      size_t data_size);
+/* Acquire a host-owned writing buffer once. Exchange queues it without a
+ * pixel copy and returns another writing buffer. The completed buffer remains
+ * readable until the next exchange. Buffers survive suspend and are freed by
+ * deinit; never free them or mix this path with copying submit. */
+esp_err_t solar_os_frame_presenter_acquire(solar_os_frame_presenter_t *presenter,
+                                          uint8_t **data, size_t *size);
+esp_err_t solar_os_frame_presenter_exchange(solar_os_frame_presenter_t *presenter,
+                                           uint8_t **data);
 bool solar_os_frame_presenter_redraw(solar_os_frame_presenter_t *presenter);
 void solar_os_frame_presenter_take_stats(
     solar_os_frame_presenter_t *presenter,

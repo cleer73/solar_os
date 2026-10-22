@@ -26,6 +26,7 @@ static size_t contacts_test_write(const void *data, size_t size, size_t count, F
 #include "../../src/services/solar_os_messaging.c"
 
 static char test_root[] = "/tmp/solaros-messaging-XXXXXX";
+bool solar_os_disk_image_path_busy(const char *path) { (void)path; return false; }
 size_t strlcpy(char *dst, const char *src, size_t size)
 {
     size_t length = strlen(src);
@@ -90,6 +91,14 @@ static void restart_contacts(void)
 }
 static void restart_messages(void)
 {
+    while (messaging.providers) {
+        messaging_provider_node_t *next = messaging.providers->next;
+        free(messaging.providers); messaging.providers = next;
+    }
+    while (messaging.classes) {
+        messaging_class_node_t *next = messaging.classes->next;
+        free(messaging.classes); messaging.classes = next;
+    }
     free(messaging.conversations); free(messaging.messages); free(messaging.outbox);
     free(messaging.events); free(messaging.record_scratch);
     vSemaphoreDelete(messaging.lock); vSemaphoreDelete(messaging.io_lock);
@@ -264,11 +273,241 @@ static void test_channel_ownership_and_restart(void)
     free(message);
 }
 
+static unsigned test_joins;
+static bool reject_join;
+static unsigned remove_prepares, remove_commits, remove_aborts;
+static bool reject_remove_prepare;
+static solar_os_messaging_provider_id_t remove_inside_join;
+static esp_err_t test_normalize(void *context, const char *target, char *out, size_t size)
+{
+    assert(context == &test_joins);
+    if (strncmp(target, "ROOM:", 5) == 0) target += 5;
+    return strlcpy(out, target, size) < size ? ESP_OK : ESP_ERR_INVALID_SIZE;
+}
+static esp_err_t test_join(void *context, const char *target)
+{
+    assert(context == &test_joins); assert(strcmp(target, "#same") == 0);
+    solar_os_messaging_status_t status;
+    assert(solar_os_messaging_get_status(&status) == ESP_OK);
+    if (remove_inside_join) assert(solar_os_messaging_instance_remove(remove_inside_join) == ESP_ERR_INVALID_STATE);
+    test_joins++; return reject_join ? ESP_FAIL : ESP_OK;
+}
+static esp_err_t test_remove_prepare(void *context)
+{
+    assert(context == &test_joins); remove_prepares++;
+    return reject_remove_prepare ? ESP_FAIL : ESP_OK;
+}
+static void test_remove_finish(void *context, bool removed)
+{
+    assert(context == &test_joins);
+    if (removed) remove_commits++; else remove_aborts++;
+}
+static const solar_os_messaging_provider_class_t test_class = {
+    .name = "test-net", .capabilities = SOLAR_OS_ENDPOINT_CAP_ROOM, .join = test_join,
+    .normalize_target = test_normalize,
+    .remove_prepare = test_remove_prepare, .remove_finish = test_remove_finish,
+};
+static void test_provider_instances(void)
+{
+    assert(solar_os_messaging_class_register(&test_class) == ESP_OK);
+    unsigned config = 0x12345678;
+    solar_os_messaging_provider_id_t a, b;
+    assert(solar_os_messaging_instance_create("test-net", "network-a", &config, sizeof(config), &a) == ESP_OK);
+    assert(solar_os_messaging_instance_create("test-net", "network-b", &config, sizeof(config), &b) == ESP_OK);
+    assert(a > 3 && b > a);
+    assert(solar_os_messaging_instance_register(a, "test-net", "network-a", &test_joins) == ESP_OK);
+    assert(solar_os_messaging_instance_register(b, "test-net", "network-b", &test_joins) == ESP_OK);
+    solar_os_conversation_id_t room_a, room_b;
+    assert(solar_os_messaging_join(a, "ROOM:#same", &room_a) == ESP_OK);
+    assert(solar_os_messaging_join(b, "#same", &room_b) == ESP_OK);
+    assert(room_a != room_b && test_joins == 2);
+    assert(solar_os_messaging_join_update(a, "#same", SOLAR_OS_MESSAGING_JOIN_JOINED, NULL) == ESP_OK);
+    assert(solar_os_messaging_join(a, "#same", NULL) == ESP_OK && test_joins == 2);
+    solar_os_messaging_conversation_t room;
+    assert(solar_os_messaging_conversation_get(room_b, &room) == ESP_OK);
+    assert(room.join_state == SOLAR_OS_MESSAGING_JOIN_PENDING);
+    assert(solar_os_messaging_join_update(a, "#same", SOLAR_OS_MESSAGING_JOIN_LEFT, NULL) == ESP_OK);
+    reject_join = true;
+    assert(solar_os_messaging_join(a, "#same", NULL) == ESP_FAIL);
+    assert(solar_os_messaging_conversation_get(room_a, &room) == ESP_OK && room.join_state == SOLAR_OS_MESSAGING_JOIN_FAILED);
+    reject_join = false;
+    solar_os_message_key_t key_a, key_b;
+    assert(solar_os_messaging_send(room_a, "only A", false, &key_a) == ESP_OK);
+    assert(solar_os_messaging_send(room_b, "only B", false, &key_b) == ESP_OK);
+    solar_os_messaging_outbound_t *out = calloc(1, sizeof(*out)); assert(out);
+    assert(solar_os_messaging_outbox_peek(a, out) == ESP_OK && out->message_key == key_a);
+    assert(solar_os_messaging_outbox_update(out->id, SOLAR_OS_DELIVERY_SENT, NULL) == ESP_OK);
+    assert(solar_os_messaging_outbox_peek(b, out) == ESP_OK && out->message_key == key_b);
+    assert(solar_os_messaging_outbox_update(out->id, SOLAR_OS_DELIVERY_FAILED, "test") == ESP_OK);
+    free(out);
+    unsigned restored = 0;
+    assert(solar_os_messaging_profile_load(a, &restored, sizeof(restored)) == ESP_OK && restored == config);
+    fail_migration_promotion = true; unsigned updated = 0x77777777;
+    assert(solar_os_messaging_profile_save(a, &updated, sizeof(updated)) != ESP_OK);
+    assert(solar_os_messaging_profile_load(a, &restored, sizeof(restored)) == ESP_OK && restored == config);
+    restart_messages();
+    assert(solar_os_messaging_provider_find("network-a") == a);
+    assert(solar_os_messaging_provider_find("network-b") == b);
+    assert(solar_os_messaging_provider_is_class(a, "test-net"));
+    assert(solar_os_messaging_profile_load(a, &restored, sizeof(restored)) == ESP_OK && restored == config);
+    assert(solar_os_messaging_class_register(&test_class) == ESP_OK);
+    assert(solar_os_messaging_instance_register(a, "test-net", "network-a", &test_joins) == ESP_OK);
+    assert(solar_os_messaging_join(a, "#same", NULL) == ESP_OK);
+    solar_os_messaging_provider_id_t cursor = 0; solar_os_messaging_provider_status_t status;
+    unsigned count = 0;
+    while (solar_os_messaging_provider_next(&cursor, &status)) count++;
+    assert(count == 5);
+
+    /* A removal cannot destroy a callback's context while it is in use. */
+    assert(solar_os_messaging_join_update(a, "#same", SOLAR_OS_MESSAGING_JOIN_LEFT, NULL) == ESP_OK);
+    remove_inside_join = a;
+    assert(solar_os_messaging_join(a, "#same", NULL) == ESP_OK);
+    remove_inside_join = 0;
+    assert(solar_os_messaging_instance_remove(1) == ESP_ERR_NOT_SUPPORTED);
+    reject_remove_prepare = true;
+    assert(solar_os_messaging_instance_remove(a) == ESP_FAIL && remove_commits == 0 && remove_aborts == 0);
+    reject_remove_prepare = false;
+    fail_migration_promotion = true;
+    assert(solar_os_messaging_instance_remove(a) == ESP_FAIL && remove_aborts == 1);
+    assert(solar_os_messaging_provider_find("network-a") == a);
+    assert(solar_os_messaging_profile_load(a, &restored, sizeof(restored)) == ESP_OK && restored == config);
+
+    solar_os_conversation_id_t live_b = 0;
+    solar_os_messaging_conversation_t conversations[32];
+    size_t conversation_count = solar_os_messaging_conversation_snapshot(conversations, 32);
+    for (size_t i = 0; i < conversation_count; i++) {
+        if (conversations[i].provider == a) room_a = conversations[i].id;
+        if (conversations[i].provider == b) live_b = conversations[i].id;
+    }
+    assert(live_b);
+    solar_os_message_key_t pending_a, pending_b, pending_b2, sending_a;
+    assert(solar_os_messaging_send(live_b, "B before", false, &pending_b) == ESP_OK);
+    assert(solar_os_messaging_send(room_a, "A queued", false, &pending_a) == ESP_OK);
+    assert(solar_os_messaging_send(live_b, "B after", false, &pending_b2) == ESP_OK);
+    out = calloc(1, sizeof(*out)); assert(out);
+    assert(solar_os_messaging_outbox_peek(a, out) == ESP_OK);
+    assert(solar_os_messaging_outbox_update(out->id, SOLAR_OS_DELIVERY_SENDING, NULL) == ESP_OK);
+    sending_a = pending_a;
+    assert(solar_os_messaging_send(room_a, "A still queued", false, &pending_a) == ESP_OK);
+
+    assert(solar_os_messaging_instance_remove(a) == ESP_OK && remove_commits == 1);
+    assert(solar_os_messaging_instance_remove(a) == ESP_OK && remove_commits == 1);
+    assert(solar_os_messaging_provider_find("network-a") == 0);
+    assert(solar_os_messaging_provider_get_status(a, &status) == ESP_OK && status.removed && !status.connected);
+    assert(solar_os_messaging_profile_load(a, &restored, sizeof(restored)) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_profile_save(a, &config, sizeof(config)) == ESP_ERR_INVALID_STATE);
+    assert(solar_os_messaging_instance_register(a, "test-net", "network-a", &test_joins) == ESP_ERR_INVALID_STATE);
+    assert(solar_os_messaging_join(a, "#same", NULL) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_connect(a, true) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_send(room_a, "cannot send", false, NULL) != ESP_OK);
+    solar_os_messaging_message_t message;
+    assert(solar_os_messaging_message_get(pending_a, &message) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_message_get(sending_a, &message) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_conversation_get(room_a, &room) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_outbox_peek(a, out) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_outbox_peek(b, out) == ESP_OK && out->message_key == pending_b);
+    assert(solar_os_messaging_outbox_update(out->id, SOLAR_OS_DELIVERY_SENT, NULL) == ESP_OK);
+    assert(solar_os_messaging_outbox_peek(b, out) == ESP_OK && out->message_key == pending_b2);
+    assert(solar_os_messaging_outbox_update(out->id, SOLAR_OS_DELIVERY_SENT, NULL) == ESP_OK);
+    free(out);
+
+    char archived_path[160];
+    assert(solar_os_storage_default_path(".chat/profiles/004.bin", archived_path, sizeof(archived_path)) == ESP_OK);
+    struct stat info; assert(stat(archived_path, &info) == 0 && info.st_size == sizeof(messaging_profile_header_t));
+    /* Simulate an old backup surviving an interrupted cleanup: the committed
+     * removal record must take precedence, both before and after restart. */
+    char backup_path[160]; assert(snprintf(backup_path, sizeof(backup_path), "%s.bak", archived_path) < (int)sizeof(backup_path));
+    FILE *backup = fopen(backup_path, "wb"); assert(backup);
+    messaging_profile_header_t old = {.magic = MESSAGING_PROFILE_MAGIC, .version = 1, .id = a, .size = sizeof(config)};
+    strcpy(old.name, "network-a"); strcpy(old.class_name, "test-net");
+    old.crc = (uint32_t)messaging_hash_update(messaging_hash_update(2166136261U, &old, sizeof(old)), &config, sizeof(config));
+    assert(fwrite(&old, sizeof(old), 1, backup) == 1 && fwrite(&config, sizeof(config), 1, backup) == 1);
+    assert(fclose(backup) == 0);
+    restart_messages();
+    assert(solar_os_messaging_provider_get_status(a, &status) == ESP_OK && status.removed);
+    assert(solar_os_messaging_profile_load(a, &restored, sizeof(restored)) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_message_get(pending_a, &message) == ESP_ERR_NOT_FOUND);
+    assert(strcmp(solar_os_messaging_provider_name(a), "network-a") == 0);
+    solar_os_messaging_provider_id_t replacement;
+    assert(solar_os_messaging_instance_create("test-net", "network-a", &config, sizeof(config), &replacement) == ESP_OK);
+    assert(replacement > b && solar_os_messaging_provider_find("network-a") == replacement);
+    restart_messages();
+    assert(solar_os_messaging_provider_find("network-a") == replacement);
+    assert(solar_os_messaging_provider_get_status(a, &status) == ESP_OK && status.removed);
+    assert(solar_os_messaging_instance_remove(a) == ESP_OK);
+    assert(access(backup_path, F_OK) != 0);
+    char path[160];
+    assert(solar_os_storage_default_path(".chat/profiles/006.bin", path, sizeof(path)) == ESP_OK); assert(unlink(path) == 0);
+    assert(solar_os_storage_default_path(".chat/profiles/004.bin", path, sizeof(path)) == ESP_OK); assert(unlink(path) == 0);
+    assert(solar_os_storage_default_path(".chat/profiles/005.bin", path, sizeof(path)) == ESP_OK); assert(unlink(path) == 0);
+    assert(solar_os_storage_default_path(".chat/profiles", path, sizeof(path)) == ESP_OK); assert(rmdir(path) == 0);
+    assert(solar_os_storage_default_path(".chat", path, sizeof(path)) == ESP_OK); assert(rmdir(path) == 0);
+}
+
+static void test_unbound_and_evicted_removal(void)
+{
+    unsigned config = 0x98765432;
+    solar_os_messaging_provider_id_t id, unsupported;
+    assert(solar_os_messaging_instance_create("absent-class", "unbound", &config, sizeof(config), &id) == ESP_OK);
+    solar_os_conversation_id_t room;
+    solar_os_messaging_conversation_upsert_t request = {.provider = id, .provider_key = "#room",
+        .title = "#room", .kind = SOLAR_OS_CONVERSATION_ROOM};
+    assert(solar_os_messaging_conversation_upsert(&request, &room) == ESP_OK);
+    solar_os_message_key_t queued;
+    assert(solar_os_messaging_send(room, "will be evicted", false, &queued) == ESP_OK);
+    for (unsigned i = 0; i < SOLAR_OS_MESSAGING_MESSAGE_CAPACITY + 1; i++) {
+        solar_os_messaging_inbound_t inbound = {.provider = id, .provider_message_key = i + 1,
+            .conversation_key = "#room", .conversation_title = "#room", .conversation_kind = SOLAR_OS_CONVERSATION_ROOM,
+            .sender = "remote", .body = "new inbound"};
+        assert(solar_os_messaging_publish_inbound(&inbound, NULL, NULL) == ESP_OK);
+    }
+    solar_os_messaging_message_t message;
+    assert(solar_os_messaging_message_get(queued, &message) == ESP_ERR_NOT_FOUND);
+    solar_os_messaging_outbound_t *out = calloc(1, sizeof(*out)); assert(out);
+    assert(solar_os_messaging_outbox_peek(id, out) == ESP_OK);
+    assert(solar_os_messaging_instance_remove(id) == ESP_OK);
+    assert(solar_os_messaging_outbox_peek(id, out) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_outbox_snapshot(out, 1) == 0);
+    free(out);
+    static const solar_os_messaging_provider_class_t no_remove = {.name = "no-remove"};
+    assert(solar_os_messaging_class_register(&no_remove) == ESP_OK);
+    assert(solar_os_messaging_instance_create("no-remove", "unsupported", &config, sizeof(config), &unsupported) == ESP_OK);
+    assert(solar_os_messaging_instance_register(unsupported, "no-remove", "unsupported", &test_joins) == ESP_OK);
+    assert(solar_os_messaging_instance_remove(unsupported) == ESP_ERR_NOT_SUPPORTED);
+    unsigned restored = 0;
+    assert(solar_os_messaging_profile_load(unsupported, &restored, sizeof(restored)) == ESP_OK && restored == config);
+    /* Reset after committing the removal marker but before purging history. */
+    solar_os_messaging_provider_id_t interrupted;
+    assert(solar_os_messaging_instance_create("absent-class", "interrupted", &config, sizeof(config), &interrupted) == ESP_OK);
+    solar_os_messaging_inbound_t inbound = {.provider = interrupted, .provider_message_key = 1,
+        .conversation_key = "#reset", .conversation_title = "#reset", .conversation_kind = SOLAR_OS_CONVERSATION_ROOM,
+        .sender = "remote", .body = "must disappear after reset"};
+    solar_os_message_key_t removed_key;
+    assert(solar_os_messaging_publish_inbound(&inbound, NULL, &removed_key) == ESP_OK);
+    solar_os_messaging_provider_status_t status;
+    assert(solar_os_messaging_provider_get_status(interrupted, &status) == ESP_OK);
+    bool committed = false;
+    assert(messaging_archive_profile(&status, &committed) == ESP_OK && committed);
+    restart_messages();
+    assert(solar_os_messaging_message_get(removed_key, &message) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_provider_find("interrupted") == 0);
+    char path[160], relative[64];
+    const solar_os_messaging_provider_id_t ids[] = {id, unsupported, interrupted};
+    for (size_t i = 0; i < 3; i++) {
+        snprintf(relative, sizeof(relative), ".chat/profiles/%03u.bin", ids[i]);
+        assert(solar_os_storage_default_path(relative, path, sizeof(path)) == ESP_OK && unlink(path) == 0);
+    }
+    assert(solar_os_storage_default_path(".chat/profiles", path, sizeof(path)) == ESP_OK && rmdir(path) == 0);
+    assert(solar_os_storage_default_path(".chat", path, sizeof(path)) == ESP_OK && rmdir(path) == 0);
+}
+
 int main(void)
 {
     assert(mkdtemp(test_root));
     test_contacts_migration_and_import();
     test_channel_ownership_and_restart();
+    test_provider_instances();
+    test_unbound_and_evicted_removal();
     char path[160];
     const char *paths[] = { ".contacts/contacts.bin", ".messages/messages.bin", ".contacts", ".messages" };
     for (size_t i = 0; i < 4; i++) {

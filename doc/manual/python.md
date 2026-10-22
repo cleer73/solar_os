@@ -41,11 +41,12 @@ Open a topic below, or use its ID with `man` on the device, for example
 | [GPIO and peripherals](python.hardware.md) | `solaros.gpio`, `solaros.onewire`, `solaros.led`, `solaros.adc`, `solaros.pwm`, `solaros.servo`, `solaros.i2c`, `solaros.spi`, `solaros.uart`, `solaros.neopixel`, `solaros.battery`, `solaros.sensors`, `solaros.gnss`, `solaros.nfc` |
 | [Buses and expansion](python.buses.md) | `solaros.buses`, `solaros.expansion` |
 | [Audio and control](python.audio.md) | `solaros.audio`, `solaros.speech`, `solaros.synth`, `solaros.dsp`, `solaros.controls`, `solaros.parameters`, `solaros.midi`, `solaros.osc` |
+| [Emotion engine](emotion.md) | `solaros.emotion` facial animation and reaction sounds |
 | [Input and clipboard](python.input.md) | `solaros.input`, `solaros.hid`, `solaros.clipboard` |
 | [Apps, jobs, and identity](python.system.md) | `solaros.identity`, `solaros.jobs`, `solaros.sessions`, `solaros.apps` |
 | [Contacts and messages](python.messaging.md) | `solaros.contacts`, `solaros.messages` |
 | [Text user interfaces](python.tui.md) | `solaros.tui` |
-| [Graphics and raster images](python.gfx.md) | `solaros.gfx`, `solaros.image` |
+| [Graphics, raster images, and DLP connections](python.gfx.md) | `solaros.gfx`, `solaros.image`, `solaros.dlp` |
 | [Camera, streams, and RTSP](python.media.md) | `solaros.streams`, `solaros.camera`, `solaros.rtsp` |
 | [Computer vision](vision.md) | `solaros.vision` |
 | [Model inference](inference.md) | `solaros.inference` |

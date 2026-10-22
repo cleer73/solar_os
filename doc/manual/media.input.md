@@ -227,12 +227,14 @@ same keyboard address is paired again, including after keyboard firmware changes
 move its GATT handles. `ble pair` performs that forget operation before it scans
 for a replacement, so switching keyboards does not retain the previous keyboard
 bond. If a keyboard still has an orphaned bond from an older SolarOS release,
-explicit pairing replaces that conflicting bond. On boards with a system KEY, a
-long press also forgets the remembered keyboard and starts a new pairing scan.
-Pairing has no user cancellation path. The KEY short-press power action remains
-separately configurable with `setterm powerkey sleep|suspend`. Suspend is the
-default; another short press resumes the display and restores the prior power
-profile.
+explicit pairing replaces that conflicting bond. On boards with a system KEY,
+`setterm powerkey long ble-pair` assigns this operation to a hold. It is the
+default on targets without a board-owned wired
+keyboard; targets with one default to suspend. Pairing has no user cancellation
+path. The short and long actions are independently configurable with
+`setterm powerkey short <action>` and `setterm powerkey long <action>`.
+A press of any duration resumes suspend, with the wake press consumed until
+release. See the [KEY settings](commands.md) for actions and board defaults.
 
 ## Clipboard
 

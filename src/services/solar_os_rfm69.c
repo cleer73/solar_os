@@ -70,6 +70,7 @@ static solar_os_radio_config_t default_config(void)
         .sync_word_len = 2,
         .sync_word = {0x2D, 0xD4},
         .tx_power_dbm = 13,
+        .rx_gain = SOLAR_OS_RADIO_RX_GAIN_AUTO,
         .crc_enabled = true,
         .variable_length = true,
         .payload_length = RFM69_MAX_PACKET_LEN,
@@ -305,6 +306,7 @@ static esp_err_t attach_variant(const char *name,
             .features = SOLAR_OS_RADIO_FEATURE_PACKET |
                 SOLAR_OS_RADIO_FEATURE_RSSI |
                 SOLAR_OS_RADIO_FEATURE_TX_POWER |
+                SOLAR_OS_RADIO_FEATURE_RX_GAIN |
                 SOLAR_OS_RADIO_FEATURE_CRC |
                 SOLAR_OS_RADIO_FEATURE_SYNC_WORD |
                 SOLAR_OS_RADIO_FEATURE_PREAMBLE |
@@ -313,6 +315,7 @@ static esp_err_t attach_variant(const char *name,
                 SOLAR_OS_RADIO_FEATURE_CONTINUOUS_RX |
                 SOLAR_OS_RADIO_FEATURE_CONTINUOUS_TX,
             .max_packet_len = RFM69_MAX_PACKET_LEN,
+            .rx_gain_modes = SOLAR_OS_RADIO_RX_GAIN_LNA_MODES,
             .default_config = config,
             .initial_state = SOLAR_OS_RADIO_STATE_STANDBY,
             .ops = &radio_ops,

@@ -33,6 +33,7 @@ typedef enum {
     RADIO_TUI_ITEM_SPREADING_FACTOR,
     RADIO_TUI_ITEM_CODING_RATE,
     RADIO_TUI_ITEM_POWER,
+    RADIO_TUI_ITEM_RX_GAIN,
     RADIO_TUI_ITEM_CRC,
     RADIO_TUI_ITEM_VARIABLE,
     RADIO_TUI_ITEM_PREAMBLE,
@@ -75,6 +76,7 @@ static const radio_tui_item_def_t radio_tui_items[] = {
     [RADIO_TUI_ITEM_SPREADING_FACTOR] = {.label = "sf", .editable = true},
     [RADIO_TUI_ITEM_CODING_RATE] = {.label = "coding rate", .editable = true},
     [RADIO_TUI_ITEM_POWER] = {.label = "power", .editable = true},
+    [RADIO_TUI_ITEM_RX_GAIN] = {.label = "rx gain", .editable = false},
     [RADIO_TUI_ITEM_CRC] = {.label = "crc", .editable = false},
     [RADIO_TUI_ITEM_VARIABLE] = {.label = "variable", .editable = false},
     [RADIO_TUI_ITEM_PREAMBLE] = {.label = "preamble", .editable = true},
@@ -398,6 +400,10 @@ static void radio_tui_current_value(radio_tui_item_t item,
         break;
     case RADIO_TUI_ITEM_POWER:
         snprintf(buffer, buffer_len, "%d", (int)config->tx_power_dbm);
+        break;
+    case RADIO_TUI_ITEM_RX_GAIN:
+        strlcpy(buffer, info->rx_gain_modes != 0 ?
+            solar_os_radio_rx_gain_name(config->rx_gain) : "unsupported", buffer_len);
         break;
     case RADIO_TUI_ITEM_CRC:
         strlcpy(buffer, config->crc_enabled ? "on" : "off", buffer_len);
@@ -796,6 +802,20 @@ static void radio_tui_cycle_selected(int direction)
 
     config = status.config;
     switch ((radio_tui_item_t)radio_tui.selected) {
+    case RADIO_TUI_ITEM_RX_GAIN:
+        if (info.rx_gain_modes == 0) {
+            radio_tui_set_status("RX gain unsupported");
+            break;
+        }
+        for (unsigned i = 0; i < SOLAR_OS_RADIO_RX_GAIN_COUNT; i++) {
+            config.rx_gain = (uint8_t)((config.rx_gain + SOLAR_OS_RADIO_RX_GAIN_COUNT +
+                (direction < 0 ? -1 : 1)) % SOLAR_OS_RADIO_RX_GAIN_COUNT);
+            if ((info.rx_gain_modes & SOLAR_OS_RADIO_RX_GAIN_BIT(config.rx_gain)) != 0) {
+                radio_tui_apply_config(info.name, &config);
+                break;
+            }
+        }
+        break;
     case RADIO_TUI_ITEM_STATE:
         err = solar_os_radio_set_state(info.name, radio_tui_next_state(status.state, direction));
         if (err == ESP_OK) {

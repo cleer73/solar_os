@@ -12,6 +12,7 @@
 #include "solar_os_memory.h"
 #include "solar_os_splash.h"
 #include "solar_os_shell_io.h"
+#include "apps/solar_os_shell.h"
 #include "solar_os_shutdown.h"
 
 static const char *TAG = "solar_os";
@@ -406,12 +407,18 @@ esp_err_t solar_os_context_request_launch_ex(solar_os_context_t *ctx,
         }
     }
 
+    char launch_cwd[sizeof(ctx->launch_cwd)] = {0};
+    if (ctx->shell_session != NULL) {
+        const esp_err_t error = solar_os_shell_resolve_path(ctx, NULL, launch_cwd, sizeof(launch_cwd));
+        if (error != ESP_OK) return error;
+    }
+
     memset(ctx->argv, 0, sizeof(ctx->argv));
     for (int i = 0; i < argc; i++) {
         strlcpy(ctx->argv[i], argv[i], sizeof(ctx->argv[i]));
     }
     ctx->argc = argc;
-    ctx->launch_cwd[0] = '\0';
+    memcpy(ctx->launch_cwd, launch_cwd, sizeof(ctx->launch_cwd));
     ctx->requested_app = app;
     ctx->launch_policy = policy;
     ctx->exit_requested = false;

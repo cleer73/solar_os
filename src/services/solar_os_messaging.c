@@ -1,6 +1,8 @@
 #include "solar_os_messaging.h"
 
 #include <errno.h>
+#include <dirent.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -16,6 +18,10 @@
 #include "solar_os_memory.h"
 #include "solar_os_contacts.h"
 #include "solar_os_storage.h"
+#include "solar_os_config.h"
+#if SOLAR_OS_PACKAGE_SERVICE_CREDENTIALS
+#include "solar_os_credentials.h"
+#endif
 
 #define MESSAGING_STORE_MAGIC 0x47534d53UL
 #define MESSAGING_STORE_VERSION 1U
@@ -60,6 +66,19 @@ typedef struct {
 _Static_assert(MESSAGING_STORE_MAX_BYTES <= 384U * 1024U,
                "persistent messaging history must remain bounded");
 
+typedef struct messaging_provider_node {
+    struct messaging_provider_node *next;
+    solar_os_messaging_provider_status_t status;
+    char group_prefix[SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX];
+    void *context;
+    unsigned operations;
+    bool removing;
+} messaging_provider_node_t;
+typedef struct messaging_class_node {
+    struct messaging_class_node *next;
+    const solar_os_messaging_provider_class_t *type;
+} messaging_class_node_t;
+
 typedef struct {
     bool initialized;
     solar_os_messaging_conversation_t *conversations;
@@ -74,9 +93,8 @@ typedef struct {
     solar_os_messaging_event_t *events;
     size_t event_head;
     size_t event_count;
-    solar_os_messaging_provider_status_t providers[
-        SOLAR_OS_MESSAGING_PROVIDER_CAPACITY];
-    char group_prefix[SOLAR_OS_MESSAGING_PROVIDER_CAPACITY][SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX];
+    messaging_provider_node_t *providers;
+    messaging_class_node_t *classes;
     messaging_store_record_t *record_scratch;
     uint32_t next_conversation_id;
     uint32_t next_outbox_id;
@@ -96,6 +114,7 @@ typedef struct {
     size_t inbox_limit_bytes;
     esp_err_t storage_error;
     char store_path[SOLAR_OS_STORAGE_PATH_MAX];
+    char profile_directory[SOLAR_OS_STORAGE_PATH_MAX];
     SemaphoreHandle_t lock;
     SemaphoreHandle_t io_lock;
 } messaging_state_t;
@@ -198,15 +217,23 @@ static bool messaging_text_valid(const char *text,
 
 static bool messaging_provider_valid(solar_os_messaging_provider_id_t provider)
 {
-    return provider >= SOLAR_OS_MESSAGING_PROVIDER_GATEWAY &&
-        provider <= SOLAR_OS_MESSAGING_PROVIDER_LINK;
+    return provider != 0 && provider <= SOLAR_OS_MESSAGING_INSTANCE_ID_MAX;
 }
 
-static size_t messaging_provider_index(
+static messaging_provider_node_t *messaging_provider_node_locked(
     solar_os_messaging_provider_id_t provider)
 {
-    return (size_t)provider - 1U;
+    for (messaging_provider_node_t *node = messaging.providers; node; node = node->next)
+        if (node->status.id == provider) return node;
+    return NULL;
 }
+static void messaging_profiles_restore(void);
+static bool messaging_provider_class_locked(solar_os_messaging_provider_id_t id, const char *name)
+{
+    messaging_provider_node_t *node = messaging_provider_node_locked(id);
+    return node && strcmp(node->status.class_name, name) == 0;
+}
+static esp_err_t messaging_remove_history(solar_os_messaging_provider_id_t id);
 
 static int messaging_conversation_index_locked(
     solar_os_messaging_provider_id_t provider,
@@ -260,10 +287,12 @@ static solar_os_conversation_id_t messaging_upsert_conversation_locked(
     conversation->endpoint_id = request->endpoint_id;
     conversation->group_ref = request->group_ref;
     conversation->security_flags = request->security_flags;
-    const char *group_prefix = messaging.group_prefix[messaging_provider_index(request->provider)];
+    messaging_provider_node_t *provider_node = messaging_provider_node_locked(request->provider);
+    const char *group_prefix = provider_node ? provider_node->group_prefix : "";
     conversation->history_only = request->kind == SOLAR_OS_CONVERSATION_GROUP &&
         group_prefix[0] != '\0' &&
         strncmp(request->provider_key, group_prefix, strlen(group_prefix)) != 0;
+    if (provider_node && provider_node->status.removed) conversation->history_only = true;
     strlcpy(conversation->provider_key,
             request->provider_key,
             sizeof(conversation->provider_key));
@@ -358,6 +387,8 @@ static uint64_t messaging_inbound_key_locked(
     return hash != 0 ? hash : 1U;
 }
 
+#include "solar_os_messaging_registry.inc"
+
 static esp_err_t messaging_sync_file(FILE *file)
 {
     if (fflush(file) != 0) {
@@ -437,8 +468,7 @@ static bool messaging_record_valid(const messaging_store_record_t *record)
     if (record->message.key == 0) {
         return true;
     }
-    return record->message.provider >= SOLAR_OS_MESSAGING_PROVIDER_GATEWAY &&
-        record->message.provider <= SOLAR_OS_MESSAGING_PROVIDER_LINK &&
+    return messaging_provider_valid(record->message.provider) &&
         record->conversation_key[0] != '\0';
 }
 
@@ -810,7 +840,7 @@ static void messaging_restore_record_locked(
                 sizeof(slot->message.error));
     }
     const int restored_index = messaging_conversation_id_index_locked(conversation_id);
-    if (restored_index >= 0 && record->message.provider == SOLAR_OS_MESSAGING_PROVIDER_MESHCORE &&
+    if (restored_index >= 0 && messaging_provider_class_locked(record->message.provider, "meshcore") &&
         record->conversation_kind == SOLAR_OS_CONVERSATION_GROUP) {
         messaging.conversations[restored_index].history_only = true;
     }
@@ -982,6 +1012,11 @@ static void messaging_restore_inbox(void)
             provider = SOLAR_OS_MESSAGING_PROVIDER_MESHCORE;
         } else if (strcmp(entry->source, "link-chat") == 0) {
             provider = SOLAR_OS_MESSAGING_PROVIDER_LINK;
+        } else if (strncmp(entry->source, "msg-", 4) == 0) {
+            char *end;
+            unsigned long value = strtoul(entry->source + 4, &end, 10);
+            if (*end || !messaging_provider_valid(value)) continue;
+            provider = value;
         } else {
             continue;
         }
@@ -994,12 +1029,16 @@ static void messaging_restore_inbox(void)
         solar_os_messaging_conversation_upsert_t conversation_request = {
             .provider = provider,
             .provider_key = provider_key,
-            .kind =
-                provider == SOLAR_OS_MESSAGING_PROVIDER_GATEWAY ?
+            .kind = messaging_provider_class_locked(provider, "gateway") ?
                     SOLAR_OS_CONVERSATION_ROOM :
-                provider == SOLAR_OS_MESSAGING_PROVIDER_LINK &&
+                messaging_provider_class_locked(provider, "meshcore") &&
+                    (!strncmp(provider_key, "group:", 6) || !strncmp(provider_key, "ble-group:", 10)) ?
+                    SOLAR_OS_CONVERSATION_GROUP :
+                messaging_provider_class_locked(provider, "link") &&
                     strncmp(provider_key, "b:", 2U) == 0 ?
                     SOLAR_OS_CONVERSATION_BROADCAST :
+                messaging_provider_class_locked(provider, "irc") &&
+                    (provider_key[0] == '#' || provider_key[0] == '&') ? SOLAR_OS_CONVERSATION_ROOM :
                     SOLAR_OS_CONVERSATION_DIRECT,
             .title = provider_key,
         };
@@ -1007,6 +1046,10 @@ static void messaging_restore_inbox(void)
             messaging_upsert_conversation_locked(&conversation_request, false);
         if (conversation_id == SOLAR_OS_CONVERSATION_ID_NONE) {
             continue;
+        }
+        if (conversation_request.kind == SOLAR_OS_CONVERSATION_GROUP && messaging_provider_class_locked(provider, "meshcore")) {
+            int index = messaging_conversation_id_index_locked(conversation_id);
+            if (index >= 0) messaging.conversations[index].history_only = true;
         }
         messaging_message_slot_t *slot =
             &messaging.messages[messaging.message_head];
@@ -1077,6 +1120,11 @@ static void messaging_publish_inbox_projection(
         request->provider == SOLAR_OS_MESSAGING_PROVIDER_LINK ?
             "link-chat" :
             "messages";
+    char instance_source[16];
+    if (request->provider > SOLAR_OS_MESSAGING_PROVIDER_LINK) {
+        snprintf(instance_source, sizeof(instance_source), "msg-%03" PRIu32, request->provider);
+        source = instance_source;
+    }
     const solar_os_inbox_publish_t notification = {
         .source = source,
         .topic = request->conversation_key,
@@ -1182,6 +1230,7 @@ esp_err_t solar_os_messaging_init(void)
     messaging.next_message_key = 1U;
     messaging.generation = 1U;
     messaging.initialized = true;
+    messaging_profiles_restore();
     const esp_err_t store_error = messaging_store_load();
     if (store_error == ESP_OK) {
         messaging_remove_legacy_store();
@@ -1191,6 +1240,13 @@ esp_err_t solar_os_messaging_init(void)
     solar_os_inbox_set_clear_observer(messaging_unlink_all_inbox_projections,
                                       NULL);
     messaging_reconcile_inbox_projections();
+    /* A committed removal record is also a durable purge request. Complete
+     * deletions interrupted by reset before exposing restored conversations. */
+    for (messaging_provider_node_t *node = messaging.providers; node; node = node->next) {
+        if (!node->status.removed) continue;
+        esp_err_t error = messaging_remove_history(node->status.id);
+        if (error != ESP_OK) messaging.storage_error = error;
+    }
     return ESP_OK;
 }
 
@@ -1227,38 +1283,9 @@ esp_err_t solar_os_messaging_get_status(solar_os_messaging_status_t *status)
 }
 
 esp_err_t solar_os_messaging_provider_register(
-    solar_os_messaging_provider_id_t provider,
-    const char *name)
+    solar_os_messaging_provider_id_t provider, const char *name)
 {
-    if (!messaging_provider_valid(provider) ||
-        !messaging_text_valid(name, SOLAR_OS_MESSAGING_LABEL_MAX, false)) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    esp_err_t error = solar_os_messaging_init();
-    if (error != ESP_OK) {
-        return error;
-    }
-    messaging_lock();
-    solar_os_messaging_provider_status_t *status =
-        &messaging.providers[messaging_provider_index(provider)];
-    if (status->registered && strcmp(status->name, name) == 0) {
-        messaging_unlock();
-        return ESP_OK;
-    }
-    memset(status, 0, sizeof(*status));
-    status->id = provider;
-    status->registered = true;
-    status->last_error = ESP_OK;
-    strlcpy(status->name, name, sizeof(status->name));
-    messaging_note_generation_locked();
-    messaging_publish_event_locked(SOLAR_OS_MESSAGING_EVENT_PROVIDER,
-                                    provider,
-                                    0,
-                                    0,
-                                    SOLAR_OS_DELIVERY_RECEIVED,
-                                    ESP_OK);
-    messaging_unlock();
-    return ESP_OK;
+    return solar_os_messaging_instance_register(provider, name, name, NULL);
 }
 
 esp_err_t solar_os_messaging_provider_set_status(
@@ -1276,9 +1303,10 @@ esp_err_t solar_os_messaging_provider_set_status(
         return init_error;
     }
     messaging_lock();
-    solar_os_messaging_provider_status_t *status =
-        &messaging.providers[messaging_provider_index(provider)];
-    if (!status->registered) {
+    messaging_provider_node_t *node = messaging_provider_node_locked(provider);
+    if (node == NULL) { messaging_unlock(); return ESP_ERR_NOT_FOUND; }
+    solar_os_messaging_provider_status_t *status = &node->status;
+    if (!status->registered || status->removed) {
         messaging_unlock();
         return ESP_ERR_NOT_FOUND;
     }
@@ -1289,6 +1317,17 @@ esp_err_t solar_os_messaging_provider_set_status(
         strcmp(status->detail, next_detail) == 0) {
         messaging_unlock();
         return ESP_OK;
+    }
+    if ((status->connected && !connected) || (status->running && !running)) {
+        for (size_t i = 0; i < messaging.conversation_count; i++) {
+            solar_os_messaging_conversation_t *conversation = &messaging.conversations[i];
+            if (conversation->provider == provider &&
+                (conversation->join_state == SOLAR_OS_MESSAGING_JOIN_JOINED ||
+                 conversation->join_state == SOLAR_OS_MESSAGING_JOIN_PENDING)) {
+                conversation->join_state = SOLAR_OS_MESSAGING_JOIN_LEFT;
+                strlcpy(conversation->join_error, detail ? detail : "disconnected", sizeof(conversation->join_error));
+            }
+        }
     }
     status->running = running;
     status->connected = connected;
@@ -1317,9 +1356,10 @@ esp_err_t solar_os_messaging_provider_claim(
         return error;
     }
     messaging_lock();
-    solar_os_messaging_provider_status_t *status =
-        &messaging.providers[messaging_provider_index(provider)];
-    if (!status->registered) {
+    messaging_provider_node_t *node = messaging_provider_node_locked(provider);
+    if (node == NULL) { messaging_unlock(); return ESP_ERR_NOT_FOUND; }
+    solar_os_messaging_provider_status_t *status = &node->status;
+    if (!status->registered || status->removed || node->removing) {
         messaging_unlock();
         return ESP_ERR_NOT_FOUND;
     }
@@ -1355,7 +1395,9 @@ esp_err_t solar_os_messaging_provider_get_status(
         return error;
     }
     messaging_lock();
-    *status = messaging.providers[messaging_provider_index(provider)];
+    messaging_provider_node_t *node = messaging_provider_node_locked(provider);
+    if (node == NULL) { messaging_unlock(); return ESP_ERR_NOT_FOUND; }
+    *status = node->status;
     messaging_unlock();
     return status->registered ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
@@ -1379,6 +1421,10 @@ esp_err_t solar_os_messaging_conversation_upsert(
         return error;
     }
     messaging_lock();
+    messaging_provider_node_t *provider = messaging_provider_node_locked(request->provider);
+    if (provider && (provider->status.removed || provider->removing)) {
+        messaging_unlock(); return ESP_ERR_INVALID_STATE;
+    }
     const solar_os_conversation_id_t id =
         messaging_upsert_conversation_locked(request, true);
     messaging_unlock();
@@ -1401,8 +1447,9 @@ esp_err_t solar_os_messaging_groups_begin_sync(
     esp_err_t error = solar_os_messaging_init();
     if (error != ESP_OK) return error;
     messaging_lock();
-    strlcpy(messaging.group_prefix[messaging_provider_index(provider)],
-            provider_key_prefix, SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX);
+    messaging_provider_node_t *node = messaging_provider_node_locked(provider);
+    if (node == NULL) { messaging_unlock(); return ESP_ERR_NOT_FOUND; }
+    strlcpy(node->group_prefix, provider_key_prefix, SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX);
     for (size_t i = 0; i < messaging.conversation_count; i++) {
         solar_os_messaging_conversation_t *conversation = &messaging.conversations[i];
         if (conversation->provider == provider &&
@@ -1423,7 +1470,7 @@ void solar_os_messaging_conversation_label(
 {
     if (conversation == NULL || label == NULL || capacity == 0U) return;
     const char *transport = "";
-    if (conversation->provider == SOLAR_OS_MESSAGING_PROVIDER_MESHCORE &&
+    if (solar_os_messaging_provider_is_class(conversation->provider, "meshcore") &&
         conversation->kind == SOLAR_OS_CONVERSATION_GROUP) {
         if (strncmp(conversation->provider_key, "ble-group:", 10U) == 0) transport = " [companion]";
         else if (strncmp(conversation->provider_key, "group:", 6U) == 0) transport = " [radio]";
@@ -1550,6 +1597,8 @@ esp_err_t solar_os_messaging_direct_open(
             pass == 0 ? SOLAR_OS_CONTACT_TRUST_TRUSTED :
                         SOLAR_OS_CONTACT_TRUST_DISCOVERED;
         for (size_t i = 0; i < count; i++) {
+            solar_os_messaging_provider_status_t provider;
+            if (solar_os_messaging_provider_get_status(endpoints[i].provider, &provider) != ESP_OK || provider.removed) continue;
             if (endpoints[i].trust == desired &&
                 (endpoints[i].capabilities & SOLAR_OS_ENDPOINT_CAP_DIRECT) != 0) {
                 selected = &endpoints[i];
@@ -1567,7 +1616,7 @@ esp_err_t solar_os_messaging_direct_open(
              "direct:%" PRIu32,
              selected->id);
     uint32_t security_flags = 0;
-    if (selected->provider == SOLAR_OS_MESSAGING_PROVIDER_MESHCORE) {
+    if (solar_os_messaging_provider_is_class(selected->provider, "meshcore")) {
         security_flags |= SOLAR_OS_SECURITY_ENCRYPTED |
             SOLAR_OS_SECURITY_PEER_KEY_KNOWN;
     }
@@ -1674,6 +1723,8 @@ esp_err_t solar_os_messaging_publish_inbound(
         .group_ref = request->group_ref,
         .security_flags = request->security_flags,
     };
+    messaging_provider_node_t *provider = messaging_provider_node_locked(request->provider);
+    if (provider && provider->status.removed) { messaging_unlock(); return ESP_ERR_INVALID_STATE; }
     const solar_os_conversation_id_t conversation_id =
         messaging_upsert_conversation_locked(&conversation_request, false);
     if (conversation_id == 0) {
@@ -1812,6 +1863,10 @@ esp_err_t solar_os_messaging_send(solar_os_conversation_id_t conversation_id,
         return ESP_ERR_NOT_FOUND;
     }
     conversation = &messaging.conversations[current_conversation_index];
+    messaging_provider_node_t *provider = messaging_provider_node_locked(conversation->provider);
+    if (provider && (provider->status.removed || provider->removing)) {
+        messaging_unlock(); return ESP_ERR_INVALID_STATE;
+    }
     if (conversation->history_only) {
         messaging_unlock();
         return ESP_ERR_NOT_SUPPORTED;
@@ -2152,7 +2207,23 @@ static esp_err_t messaging_clear_inbox_projections(
         source_count = sizeof(link_sources) / sizeof(link_sources[0]);
     }
     size_t deleted = 0;
-    return solar_os_inbox_delete_sources(sources, source_count, &deleted);
+    if (provider > SOLAR_OS_MESSAGING_PROVIDER_LINK) {
+        char source[16]; snprintf(source, sizeof(source), "msg-%03" PRIu32, provider);
+        const char *one[] = {source};
+        return solar_os_inbox_delete_sources(one, 1, &deleted);
+    }
+    esp_err_t error = solar_os_inbox_delete_sources(sources, source_count, &deleted);
+    if (provider == 0) {
+        /* Sweep the complete persisted identity space, including profiles whose
+         * removable media is currently absent. */
+        for (uint32_t id = 4; id <= SOLAR_OS_MESSAGING_INSTANCE_ID_MAX; id++) {
+            char source[16]; snprintf(source, sizeof(source), "msg-%03" PRIu32, id);
+            const char *one[] = {source};
+            esp_err_t next = solar_os_inbox_delete_sources(one, 1, &deleted);
+            if (error == ESP_OK) error = next;
+        }
+    }
+    return error;
 }
 
 esp_err_t solar_os_messaging_clear(
@@ -2394,6 +2465,10 @@ esp_err_t solar_os_messaging_outbox_peek(
         return error;
     }
     messaging_lock();
+    messaging_provider_node_t *provider_node = messaging_provider_node_locked(provider);
+    if (provider_node && (provider_node->status.removed || provider_node->removing)) {
+        messaging_unlock(); return ESP_ERR_NOT_FOUND;
+    }
     const size_t oldest =
         (messaging.outbox_head + SOLAR_OS_MESSAGING_OUTBOX_CAPACITY -
          messaging.outbox_count) % SOLAR_OS_MESSAGING_OUTBOX_CAPACITY;
@@ -2440,6 +2515,10 @@ esp_err_t solar_os_messaging_outbox_update(
             &messaging.outbox[(oldest + i) %
                               SOLAR_OS_MESSAGING_OUTBOX_CAPACITY];
         if (candidate->id == request_id) {
+            messaging_provider_node_t *node = messaging_provider_node_locked(candidate->provider);
+            if (state == SOLAR_OS_DELIVERY_SENDING && node && (node->status.removed || node->removing)) {
+                messaging_unlock(); return ESP_ERR_INVALID_STATE;
+            }
             found_offset = i;
             key = candidate->message_key;
             if (state == SOLAR_OS_DELIVERY_QUEUED) {
@@ -2536,4 +2615,134 @@ uint64_t solar_os_messaging_provider_context(
     const char *name = solar_os_messaging_provider_name(provider);
     hash = messaging_hash_string(hash, name);
     return hash != 0 ? hash : 1U;
+}
+
+/* Caller owns io_lock. Retry this even for an already retired instance so a
+ * previous cleanup error cannot leave an old credential-bearing backup. */
+static esp_err_t messaging_archive_cleanup(const solar_os_messaging_provider_status_t *status)
+{
+    char active[SOLAR_OS_STORAGE_PATH_MAX], path[SOLAR_OS_STORAGE_PATH_MAX];
+    esp_err_t error = messaging_profile_path(status->id, active, sizeof(active));
+    const char *suffixes[] = {".bak", ".tmp"};
+    for (size_t i = 0; error == ESP_OK && i < 2; i++) {
+        if (snprintf(path, sizeof(path), "%s%s", active, suffixes[i]) >= (int)sizeof(path)) error = ESP_ERR_INVALID_SIZE;
+        else if (unlink(path) != 0 && errno != ENOENT) error = ESP_FAIL;
+    }
+    return error;
+}
+
+static esp_err_t messaging_archive_profile(const solar_os_messaging_provider_status_t *status,
+    bool *committed)
+{
+    const unsigned char empty = 0;
+    xSemaphoreTake(messaging.io_lock, portMAX_DELAY);
+    esp_err_t error = messaging_profile_write(status, &empty, 0);
+    *committed = error == ESP_OK;
+    if (*committed) error = messaging_archive_cleanup(status);
+    xSemaphoreGive(messaging.io_lock); return error;
+}
+
+static void messaging_archive_runtime(messaging_provider_node_t *node)
+{
+    /* Transport work has stopped. Drop even requests whose history slot has
+     * been evicted, and keep every other instance's queue in the same order. */
+    messaging_lock();
+    const solar_os_messaging_provider_id_t id = node->status.id;
+    const size_t oldest = (messaging.outbox_head + SOLAR_OS_MESSAGING_OUTBOX_CAPACITY -
+        messaging.outbox_count) % SOLAR_OS_MESSAGING_OUTBOX_CAPACITY;
+    size_t kept = 0;
+    for (size_t i = 0; i < messaging.outbox_count; i++) {
+        solar_os_messaging_outbound_t *entry = &messaging.outbox[(oldest + i) % SOLAR_OS_MESSAGING_OUTBOX_CAPACITY];
+        if (entry->provider != id) messaging.outbox[(oldest + kept++) % SOLAR_OS_MESSAGING_OUTBOX_CAPACITY] = *entry;
+    }
+    for (size_t i = kept; i < messaging.outbox_count; i++)
+        memset(&messaging.outbox[(oldest + i) % SOLAR_OS_MESSAGING_OUTBOX_CAPACITY], 0, sizeof(*messaging.outbox));
+    messaging.outbox_count = kept; messaging.outbox_head = (oldest + kept) % SOLAR_OS_MESSAGING_OUTBOX_CAPACITY;
+    for (size_t i = 0; i < messaging.message_count; i++) {
+        messaging_message_slot_t *slot = &messaging.messages[(messaging_message_oldest_locked() + i) % SOLAR_OS_MESSAGING_MESSAGE_CAPACITY];
+        if (slot->message.provider != id || slot->message.direction != SOLAR_OS_MESSAGE_OUTBOUND ||
+            (slot->message.delivery != SOLAR_OS_DELIVERY_QUEUED && slot->message.delivery != SOLAR_OS_DELIVERY_SENDING)) continue;
+        slot->message.delivery = slot->message.delivery == SOLAR_OS_DELIVERY_SENDING ?
+            SOLAR_OS_DELIVERY_FAILED : SOLAR_OS_DELIVERY_CANCELLED;
+        strlcpy(slot->message.error, "instance removed", sizeof(slot->message.error)); slot->revision++;
+        messaging_publish_event_locked(SOLAR_OS_MESSAGING_EVENT_DELIVERY, id, slot->message.conversation_id,
+            slot->message.key, slot->message.delivery, ESP_OK);
+    }
+    for (size_t i = 0; i < messaging.conversation_count; i++) {
+        solar_os_messaging_conversation_t *conversation = &messaging.conversations[i];
+        if (conversation->provider != id) continue;
+        conversation->history_only = true; conversation->join_state = SOLAR_OS_MESSAGING_JOIN_LEFT;
+        strlcpy(conversation->join_error, "instance removed", sizeof(conversation->join_error));
+    }
+    node->status.removed = true; node->status.running = node->status.connected = false;
+    node->status.last_error = ESP_OK; node->context = NULL; node->removing = false;
+    strlcpy(node->status.detail, "removed", sizeof(node->status.detail));
+    messaging_note_generation_locked();
+    messaging_publish_event_locked(SOLAR_OS_MESSAGING_EVENT_PROVIDER, id, 0, 0, SOLAR_OS_DELIVERY_RECEIVED, ESP_OK);
+    messaging_unlock();
+}
+
+static esp_err_t messaging_remove_history(solar_os_messaging_provider_id_t id)
+{
+    esp_err_t error = solar_os_messaging_clear(id, NULL);
+#if SOLAR_OS_PACKAGE_SERVICE_CREDENTIALS
+    esp_err_t credentials_error = solar_os_credentials_remove_provider(id);
+    if (error == ESP_OK) error = credentials_error;
+#endif
+    messaging_lock();
+    for (size_t i = 0; i < messaging.conversation_count;) {
+        solar_os_messaging_conversation_t *conversation = &messaging.conversations[i];
+        if (conversation->provider != id) { i++; continue; }
+        messaging_publish_event_locked(SOLAR_OS_MESSAGING_EVENT_CONVERSATION_REMOVED, id,
+            conversation->id, 0, SOLAR_OS_DELIVERY_RECEIVED, ESP_OK);
+        memmove(conversation, conversation + 1,
+            (messaging.conversation_count - i - 1) * sizeof(*conversation));
+        messaging.conversation_count--;
+    }
+    messaging_note_generation_locked();
+    messaging_unlock();
+    return error;
+}
+
+esp_err_t solar_os_messaging_instance_remove(solar_os_messaging_provider_id_t id)
+{
+    if (!messaging_provider_valid(id)) return ESP_ERR_INVALID_ARG;
+    esp_err_t error = solar_os_messaging_init();
+    if (error != ESP_OK) return error;
+    messaging_lock();
+    messaging_provider_node_t *node = messaging_provider_node_locked(id);
+    if (!node) { messaging_unlock(); return ESP_ERR_NOT_FOUND; }
+    if (node->status.removed) {
+        messaging_unlock();
+        xSemaphoreTake(messaging.io_lock, portMAX_DELAY);
+        error = messaging_archive_cleanup(&node->status);
+        xSemaphoreGive(messaging.io_lock);
+        esp_err_t purge = messaging_remove_history(id);
+        return error != ESP_OK ? error : purge;
+    }
+    if (node->removing || node->operations) { messaging_unlock(); return ESP_ERR_INVALID_STATE; }
+    const solar_os_messaging_provider_class_t *type = messaging_class_locked(node->status.class_name);
+    void *context = node->context;
+    if (id <= SOLAR_OS_MESSAGING_PROVIDER_LINK &&
+        (!context || !type || !type->remove_prepare || !type->remove_finish)) {
+        messaging_unlock(); return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (context && (!type || !type->remove_prepare || !type->remove_finish)) {
+        messaging_unlock(); return ESP_ERR_NOT_SUPPORTED;
+    }
+    node->removing = true;
+    messaging_unlock();
+    if (context) error = type->remove_prepare(context);
+    bool committed = false;
+    if (error == ESP_OK) {
+        error = messaging_archive_profile(&node->status, &committed);
+        if (context) type->remove_finish(context, committed);
+    }
+    if (committed) {
+        messaging_archive_runtime(node);
+        esp_err_t purge = messaging_remove_history(id);
+        if (error == ESP_OK) error = purge;
+    }
+    else { messaging_lock(); node->removing = false; messaging_unlock(); }
+    return error;
 }

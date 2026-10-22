@@ -81,8 +81,14 @@ def _remove_path(path: Path) -> None:
 
 
 build_dir = Path(env.subst("$BUILD_DIR"))
+# PlatformIO preprocesses memory.ld.in in two stages without tracking its
+# sdkconfig.h include. Memory-layout changes must invalidate both stages.
+env.Depends("$BUILD_DIR/esp-idf/esp_system/ld/memory.ld.in", "$BUILD_DIR/config/sdkconfig.h")
+env.Depends("$BUILD_DIR/memory.ld", "$BUILD_DIR/config/sdkconfig.h")
 flavor = _selected_flavor()
 flavor_name_override = os.environ.get("SOLAR_OS_FLAVOR_NAME_OVERRIDE", "")
+module_repository_url = os.environ.get("SOLAR_OS_MODULE_REPOSITORY_URL", "")
+_append_cmake_arg("-DSOLAR_OS_MODULE_REPOSITORY_URL=" + module_repository_url)
 board = _selected_board()
 board_config = env.BoardConfig()
 # Resolve keymap paths before IDF's component-discovery subprocesses.
@@ -211,6 +217,7 @@ stamp = (
     f"board={board}\n"
     f"flavor={flavor}\n"
     f"flavor_name_override={flavor_name_override}\n"
+    f"module_repository_url={module_repository_url}\n"
     f"flavor_file={flavor_file}\n"
     f"layout={layout}\n"
     f"partition={partition_file}\n"

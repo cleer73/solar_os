@@ -467,7 +467,7 @@ class Configurator:
         title = f"Wire {driver.name}: {spec.key}"
         if spec.kind in BUS_KINDS:
             return self._choose_bus(driver, spec)
-        if spec.kind == "scalar_stream":
+        if spec.kind in {"scalar_stream", "byte_stream"}:
             return self.screen.prompt(title, f"Resource name ({spec.hint})")
         default = ""
         if len(spec.allowed) == 1:

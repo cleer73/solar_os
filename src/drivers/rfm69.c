@@ -487,6 +487,11 @@ esp_err_t rfm69_configure(rfm69_t *dev, const solar_os_radio_config_t *config)
     if (!rfm69_config_valid(dev, config)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (config->rx_gain != SOLAR_OS_RADIO_RX_GAIN_DEFAULT &&
+        (config->rx_gain < SOLAR_OS_RADIO_RX_GAIN_AUTO ||
+         config->rx_gain > SOLAR_OS_RADIO_RX_GAIN_G6)) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
 
     esp_err_t ret = rfm69_lock(dev);
     if (ret != ESP_OK) {
@@ -552,7 +557,10 @@ esp_err_t rfm69_configure(rfm69_t *dev, const solar_os_radio_config_t *config)
         ret = rfm69_write_reg_locked(dev, REG_PA_LEVEL, (uint8_t)(pa | (power & 0x1F)));
     }
     if (ret == ESP_OK) {
-        ret = rfm69_write_reg_locked(dev, REG_LNA, 0x88);
+        /* Preserve the existing 200-ohm input impedance; low three bits select gain. */
+        const uint8_t gain = config->rx_gain >= SOLAR_OS_RADIO_RX_GAIN_G1
+            ? config->rx_gain - SOLAR_OS_RADIO_RX_GAIN_G1 + 1U : 0U;
+        ret = rfm69_write_reg_locked(dev, REG_LNA, (uint8_t)(0x88U | gain));
     }
     if (ret == ESP_OK) {
         const uint8_t bw = rfm69_rx_bw_value(config->rx_bandwidth_hz, ook);
@@ -605,6 +613,9 @@ esp_err_t rfm69_configure(rfm69_t *dev, const solar_os_radio_config_t *config)
     }
     if (ret == ESP_OK) {
         dev->config = *config;
+        if (dev->config.rx_gain == SOLAR_OS_RADIO_RX_GAIN_DEFAULT) {
+            dev->config.rx_gain = SOLAR_OS_RADIO_RX_GAIN_AUTO;
+        }
         dev->state = SOLAR_OS_RADIO_STATE_STANDBY;
         rfm69_reset_receive(dev);
     }

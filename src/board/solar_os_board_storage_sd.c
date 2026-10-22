@@ -37,9 +37,13 @@ static esp_err_t storage_power_on(void)
         storage_power_configured = true;
     }
 
+    esp_err_t err = gpio_sleep_sel_dis(SOLAR_OS_BOARD_PIN_SD_POWER);
+    if (err != ESP_OK) {
+        return err;
+    }
     const int active = SOLAR_OS_BOARD_SD_POWER_ACTIVE_LEVEL ? 1 : 0;
     (void)gpio_hold_dis(SOLAR_OS_BOARD_PIN_SD_POWER);
-    const esp_err_t err = gpio_set_level(SOLAR_OS_BOARD_PIN_SD_POWER, active);
+    err = gpio_set_level(SOLAR_OS_BOARD_PIN_SD_POWER, active);
     if (err == ESP_OK) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }

@@ -23,6 +23,7 @@
 #include "solar_os_board_boot.h"
 #include "solar_os_boot_services.h"
 #include "solar_os.h"
+#include "solar_os_app_registry.h"
 #include "solar_os_adc_dpad.h"
 #include "solar_os_audio.h"
 #include "solar_os_battery.h"
@@ -41,6 +42,12 @@
 #include "solar_os_fonts.h"
 #include "solar_os_input.h"
 #include "solar_os_input_actions.h"
+#if SOLAR_OS_PACKAGE_EXPANSION_TDECK_KEYBOARD
+#include "solar_os_tdeck_keyboard.h"
+#endif
+#if SOLAR_OS_PACKAGE_EXPANSION_TRACKBALL
+#include "solar_os_trackball.h"
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_INBOX
 #include "solar_os_inbox.h"
 #endif
@@ -61,7 +68,7 @@
 #endif
 #include "solar_os_radio.h"
 #if SOLAR_OS_PACKAGE_SERVICE_MESHCORE_BLE
-#include "solar_os_meshcore_ble.h"
+#include "solar_os_messaging.h"
 #endif
 #include "solar_os_rtc.h"
 #include "solar_os_schedule.h"
@@ -124,7 +131,7 @@ static void log_runtime_memory(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+             (unsigned)solar_os_memory_dl_free_bytes(true));
 }
 
 #if SOLAR_OS_BOARD_HAS_DISPLAY
@@ -144,12 +151,12 @@ static bool key_interrupt_ready;
 static bool key_pressed;
 static bool key_long_press_fired;
 static bool key_ignore_until_released;
-#ifdef SOLAR_OS_BOARD_KEY_SHORT_INPUT_KEY
+static solar_os_power_key_action_t key_release_action = SOLAR_OS_POWER_KEY_ACTION_OFF;
 static solar_os_input_source_t key_input_source;
-#endif
 static bool deferred_sleep_pending;
 static bool deferred_sleep_deep;
 static char deferred_sleep_reason[SLEEP_REASON_MAX];
+static uint32_t suspend_input_key_press_generation;
 #if SOLAR_OS_PACKAGE_SERVICE_BLE
 static uint32_t suspend_ble_wake_generation;
 #endif
@@ -524,6 +531,7 @@ static void enter_suspend(const char *reason)
     update_status();
     draw_terminal_if_needed();
 
+    suspend_input_key_press_generation = solar_os_input_key_press_generation();
 #if SOLAR_OS_PACKAGE_SERVICE_BLE
     if (board_has(SOLAR_OS_BOARD_CAP_BLE) &&
         solar_os_ble_keyboard_enabled_for_current_boot()) {
@@ -560,23 +568,30 @@ static void enter_suspend(const char *reason)
         (void)solar_os_display_set_overlay_active(session_overlay_u8g2, false);
         session_overlay_u8g2 = NULL;
     }
+    key_release_action = SOLAR_OS_POWER_KEY_ACTION_OFF;
+    key_ignore_until_released = key_button_is_pressed();
     SOLAR_OS_LOGI(TAG,
                   "%s: suspended; profile=lowpower restore=%s",
                   reason,
                   solar_os_power_profile_name(status.profile));
 }
 
-static void maybe_exit_suspend_for_ble_keyboard(void)
+static void maybe_exit_suspend_for_input(void)
 {
-#if SOLAR_OS_PACKAGE_SERVICE_BLE
-    if (!board_has(SOLAR_OS_BOARD_CAP_BLE) ||
-        !solar_os_ble_keyboard_enabled_for_current_boot()) {
-        return;
-    }
-
     solar_os_power_status_t status;
     solar_os_power_get_status(&status);
     if (!status.suspend_active) {
+        return;
+    }
+
+    if (solar_os_input_key_press_generation() != suspend_input_key_press_generation) {
+        exit_suspend("key press");
+        return;
+    }
+
+#if SOLAR_OS_PACKAGE_SERVICE_BLE
+    if (!board_has(SOLAR_OS_BOARD_CAP_BLE) ||
+        !solar_os_ble_keyboard_enabled_for_current_boot()) {
         return;
     }
 
@@ -597,16 +612,18 @@ static void exit_suspend(const char *reason)
         return;
     }
 
-    const esp_err_t power_err = solar_os_power_end_suspend();
-    if (power_err != ESP_OK) {
-        SOLAR_OS_LOGW(TAG, "%s: profile restore failed: %s",
-                      reason, esp_err_to_name(power_err));
-    }
-
+    /* Restore shared peripheral rails before the power service restores
+     * auxiliary lights whose controllers may have lost their supply. */
     const esp_err_t display_err = solar_os_display_resume_primary();
     if (display_err != ESP_OK && display_err != ESP_ERR_NOT_SUPPORTED) {
         SOLAR_OS_LOGW(TAG, "%s: display resume failed: %s",
                       reason, esp_err_to_name(display_err));
+    }
+
+    const esp_err_t power_err = solar_os_power_end_suspend();
+    if (power_err != ESP_OK) {
+        SOLAR_OS_LOGW(TAG, "%s: profile restore failed: %s",
+                      reason, esp_err_to_name(power_err));
     }
 
     solar_os_display_clear_power_state();
@@ -853,6 +870,7 @@ static void enter_sleep(const char *reason, bool deep_sleep)
         return;
     }
 
+    key_release_action = SOLAR_OS_POWER_KEY_ACTION_OFF;
     if (!wait_key_released_stable(KEY_RELEASE_STABLE_MS, KEY_RELEASE_STABLE_TIMEOUT_MS)) {
         SOLAR_OS_LOGW(TAG, "%s: sleep cancelled, key release was not stable", reason);
         key_pressed = key_button_is_pressed();
@@ -1069,7 +1087,12 @@ static void enter_sleep(const char *reason, bool deep_sleep)
     bool radio_resumed = false;
 #if SOLAR_OS_PACKAGE_SERVICE_WIFI
     if (board_has(SOLAR_OS_BOARD_CAP_WIFI)) {
-        const esp_err_t wifi_resume_err = solar_os_wifi_resume();
+        esp_err_t wifi_resume_err = ESP_OK;
+        for (unsigned attempt = 0; attempt < 3U; attempt++) {
+            wifi_resume_err = solar_os_wifi_resume();
+            if (wifi_resume_err == ESP_OK) break;
+            if (attempt < 2U) vTaskDelay(pdMS_TO_TICKS(100));
+        }
         if (wifi_resume_err != ESP_OK) {
             SOLAR_OS_LOGW(TAG, "Wi-Fi resume failed: %s", esp_err_to_name(wifi_resume_err));
         } else {
@@ -1104,10 +1127,14 @@ static void enter_sleep(const char *reason, bool deep_sleep)
     if (radio_resumed) {
         (void)solar_os_power_hold_automatic_light_sleep(RADIO_RESUME_PM_HOLDOFF_MS);
     }
-    (void)solar_os_power_end_explicit_sleep();
-
-    update_status();
+    /* Bring shared display/peripheral rails back before auxiliary controllers
+     * receive their restored settings. */
     resume_display_after_sleep(now_ms);
+    (void)solar_os_power_end_explicit_sleep();
+#if SOLAR_OS_PACKAGE_EXPANSION_TDECK_KEYBOARD
+    solar_os_tdeck_keyboard_resume();
+#endif
+    update_status();
 }
 
 static void enter_light_sleep(const char *reason)
@@ -1143,46 +1170,81 @@ static void maybe_enter_deferred_sleep(void)
     enter_sleep(reason, deep_sleep);
 }
 
-static void handle_key_short_press(void)
+static void handle_key_pairing(void)
 {
-#ifdef SOLAR_OS_BOARD_KEY_SHORT_INPUT_KEY
-    if (key_input_source == SOLAR_OS_INPUT_SOURCE_INVALID) {
-        SOLAR_OS_LOGW(TAG, "KEY short-press input source unavailable");
-        return;
-    }
-    const esp_err_t input_err = solar_os_input_write_char(
-        key_input_source,
-        (char)SOLAR_OS_BOARD_KEY_SHORT_INPUT_KEY);
-    if (input_err != ESP_OK) {
-        SOLAR_OS_LOGW(TAG,
-                      "KEY short-press input failed: %s",
-                      esp_err_to_name(input_err));
-    }
-    return;
-#else
-    solar_os_power_status_t power_status;
-    solar_os_power_get_status(&power_status);
-
-    if (power_status.suspend_active) {
-        exit_suspend("KEY short press");
-        return;
-    }
-
-    switch (power_status.key_action) {
-    case SOLAR_OS_POWER_KEY_ACTION_OFF:
-        SOLAR_OS_LOGI(TAG, "KEY short press: sleep disabled");
-        break;
-    case SOLAR_OS_POWER_KEY_ACTION_SLEEP:
-        enter_light_sleep("KEY short press");
-        break;
-    case SOLAR_OS_POWER_KEY_ACTION_SUSPEND:
-        enter_suspend("KEY short press");
-        break;
-    default:
-        SOLAR_OS_LOGW(TAG, "KEY short press: unknown power action");
-        break;
+#if SOLAR_OS_PACKAGE_SERVICE_BLE
+    if (board_has(SOLAR_OS_BOARD_CAP_BLE) &&
+        solar_os_ble_keyboard_enabled_for_current_boot()) {
+        const esp_err_t forget_err = solar_os_ble_keyboard_forget();
+        const esp_err_t pairing_err = solar_os_ble_keyboard_start_pairing();
+        last_status_update_ms = 0;
+        update_status();
+        draw_terminal_if_needed();
+        if (forget_err == ESP_OK && pairing_err == ESP_OK) {
+            SOLAR_OS_LOGI(TAG, "KEY: BLE keyboard forget and pairing requested");
+        }
+        if (forget_err != ESP_OK) {
+            SOLAR_OS_LOGW(TAG,
+                          "KEY: BLE keyboard forget failed: %s",
+                          esp_err_to_name(forget_err));
+        }
+        if (pairing_err != ESP_OK) {
+            SOLAR_OS_LOGW(TAG,
+                          "KEY: BLE keyboard pairing failed: %s",
+                          esp_err_to_name(pairing_err));
+        }
     }
 #endif
+}
+
+static void handle_key_input(uint8_t key)
+{
+    const esp_err_t err = solar_os_input_write_char(key_input_source, (char)key);
+    if (err != ESP_OK) {
+        SOLAR_OS_LOGW(TAG, "KEY input failed: %s", esp_err_to_name(err));
+    }
+}
+
+static void handle_key_action(solar_os_power_key_action_t action, const char *reason)
+{
+    switch (action) {
+    case SOLAR_OS_POWER_KEY_ACTION_OFF:
+        break;
+    case SOLAR_OS_POWER_KEY_ACTION_ENTER:
+        handle_key_input(SOLAR_OS_KEY_ENTER);
+        break;
+    case SOLAR_OS_POWER_KEY_ACTION_APP_EXIT:
+        handle_key_input(SOLAR_OS_KEY_APP_EXIT);
+        break;
+    case SOLAR_OS_POWER_KEY_ACTION_DEFAULT:
+#ifdef SOLAR_OS_BOARD_KEY_SHORT_INPUT_KEY
+        /* Custom board profiles may supply any logical key as their default. */
+        handle_key_input(SOLAR_OS_BOARD_KEY_SHORT_INPUT_KEY);
+#endif
+        break;
+    case SOLAR_OS_POWER_KEY_ACTION_SLEEP:
+        enter_light_sleep(reason);
+        break;
+    case SOLAR_OS_POWER_KEY_ACTION_SUSPEND:
+        enter_suspend(reason);
+        break;
+    case SOLAR_OS_POWER_KEY_ACTION_DEEPSLEEP:
+        enter_deep_sleep(reason);
+        break;
+    case SOLAR_OS_POWER_KEY_ACTION_BLE_PAIR:
+        handle_key_pairing();
+        break;
+    default:
+        SOLAR_OS_LOGW(TAG, "KEY action invalid");
+        break;
+    }
+}
+
+static void handle_key_short_press(void)
+{
+    solar_os_power_status_t status;
+    solar_os_power_get_status(&status);
+    handle_key_action(status.key_action, "KEY short press");
 }
 
 static void key_button_init(void)
@@ -1191,7 +1253,6 @@ static void key_button_init(void)
         return;
     }
 
-#ifdef SOLAR_OS_BOARD_KEY_SHORT_INPUT_KEY
     const esp_err_t input_err = solar_os_input_key_source_open(
         "system-key",
         SOLAR_OS_INPUT_SOURCE_BUTTONS,
@@ -1201,9 +1262,10 @@ static void key_button_init(void)
                       "KEY input source unavailable: %s",
                       esp_err_to_name(input_err));
     }
-#endif
 
     ESP_ERROR_CHECK(key_button_configure_gpio());
+    /* Consume the wake/boot press even when it remains held past the hold threshold. */
+    key_ignore_until_released = key_button_is_pressed();
 
     esp_err_t err = gpio_install_isr_service(0);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -1236,11 +1298,31 @@ static void poll_key_button(void)
 
     if (key_ignore_until_released) {
         if (!down) {
+            const solar_os_power_key_action_t action = key_release_action;
+            key_release_action = SOLAR_OS_POWER_KEY_ACTION_OFF;
             key_ignore_until_released = false;
             key_pressed = false;
             key_long_press_fired = false;
+            solar_os_power_note_activity(now_ms);
+            if (action != SOLAR_OS_POWER_KEY_ACTION_OFF) {
+                handle_key_action(action, "KEY long press");
+            }
         }
         return;
+    }
+
+    /* Resume on the press edge, regardless of its eventual duration. Consume
+     * the whole gesture so a wake hold cannot pair, select, or suspend again. */
+    if (down) {
+        solar_os_power_status_t status;
+        solar_os_power_get_status(&status);
+        if (status.suspend_active) {
+            key_ignore_until_released = true;
+            key_pressed = false;
+            key_long_press_fired = false;
+            exit_suspend("KEY wake");
+            return;
+        }
     }
 
     if (down && !key_pressed) {
@@ -1265,29 +1347,17 @@ static void poll_key_button(void)
     }
 
     key_long_press_fired = true;
-#if SOLAR_OS_PACKAGE_SERVICE_BLE
-    if (board_has(SOLAR_OS_BOARD_CAP_BLE) &&
-        solar_os_ble_keyboard_enabled_for_current_boot()) {
-        const esp_err_t forget_err = solar_os_ble_keyboard_forget();
-        const esp_err_t pairing_err = solar_os_ble_keyboard_start_pairing();
-        last_status_update_ms = 0;
-        update_status();
-        draw_terminal_if_needed();
-        if (forget_err == ESP_OK && pairing_err == ESP_OK) {
-            SOLAR_OS_LOGI(TAG, "KEY long press: BLE keyboard forget and pairing requested");
-        }
-        if (forget_err != ESP_OK) {
-            SOLAR_OS_LOGW(TAG,
-                          "KEY long press: BLE keyboard forget failed: %s",
-                          esp_err_to_name(forget_err));
-        }
-        if (pairing_err != ESP_OK) {
-            SOLAR_OS_LOGW(TAG,
-                          "KEY long press: BLE keyboard pairing failed: %s",
-                          esp_err_to_name(pairing_err));
-        }
+    key_ignore_until_released = true;
+    solar_os_power_status_t status;
+    solar_os_power_get_status(&status);
+    if (status.key_long_action == SOLAR_OS_POWER_KEY_ACTION_SLEEP ||
+        status.key_long_action == SOLAR_OS_POWER_KEY_ACTION_DEEPSLEEP) {
+        /* RTC wake is level-triggered. Wait for release without blocking the
+         * runtime or expiring the sleep path's stable-release timeout. */
+        key_release_action = status.key_long_action;
+    } else {
+        handle_key_action(status.key_long_action, "KEY long press");
     }
-#endif
 }
 
 static void dispatch_char_to_input_focus(char ch)
@@ -1385,7 +1455,7 @@ static void dispatch_input_key(const solar_os_input_key_event_t *event)
         return;
     }
 
-    maybe_exit_suspend_for_ble_keyboard();
+    maybe_exit_suspend_for_input();
     solar_os_power_note_activity(millis_u32());
     if (solar_os_input_capture_key_event(event)) {
         return;
@@ -1394,6 +1464,15 @@ static void dispatch_input_key(const solar_os_input_key_event_t *event)
         (event->modifiers & SOLAR_OS_INPUT_MOD_ALT) != 0U;
     const bool ctrl_active =
         (event->modifiers & SOLAR_OS_INPUT_MOD_CTRL) != 0U;
+    if (event->key == SOLAR_OS_KEY_APP_EXIT &&
+        event->action == SOLAR_OS_INPUT_KEY_PRESS) {
+        /* Ctrl+Alt+Delete can arrive after Alt opened a persistent switcher.
+         * Release that display overlay before the app hands back to its shell,
+         * even while the keyboard still reports the shortcut modifiers held. */
+        session_switch_alt_held = false;
+        session_switch_nav_held = 0U;
+        close_session_overlay();
+    }
     const bool navigation_left =
         event->key == SOLAR_OS_KEY_LEFT ||
         event->key == SOLAR_OS_KEY_CTRL_LEFT;
@@ -1421,7 +1500,7 @@ static void dispatch_input_key(const solar_os_input_key_event_t *event)
 
     if (!session_switch_alt_held &&
         event->action == SOLAR_OS_INPUT_KEY_PRESS && event->key == 0U &&
-        (event->modifiers & SOLAR_OS_INPUT_MOD_LEFT_ALT) != 0U) {
+        (event->modifiers & SOLAR_OS_INPUT_MOD_LEFT_ALT) != 0U && !ctrl_active) {
         session_switch_alt_held = true;
         solar_os_sessions_show_input_focus_overlay();
         if (input_focus_accepts_key_events()) {
@@ -1529,7 +1608,8 @@ static void dispatch_input_key(const solar_os_input_key_event_t *event)
         const char prefix = (char)SOLAR_OS_KEY_ALT_PREFIX;
         dispatch_input_chars(&prefix, 1);
     }
-    dispatch_input_chars(&ch, 1);
+    const char text_key = (char)solar_os_input_translate_char_key(event->key, event->modifiers);
+    dispatch_input_chars(&text_key, 1);
 }
 
 static void dispatch_input_pointer(const solar_os_input_pointer_event_t *pointer)
@@ -1553,7 +1633,8 @@ static void dispatch_input_pointer(const solar_os_input_pointer_event_t *pointer
         }
     }
 
-    if (solar_os_input_pointer_filter_event(&oriented_pointer)) {
+    if (solar_os_input_pointer_is_captured(pointer->source) ||
+        solar_os_input_pointer_filter_event(&oriented_pointer)) {
         solar_os_power_note_activity(millis_u32());
         return;
     }
@@ -1624,6 +1705,9 @@ static void dispatch_input_gesture(const solar_os_input_gesture_event_t *gesture
 
 static void poll_local_input_sources(void)
 {
+#if SOLAR_OS_PACKAGE_EXPANSION_TRACKBALL
+    solar_os_trackball_poll();
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_BUTTONS
     if (board_has(SOLAR_OS_BOARD_CAP_BUTTONS)) {
         solar_os_buttons_poll();
@@ -1639,8 +1723,9 @@ static void poll_local_input_sources(void)
 static void dispatch_input_sources(void)
 {
     poll_local_input_sources();
+    maybe_exit_suspend_for_input();
     if (solar_os_input_take_captured_activity()) {
-        maybe_exit_suspend_for_ble_keyboard();
+        maybe_exit_suspend_for_input();
         solar_os_power_note_activity(millis_u32());
     }
     solar_os_input_key_event_t events[16];
@@ -1685,6 +1770,9 @@ static uint32_t requested_tick_interval_ms(void)
     if (jobs_interval_ms < interval_ms) {
         interval_ms = jobs_interval_ms;
     }
+#if SOLAR_OS_PACKAGE_EXPANSION_TRACKBALL
+    if (solar_os_trackball_active() && interval_ms > 10U) interval_ms = 10U;
+#endif
     return interval_ms;
 }
 
@@ -1796,11 +1884,10 @@ static void update_status(void)
     status.radio_attached = solar_os_radio_count() > 0U;
 #endif
 #if SOLAR_OS_PACKAGE_SERVICE_MESHCORE_BLE
-    solar_os_meshcore_ble_status_t companion;
-    if (solar_os_meshcore_ble_get_status(&companion) == ESP_OK) {
-        status.radio_attached |= companion.running && companion.connected &&
-            companion.state == SOLAR_OS_MESHCORE_BLE_ONLINE;
-    }
+    solar_os_messaging_provider_id_t cursor = 0;
+    solar_os_messaging_provider_status_t provider;
+    while (solar_os_messaging_provider_next(&cursor, &provider))
+        if (!strcmp(provider.class_name, "meshcore") && provider.connected) status.radio_attached = true;
 #endif
 
 #if SOLAR_OS_PACKAGE_JOB_RADIO_LINK || SOLAR_OS_PACKAGE_JOB_ESPNOW_LINK
@@ -1936,6 +2023,7 @@ static void start_headless_shell_if_needed(void)
 
 void app_main(void)
 {
+    solar_os_memory_init();
     ESP_ERROR_CHECK(init_nvs());
 #if SOLAR_OS_PACKAGE_SERVICE_BLE
     if (board_has(SOLAR_OS_BOARD_CAP_BLE)) {
@@ -2055,6 +2143,17 @@ void app_main(void)
         }
     }
 #endif
+#if SOLAR_OS_PACKAGE_SERVICE_NATIVE_MODULES
+    /* Warm the existing discovery cache before interactive shells or startup
+     * jobs can make their first lookup. Reuse the boot task and cache. */
+    if (display_u8g2 != NULL) {
+        solar_os_splash_draw(&gfx, "discovering apps");
+    }
+    const uint32_t discovery_started_ms = millis_u32();
+    const size_t discovered_apps = solar_os_app_registry_count();
+    ESP_LOGI(TAG, "boot milestone: app discovery ready (%u entries, %" PRIu32 " ms)",
+             (unsigned)discovered_apps, millis_u32() - discovery_started_ms);
+#endif
     ESP_LOGI(TAG, "boot milestone: peripherals ready");
     const esp_err_t board_jobs_err = solar_os_board_boot_start_jobs(&os_ctx);
     if (board_jobs_err != ESP_OK) {
@@ -2108,7 +2207,7 @@ void app_main(void)
 #if SOLAR_OS_PACKAGE_SERVICE_BLE
         if (board_has(SOLAR_OS_BOARD_CAP_BLE)) {
             solar_os_ble_keyboard_poll(millis_u32());
-            maybe_exit_suspend_for_ble_keyboard();
+            maybe_exit_suspend_for_input();
         }
 #endif
         poll_key_button();

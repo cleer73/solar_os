@@ -66,6 +66,7 @@ static solar_os_radio_config_t default_config(void)
         .sync_word_len = 1,
         .sync_word = {0x12},
         .tx_power_dbm = 14,
+        .rx_gain = SOLAR_OS_RADIO_RX_GAIN_POWER_SAVING,
         .crc_enabled = true,
         .variable_length = true,
         .payload_length = SX1262_MAX_PACKET_LEN,
@@ -255,12 +256,14 @@ esp_err_t solar_os_sx1262_attach(const char *name,
                 SOLAR_OS_RADIO_FEATURE_RSSI |
                 SOLAR_OS_RADIO_FEATURE_SNR |
                 SOLAR_OS_RADIO_FEATURE_TX_POWER |
+                SOLAR_OS_RADIO_FEATURE_RX_GAIN |
                 SOLAR_OS_RADIO_FEATURE_CRC |
                 SOLAR_OS_RADIO_FEATURE_SYNC_WORD |
                 SOLAR_OS_RADIO_FEATURE_PREAMBLE |
                 SOLAR_OS_RADIO_FEATURE_VARIABLE_LENGTH |
                 SOLAR_OS_RADIO_FEATURE_CONTINUOUS_RX,
             .max_packet_len = SX1262_MAX_PACKET_LEN,
+            .rx_gain_modes = SOLAR_OS_RADIO_RX_GAIN_BOOST_MODES,
             .default_config = config,
             .initial_state = SOLAR_OS_RADIO_STATE_STANDBY,
             .ops = &radio_ops,

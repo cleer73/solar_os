@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "solar_os_display_surface.h"
+#include "solar_os_display_maintenance.h"
 #include "u8g2.h"
 
 typedef struct solar_os_board_display {
@@ -58,6 +59,8 @@ typedef struct solar_os_board_display_ops {
                                const solar_os_display_raster_t *frame);
     /* Submit the current buffer synchronously before a power transition. */
     esp_err_t (*present_power_state)(solar_os_board_display_t *display);
+    esp_err_t (*relax)(solar_os_board_display_t *display,
+                       solar_os_display_relax_phase_t phase);
     esp_err_t (*shutdown)(solar_os_board_display_t *display);
 } solar_os_board_display_ops_t;
 
