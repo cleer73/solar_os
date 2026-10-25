@@ -154,6 +154,9 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `irc` | `irc remove <instance>` | Remove an IRC instance, its credentials, history and associated Inbox notifications. |
 | `irc` | `irc join\|query <instance> <channel\|nick>`; `irc leave <conversation-id>` | Open rooms and private conversations through shared Messaging. |
 | `irc` | `irc sasl <instance> <account> <password>`; `irc sasl <instance> off`; `irc pass <instance> <password\|off>`; `irc ca <instance> <PEM-path\|default>` | Set optional authentication and TLS trust. See `man messaging.irc`. |
+| `sc2` | `sc2 id`; `sc2 status` | Show this device's SC2 end-to-end identity (device ID, fingerprint, prekeys) and the service state. Creates the identity on first use. See `man python.sc2`. |
+| `sc2` | `sc2 safety <device>` | Show the safety number shared with a stored peer, to compare out of band. |
+| `sc2` | `sc2 selftest`; `sc2 bench [n]` | Run the SC2 known-answer and two-device session tests in RAM, or time the primitives and a DM/room round trip. Neither touches stored keys. |
 | `gateway` | `gateway configure <url> [token]` | Save gateway connection settings. The gateway uses the global SolarOS user identity. |
 | `messages` | `messages classes` / `messages instances` | List available provider classes or configured instances. |
 | `messages` | `messages add gateway <name> <url> [token]` | Save an independent Gateway instance. Enable it with `messages connect <name>` and start `gateway-sync`. |

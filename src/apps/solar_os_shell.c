@@ -610,6 +610,9 @@ static const shell_command_t shell_builtin_commands[] = {
 #if SOLAR_OS_PACKAGE_SERVICE_IRC
     {"irc", "configure native IRC messaging instances", solar_os_shell_cmd_irc},
 #endif
+#if SOLAR_OS_PACKAGE_SERVICE_SC2
+    {"sc2", "SC2 end-to-end chat identity, selftest and benchmark", solar_os_shell_cmd_sc2},
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_GATEWAY
     {"gateway", "configure the gateway messaging provider", solar_os_shell_cmd_gateway},
 #endif
