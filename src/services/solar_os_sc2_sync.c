@@ -1,6 +1,6 @@
 /*
  * sc2-sync worker: relay transport for the "sc2" Messaging provider.
- * See solar_os_sc2_sync.h. RAM: one worker stack (SC2_SYNC_STACK), the
+ * See solar_os_sc2_sync.h. RAM: one worker stack (SOLAR_OS_SC2_SYNC_STACK), the
  * client struct and its three buffers (PSRAM preferred), one outbound
  * request copy (PSRAM preferred) and the TLS session when chats:// is used.
  *
@@ -36,12 +36,12 @@
 #include "solar_os_task.h"
 
 static const char *TAG = "sc2-sync";
+_Static_assert(sizeof(((solar_os_sc2_sync_status_t *)0)->host) >= SOLAR_OS_SC2_RELAY_URL_MAX,
+               "sc2 relay status must hold the whole host");
 
-#define SC2_SYNC_STACK 12288u
 #define SC2_SYNC_CONNECT_MS 15000
 #define SC2_SYNC_WRITE_MS 8000u
 #define SC2_SYNC_CHECK_MS 2000u
-#define SC2_SYNC_MIN_WALL 1704067200u
 #define SC2_SYNC_DEFAULT_ROOM "pub:general"
 
 typedef struct {
@@ -141,7 +141,7 @@ static uint64_t h_wall(void *ctx)
 {
     (void)ctx;
     time_t t = time(NULL);
-    return t >= (time_t)SC2_SYNC_MIN_WALL ? (uint64_t)t : 0u;
+    return t >= (time_t)SOLAR_OS_SC2_MIN_WALL_CLOCK ? (uint64_t)t : 0u;
 }
 
 static void status(bool connected, esp_err_t err, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
@@ -422,9 +422,27 @@ static void push_outbox(void)
     }
 }
 
+static bool room_configured(const char *key)
+{
+    for (size_t i = 0; i < SOLAR_OS_SC2_RELAY_ROOM_CAPACITY; i++) {
+        if (strcmp(s.cfg->rooms[i], key) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void add_rooms(void)
 {
     bool have_general = false;
+    /* `messages leave` drops a room from the config: leave it on the relay
+     * too, or its posts keep arriving for the rest of the session. */
+    for (size_t i = 0; i < SC2C_ROOMS_MAX; i++) {
+        const sc2c_room_t *r = &s.c->rooms[i];
+        if (r->key[0] != '\0' && r->kind == SC2C_PUBLIC && !room_configured(r->key)) {
+            (void)sc2c_room_remove(s.c, r->key);
+        }
+    }
     for (size_t i = 0; i < SOLAR_OS_SC2_RELAY_ROOM_CAPACITY; i++) {
         const char *key = s.cfg->rooms[i];
         if (key[0] == '\0') {
@@ -604,7 +622,7 @@ esp_err_t solar_os_sc2_sync_start(void)
     s.done = false;
     s.running = true;
     s.checked_at = 0;
-    if (solar_os_task_create_pinned(worker, "sc2_sync", SC2_SYNC_STACK, NULL, tskIDLE_PRIORITY + 1, &s.task,
+    if (solar_os_task_create_pinned(worker, "sc2_sync", SOLAR_OS_SC2_SYNC_STACK, NULL, tskIDLE_PRIORITY + 1, &s.task,
                                     tskNO_AFFINITY, SOLAR_OS_TASK_ROLE_BACKGROUND) != pdPASS) {
         s.running = false;
         s.task = NULL;

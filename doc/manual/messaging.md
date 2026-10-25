@@ -38,9 +38,11 @@ MeshCore settings are `messages add meshcore NAME radio RADIO PROFILE` or
 | `irc` | `HOST PORT NICK` | `irc-sync` |
 | `meshcore` | `radio RADIO PROFILE` or `ble ADDRESS TYPE [PIN]` | `meshcore` or `meshcore-ble` |
 | `link` | `TRANSPORT` | Its `radio-link` or `espnow-link` transport with `chat=on` |
-| `sc2` | `chats://HOST:PORT[#pin=sha256/B64] [ADMIT]` or `chat://HOST:PORT [ADMIT]` | None yet (planned `sc2-sync`) |
+| `sc2` | `chats://HOST:PORT[#pin=sha256/B64] [ADMIT]` or `chat://HOST:PORT [ADMIT]` | `sc2-sync` (started automatically) |
 
 New instances start disabled. Use `messages connect NAME` and start the worker.
+`sc2` instances are the exception: they are created enabled, and enabling one
+starts `sc2-sync` by itself; `messages disconnect NAME` turns one off.
 `messages configure NAME SETTINGS...` changes connection settings; IRC also
 accepts `sasl ACCOUNT PASSWORD`, `sasl off`, `pass PASSWORD|off`, and `ca FILE|default`.
 Chat exposes `/classes`, `/instances`, `/add CLASS NAME SETTINGS...`,
@@ -120,8 +122,13 @@ An `sc2` instance is one SC2 relay. All relays share the device identity in
 conversations use the peer's 32-hex device ID and are marked `encrypted`; they
 also get `peer key known` once the peer's key bundle is stored. `messages
 configure NAME admit CODE|off` and `pin sha256/B64|off` change the admission
-code and the TLS pin. This build has no relay transport yet: messages stay
-queued and are marked failed after a restart.
+code and the TLS pin. With a pin, the pinned key alone authenticates the relay
+(a self-signed certificate works; host name and expiry are not checked);
+without one the certificate must chain to the ESP-IDF CA bundle. `sc2-sync`
+connects the first enabled `sc2` instance; `sc2 relay` shows its state.
+`messages query NAME PEER` and `sc2 safety PEER` take the 32-hex device ID, a
+unique prefix of at least 6 hex digits of a peer whose keys or session are
+stored, or a nickname saved with `sc2 alias NAME DEVICE`.
 
 Gateway conversations use the v1 protocol. They are always marked `legacy
 insecure`, and also `transport secured` with `chats://` or `tls://`. The server

@@ -172,9 +172,9 @@ void solar_os_shell_cmd_sc2(solar_os_context_t *ctx, int argc, char **argv)
             solar_os_shell_io_writeln(io, "sc2-sync: running, no enabled sc2 instance");
             return;
         }
-        solar_os_shell_io_printf(io, "sc2-sync: instance %u %s://%s:%u %s%s relay_id=%s outbox=%u retries=%u\n",
+        solar_os_shell_io_printf(io, "sc2-sync: instance %u %s://%s:%u %s relay_id=%s outbox=%u retries=%u\n",
                                  st.instance, st.tls ? "chats" : "chat", st.host, st.port,
-                                 st.ready ? "ready" : (st.connected ? "logging in" : "offline"), "",
+                                 st.ready ? "ready" : (st.connected ? "logging in" : "offline"),
                                  st.relay_id[0] ? st.relay_id : "-", st.outbox, st.attempt);
         return;
     }

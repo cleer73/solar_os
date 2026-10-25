@@ -15,5 +15,5 @@ const solar_os_job_t solar_os_sc2_sync_job = {
     .kind = SOLAR_OS_JOB_KIND_BACKGROUND,
     .start = sc2_sync_start,
     .stop = sc2_sync_stop,
-    .worker_stack_bytes = 12288,
+    .worker_stack_bytes = SOLAR_OS_SC2_SYNC_STACK,
 };

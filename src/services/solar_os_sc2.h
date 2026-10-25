@@ -25,6 +25,8 @@
 #define SOLAR_OS_SC2_INNER_MAX SC2E_INNER_MAX
 /* SC2 core errors are reported as SOLAR_OS_SC2_ERR_BASE - rc (rc < 0). */
 #define SOLAR_OS_SC2_ERR_BASE 0x7C200
+/* 2024-01-01: an earlier wall clock means "not set" (timestamps then 0). */
+#define SOLAR_OS_SC2_MIN_WALL_CLOCK 1704067200u
 #define SOLAR_OS_SC2_ESP_ERR(rc) ((esp_err_t)(SOLAR_OS_SC2_ERR_BASE - (rc)))
 
 typedef struct {

@@ -26,7 +26,6 @@ static const char *TAG = "sc2";
 #define SC2_FILE_MAX (4096u + SC2_SLOT_HEADER)
 #define SC2_PATH_MAX SOLAR_OS_STORAGE_PATH_MAX
 #define SC2_SEED_LEN 32u
-#define SC2_MIN_WALL_CLOCK 1704067200u /* 2024-01-01: earlier means no wall clock */
 
 typedef struct {
     SemaphoreHandle_t lock;     /* serialises the engine and its store */
@@ -414,7 +413,7 @@ static uint64_t pf_now(void *ctx)
 {
     (void)ctx;
     time_t now = time(NULL);
-    return now >= (time_t)SC2_MIN_WALL_CLOCK ? (uint64_t)now : 0u;
+    return now >= (time_t)SOLAR_OS_SC2_MIN_WALL_CLOCK ? (uint64_t)now : 0u;
 }
 
 static uint64_t host_clock_us(void *ctx)

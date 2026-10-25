@@ -6,8 +6,8 @@
  *
  * This file registers the class, validates and stores per-relay settings in
  * the instance profile, and keeps the joined room list and conversation
- * security flags. It does not open network connections: queued sends stay
- * queued until a relay transport (the sc2-sync job) is added.
+ * security flags. It does not open network connections: the sc2-sync job
+ * (solar_os_sc2_sync.c, installed through the transport hook) carries them.
  */
 
 #include <stdbool.h>
@@ -31,7 +31,7 @@ typedef struct {
     bool tls;                                   /* chats:// (true) or chat:// */
     uint16_t port;
     char url[SOLAR_OS_SC2_RELAY_URL_MAX];       /* without the #pin fragment */
-    char pin[SOLAR_OS_SC2_RELAY_PIN_MAX];       /* empty: CA bundle */
+    char pin[SOLAR_OS_SC2_RELAY_PIN_MAX];       /* empty: CA bundle; set: this SPKI pin only */
     char admit[SOLAR_OS_SC2_RELAY_ADMIT_MAX];   /* optional admission code */
     char rooms[SOLAR_OS_SC2_RELAY_ROOM_CAPACITY][SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX];
 } solar_os_sc2_relay_config_t;
@@ -46,7 +46,7 @@ typedef enum {
 /* Register the class and attach saved instances. Safe to call repeatedly. */
 esp_err_t solar_os_sc2_provider_init(void);
 
-/* Parse "chats://host[:port][#pin=sha256/B64]" or "chat://host[:port]" into
+/* Parse "chats://host:port[#pin=sha256/B64]" or "chat://host:port" into
  * config (url, tls, port, pin). Leaves the other fields untouched. */
 esp_err_t solar_os_sc2_relay_parse_url(const char *text, solar_os_sc2_relay_config_t *config);
 bool solar_os_sc2_relay_config_valid(const solar_os_sc2_relay_config_t *config);

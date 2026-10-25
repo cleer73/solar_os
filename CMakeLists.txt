@@ -31,6 +31,8 @@ include(patches/nimble/config_guard.cmake)
 solar_os_regenerate_stale_sdkconfig()
 include(scripts/cxx_sdkconfig.cmake)
 solar_os_enable_required_cxx_exceptions()
+include(scripts/sdkconfig_minimums.cmake)
+solar_os_apply_sdkconfig_minimums()
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 idf_build_set_property(
     COMPILE_DEFINITIONS
