@@ -206,6 +206,15 @@ queued. `sc2 relay` shows the relay in use. Trade-offs:
 - Queued messages are sent through whichever relay is in use, never during a
   visit.
 
+Reconnects: a relay may close a session on purpose and says why before it
+does. A session that only sent keepalive pings for the relay's idle timeout
+(`408 idle`), one that reached the relay's session lifetime
+(`503 reconnect`) and an idle session closed to make room on a full relay
+(`503 evicted`) are normal: `sc2-sync` reconnects after one to three
+seconds, does not count a failed attempt and does not move to a fallback.
+DMs wait in the relay's mailbox and rooms catch up at the next sync. Every
+other drop, including `503 server_full`, goes through the backoff.
+
 A device can also be the relay: `job start chatd` serves a small SC2
 mini-relay (login, DM mailbox, prekeys and the public room `pub:general`,
 with fixed caps) next to the v1 gateway on the same port. Add it with

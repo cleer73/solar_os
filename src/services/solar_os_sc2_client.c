@@ -1141,6 +1141,22 @@ static bool code_retryable(uint64_t code)
     return code == 429 || code == 503 || code == 507 || code == 500;
 }
 
+/* Error frames the relay sends, without a rid, right before it closes a
+ * session on purpose. 503 is also "server_full", which stays a failure. */
+static sc2c_close_t close_reason(uint64_t code, const char *err)
+{
+    if (code == 408) {
+        return SC2C_CLOSE_IDLE;
+    }
+    if (code == 503 && strcmp(err, "reconnect") == 0) {
+        return SC2C_CLOSE_RECONNECT;
+    }
+    if (code == 503 && strcmp(err, "evicted") == 0) {
+        return SC2C_CLOSE_EVICTED;
+    }
+    return SC2C_CLOSE_NONE;
+}
+
 static void on_error(sc2c_t *c, const char *rid, const sc2_json_val_t *root)
 {
     uint64_t code = 0;
@@ -1150,6 +1166,14 @@ static void on_error(sc2c_t *c, const char *rid, const sc2_json_val_t *root)
     (void)sc2_json_get_string(root, "text", text, sizeof(text), NULL);
     const char *why = text[0] != '\0' ? text : (err[0] != '\0' ? err : "relay error");
     int i;
+    /* Only an authenticated session can be closed this way; during login
+     * any refusal is a failure and goes through the backoff. */
+    sc2c_close_t closing = rid[0] == '\0' && c->state >= SC2C_SYNCING ? close_reason(code, err) : SC2C_CLOSE_NONE;
+    if (closing != SC2C_CLOSE_NONE) {
+        c->closed = (uint8_t)closing;
+        notice(c, (int)code, why);
+        return;
+    }
     if ((i = rid_index(rid, 'o', SC2C_OUTBOX_SLOTS)) >= 0 && c->slots[i].used) {
         sc2c_slot_t s = c->slots[i];
         if (code_retryable(code)) {
@@ -1464,6 +1488,7 @@ int sc2c_on_connected(sc2c_t *c)
 {
     size_t n = 0;
     sc2_lines_init(c->rx);
+    c->closed = SC2C_CLOSE_NONE;
     c->state = SC2C_HELLO; /* set directly: send_frame refuses OFFLINE */
     c->last_rx_ms = now_ms(c);
     /* A fresh nonce on every connection: the relay signs it with its key. */
@@ -1903,6 +1928,38 @@ uint32_t sc2c_backoff_ms(uint32_t *attempt, uint32_t random)
     }
     uint32_t jitter = base / 4u;
     return base - jitter + (jitter != 0 ? random % (2u * jitter + 1u) : 0u);
+}
+
+sc2c_close_t sc2c_close_reason(const sc2c_t *c)
+{
+    return (sc2c_close_t)c->closed;
+}
+
+bool sc2c_close_soft(sc2c_close_t why)
+{
+    return why == SC2C_CLOSE_IDLE || why == SC2C_CLOSE_RECONNECT || why == SC2C_CLOSE_EVICTED;
+}
+
+const char *sc2c_close_name(sc2c_close_t why)
+{
+    switch (why) {
+    case SC2C_CLOSE_IDLE:
+        return "relay closed the idle session";
+    case SC2C_CLOSE_RECONNECT:
+        return "relay session lifetime reached";
+    case SC2C_CLOSE_EVICTED:
+        return "relay full, idle session closed";
+    default:
+        return "none";
+    }
+}
+
+uint32_t sc2c_reconnect_ms(const sc2c_t *c, uint32_t *attempt, uint32_t random)
+{
+    if (sc2c_close_soft(sc2c_close_reason(c))) {
+        return SC2C_SOFT_RECONNECT_MS + random % 2001u;
+    }
+    return sc2c_backoff_ms(attempt, random);
 }
 
 const char *sc2c_state_name(int state)

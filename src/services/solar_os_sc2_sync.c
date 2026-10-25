@@ -358,6 +358,8 @@ static void drop(esp_err_t err, const char *why)
     bool was = s.connected;
     s.connected = false;
     s.ready = false;
+    /* the reason the relay gave for closing this session, if any */
+    const sc2c_close_t closed = s.client_ok && was ? sc2c_close_reason(s.c) : SC2C_CLOSE_NONE;
     if (s.client_ok && was) {
         sc2c_on_disconnected(s.c);
     }
@@ -369,7 +371,8 @@ static void drop(esp_err_t err, const char *why)
         return;
     }
     const unsigned from = s.rp.relay;
-    sc2rp_action_t act = sc2rp_failed(&s.rp);
+    /* a close the relay announced is not a failure: no failover for it */
+    sc2rp_action_t act = closed != SC2C_CLOSE_NONE ? sc2rp_closed(&s.rp) : sc2rp_failed(&s.rp);
     s.rebuild = act != SC2RP_STAY;
     if (act == SC2RP_SWITCH_NOW) {
         /* a visited relay is not needed now: straight back home, no backoff */
@@ -378,8 +381,11 @@ static void drop(esp_err_t err, const char *why)
         s.retry_at = mono_ms();
         return;
     }
-    /* the existing backoff paces the attempts, also across relays */
-    uint32_t delay = sc2c_backoff_ms(&s.attempt, esp_random());
+    /* the backoff paces the attempts, also across relays; after an idle,
+     * evicted or expired session the next attempt comes after a short pause
+     * and is not counted */
+    uint32_t delay = closed != SC2C_CLOSE_NONE ? sc2c_reconnect_ms(s.c, &s.attempt, esp_random())
+                                               : sc2c_backoff_ms(&s.attempt, esp_random());
     s.retry_at = mono_ms() + delay;
     const char *next = act == SC2RP_STAY ? "" : s.rp.relay == 0 ? ", next: primary" : ", next: fallback";
     status(false, err, "%s; retry in %u s%s", why, (unsigned)((delay + 999u) / 1000u), next);
@@ -464,6 +470,11 @@ static void pump_input(uint32_t wait_ms)
             }
             s.key_refused = NULL;
             drop(err, why);
+            return;
+        }
+        if (sc2c_close_reason(s.c) != SC2C_CLOSE_NONE) {
+            /* the relay announced the close: do not wait for the socket */
+            drop(ESP_OK, sc2c_close_name(sc2c_close_reason(s.c)));
             return;
         }
         if (esp_tls_get_bytes_avail(s.tls) <= 0) {

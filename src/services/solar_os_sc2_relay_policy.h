@@ -90,6 +90,19 @@ static inline sc2rp_action_t sc2rp_failed(sc2rp_t *p)
     return SC2RP_STAY;
 }
 
+/* The relay ended a working session on purpose and said why (idle,
+ * session lifetime, evicted, replaced). Not a failure: the failure count is
+ * untouched and the relay in use stays, except that a visit ends and goes
+ * home at once. */
+static inline sc2rp_action_t sc2rp_closed(sc2rp_t *p)
+{
+    if (p->visiting) {
+        sc2rp_go(p, p->home, false);
+        return SC2RP_SWITCH_NOW;
+    }
+    return SC2RP_STAY;
+}
+
 /* Connected and logged in; idle: nothing waiting to be sent. */
 static inline sc2rp_action_t sc2rp_tick(sc2rp_t *p, uint64_t now_ms, bool idle)
 {

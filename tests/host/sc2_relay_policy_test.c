@@ -1,4 +1,5 @@
-/* sc2-sync relay choice: failover, return to the primary, fallback visits. */
+/* sc2-sync relay choice: failover, return to the primary, fallback visits,
+ * sessions the relay closes on purpose. */
 #include <assert.h>
 #include <stdio.h>
 
@@ -74,6 +75,30 @@ static void visits_from_primary(void)
     assert(sc2rp_failed(&p) == SC2RP_SWITCH_NOW && p.relay == 0);
 }
 
+/* idle, evicted, expired or replaced sessions: no failure count, no failover */
+static void announced_closes(void)
+{
+    sc2rp_t p;
+    uint64_t t = 0;
+    sc2rp_reset(&p, 3, t);
+    sc2rp_ready(&p, t += 100);
+    assert(sc2rp_failed(&p) == SC2RP_STAY && p.fails == 1);
+    for (int i = 0; i < 10; i++) {
+        assert(sc2rp_closed(&p) == SC2RP_STAY && p.relay == 0 && p.home == 0 && p.fails == 1);
+    }
+    /* the next real failure still counts from where it was */
+    assert(sc2rp_failed(&p) == SC2RP_SWITCH && p.relay == 1);
+    sc2rp_ready(&p, t += 100);
+    assert(p.fails == 0);
+    assert(sc2rp_closed(&p) == SC2RP_STAY && p.relay == 1 && p.home == 1);
+    /* on a visit it ends the visit: back home at once */
+    assert(sc2rp_tick(&p, t += SC2RP_FIRST_VISIT_MS, true) == SC2RP_SWITCH_NOW && p.relay == 0 && p.visiting);
+    sc2rp_ready(&p, t += 100);
+    assert(p.home == 0 && !p.visiting); /* the primary is back */
+    assert(sc2rp_tick(&p, p.visit_at, true) == SC2RP_SWITCH_NOW && p.relay != 0 && p.visiting);
+    assert(sc2rp_closed(&p) == SC2RP_SWITCH_NOW && p.relay == 0 && !p.visiting && p.fails == 0);
+}
+
 static void clamp(void)
 {
     sc2rp_t p;
@@ -88,7 +113,8 @@ int main(void)
     single_relay();
     failover_and_back();
     visits_from_primary();
+    announced_closes();
     clamp();
-    puts("sc2_relay_policy_test: failover, return to primary, visits OK");
+    puts("sc2_relay_policy_test: failover, return to primary, visits, announced closes OK");
     return 0;
 }

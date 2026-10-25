@@ -1352,6 +1352,21 @@ sc2-mbedtls-test: sc2-engine-mbedtls-test
 endif
 TARGETS += sc2_engine_test sc2_engine_mbedtls_test
 
+# SC2 relay client (sc2-sync state machine) against the mini-relay, in process.
+sc2_client_test: sc2_client_test.c $(SC2E_DIR)/solar_os_sc2_client.c $(SC2E_DIR)/solar_os_sc2_client.h \
+        $(SC2E_SRCS) $(SC2E_HDRS) $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) $(SC2_INC) -I$(SC2E_DIR) $< $(SC2E_DIR)/solar_os_sc2_client.c $(SC2E_SRCS) $(SC2_SRCS) \
+		$(SC2_VENDOR_OBJS) -o $@
+
+.PHONY: sc2-client-test
+sc2-client-test: sc2_client_test
+	./sc2_client_test
+
+all: sc2_client_test
+sc2-test: sc2-client-test
+test: sc2-client-test
+TARGETS += sc2_client_test
+
 # SC2 Messaging provider class on the real Messaging registry (SC2 key store stubbed).
 sc2_provider_test: sc2_provider_test.c messaging_service_test.c $(SC2E_DIR)/solar_os_sc2_provider.c \
         $(SC2E_DIR)/solar_os_sc2_provider.h $(ROOT)/src/services/solar_os_contacts.c \

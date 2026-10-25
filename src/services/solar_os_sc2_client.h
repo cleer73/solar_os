@@ -16,6 +16,14 @@
  * sealed room messages), a persisted sealed outbox replayed after
  * reconnects (the relay dedups), ping keepalive and a backoff helper.
  *
+ * Reconnects: the relay names the reason in an error frame before it closes
+ * a session on purpose (408 idle, 503 reconnect, 503 evicted).
+ * sc2c_close_reason() keeps that reason after the disconnect so the host
+ * can tell such a close from a failure: it reconnects after a short pause
+ * (sc2c_reconnect_ms()) without counting a failed attempt and without
+ * failing over to another relay. Every other drop goes through the
+ * exponential backoff.
+ *
  * RAM: three heap buffers per connection (receive line, transmit frame,
  * plaintext work), about 37 KiB with SC2_LOW_RAM and 41 KiB otherwise, plus
  * this struct (about 3 KiB). Engine work memory comes on top per call.
@@ -57,6 +65,7 @@ extern "C" {
 #define SC2C_PING_MS 45000u
 #define SC2C_DEAD_MS 120000u
 #define SC2C_OPK_TARGET 16u
+#define SC2C_SOFT_RECONNECT_MS 1000u /* pause after a soft close, plus up to 2 s jitter */
 
 /* Return codes beyond the SC2_* ones. */
 #define SC2C_AGAIN 1 /* not yet possible (offline or keys being fetched); retry later */
@@ -74,6 +83,16 @@ typedef enum {
     SC2C_SYNCING,
     SC2C_READY,  /* initial sync done, live traffic flowing */
 } sc2c_conn_state_t;
+
+/* Why the relay ended the session, from the error frame it sent before
+ * closing. Set only for an authenticated session; cleared by
+ * sc2c_on_connected() and still readable after sc2c_on_disconnected(). */
+typedef enum {
+    SC2C_CLOSE_NONE = 0,  /* no reason given: the drop counts as a failure */
+    SC2C_CLOSE_IDLE,      /* 408 idle: only pings for the relay's idle timeout */
+    SC2C_CLOSE_RECONNECT, /* 503 reconnect: the relay's session lifetime ran out */
+    SC2C_CLOSE_EVICTED,   /* 503 evicted: relay full, this idle session made room */
+} sc2c_close_t;
 
 typedef enum {
     SC2C_ROOM_IDLE = 0,
@@ -190,6 +209,7 @@ typedef struct {
     char self_hex[SC2_DEVICE_ID_HEX_LEN + 1];
     uint8_t self_id[SC2_DEVICE_ID_LEN];
     uint8_t state;   /* sc2c_conn_state_t */
+    uint8_t closed;  /* sc2c_close_t of the current or last session */
     bool auto_admit; /* admin: add devices that present a valid invite */
     bool no_opks;    /* keys.publish without one-time prekeys */
     bool sync_more;
@@ -224,12 +244,15 @@ typedef struct {
 int sc2c_init(sc2c_t *c, const sc2c_host_t *host, const sc2c_config_t *cfg);
 void sc2c_free(sc2c_t *c);
 
-/* Transport events. on_connected sends hello; on_disconnected resets the
- * session (outbox items stay persisted and are replayed on the next login). */
+/* Transport events. on_connected sends hello and clears the close reason;
+ * on_disconnected resets the session (outbox items stay persisted and are
+ * replayed on the next login) and keeps the close reason. */
 int sc2c_on_connected(sc2c_t *c);
 void sc2c_on_disconnected(sc2c_t *c);
 /* Received bytes (any split). Returns SC2_OK, or an error when the
- * connection should be dropped (auth refused, relay mismatch, send failed). */
+ * connection should be dropped (auth refused, relay mismatch, send failed).
+ * After SC2_OK, check sc2c_close_reason(): when it is set the relay is
+ * about to close the session and the host may drop it right away. */
 int sc2c_feed(sc2c_t *c, const uint8_t *data, size_t len);
 /* Keepalive and retries. Returns SC2_ERR_STATE when the relay went silent
  * for SC2C_DEAD_MS (drop the connection). */
@@ -263,6 +286,17 @@ size_t sc2c_outbox_count(const sc2c_t *c);
 /* Exponential reconnect delay with jitter: 1 s, 2 s, 4 s ... capped at
  * 60 s. *attempt counts consecutive failures; reset it after a login. */
 uint32_t sc2c_backoff_ms(uint32_t *attempt, uint32_t random);
+
+/* Reason the relay gave for ending the session (SC2C_CLOSE_NONE if none). */
+sc2c_close_t sc2c_close_reason(const sc2c_t *c);
+/* True for reasons that are part of normal operation (idle, reconnect,
+ * evicted): reconnect soon, do not count a failure, do not fail over. */
+bool sc2c_close_soft(sc2c_close_t why);
+const char *sc2c_close_name(sc2c_close_t why);
+/* Delay before the next connection attempt after a session ended with
+ * sc2c_close_reason(c). Soft closes: SC2C_SOFT_RECONNECT_MS plus jitter,
+ * *attempt untouched. Otherwise the same as sc2c_backoff_ms(). */
+uint32_t sc2c_reconnect_ms(const sc2c_t *c, uint32_t *attempt, uint32_t random);
 
 const char *sc2c_state_name(int state);
 
