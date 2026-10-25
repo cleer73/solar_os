@@ -20,6 +20,12 @@
 static uint64_t g_ms = 1000u;
 static uint64_t g_s = 1700000000u;
 
+static void advance_s(uint64_t s)
+{
+    g_ms += s * 1000u;
+    g_s += s;
+}
+
 static void *t_alloc(void *ctx, size_t len)
 {
     (void)ctx;
@@ -96,6 +102,7 @@ static void q_clear(queue_t *q)
 #define NSESS 4u
 static sc2_mr_t *mr;
 static queue_t to_client[NSESS];
+static bool closing[NSESS]; /* kicked by the relay: close once its last frame is delivered */
 
 static int mr_send(void *ctx, unsigned s, const char *line, size_t len)
 {
@@ -108,6 +115,12 @@ static uint64_t mr_now(void *ctx)
 {
     (void)ctx;
     return g_s;
+}
+
+static void mr_kick(void *ctx, unsigned s)
+{
+    (void)ctx;
+    closing[s] = true;
 }
 
 /* ---------------- devices ---------------- */
@@ -216,6 +229,7 @@ static void disconnect(tdev_t *d)
     }
     unsigned s = (unsigned)d->sess;
     sc2_mr_close(mr, s);
+    closing[s] = false;
     q_clear(&to_client[s]);
     q_clear(&d->to_relay);
     d->sess = -1;
@@ -254,6 +268,11 @@ static void pump(void)
                     free(nl);
                 }
                 free(l);
+            }
+            tdev_t *d = dev_on(s);
+            if (closing[s] && d != NULL) {
+                disconnect(d);
+                moved = true;
             }
         }
         if (!moved) {
@@ -389,25 +408,72 @@ static void replaced_backoff(tdev_t *a)
     CHECK(sc2c_reconnect_ms(&a->c, &attempt, 0) == 3000u);
 }
 
+/* The same device key logs in on a second connection: the mini-relay
+ * replaces the older session, whose client backs off. */
+static void replaced_by_relay(tdev_t *a, tdev_t *a2)
+{
+    connect_to(a, 0);
+    CHECK(sc2c_ready(&a->c));
+    connect_to(a2, 1);
+    CHECK(sc2c_ready(&a2->c));
+    CHECK(a->sess < 0 && a->c.state == SC2C_OFFLINE);
+    CHECK(sc2c_close_reason(&a->c) == SC2C_CLOSE_REPLACED);
+    CHECK(sc2c_close_reason(&a2->c) == SC2C_CLOSE_NONE);
+    uint32_t attempt = 0;
+    CHECK(sc2c_reconnect_ms(&a->c, &attempt, 0) >= 3000u && attempt > 0);
+    disconnect(a2);
+}
+
+/* A client that only sends keepalive pings is closed as idle and treats it
+ * as a normal reconnect. */
+static void idle_by_relay(tdev_t *a)
+{
+    connect_to(a, 0);
+    CHECK(sc2c_ready(&a->c));
+    unsigned closed = 0;
+    for (unsigned t = 0; t <= SC2_MR_IDLE_S + 30u && a->sess >= 0; t += 15u) {
+        advance_s(15u);
+        CHECK_RC(sc2c_tick(&a->c), SC2_OK); /* pings every SC2C_PING_MS */
+        pump();
+        closed += sc2_mr_tick(mr);
+        pump();
+    }
+    CHECK(closed == 1 && a->sess < 0);
+    CHECK(sc2c_close_reason(&a->c) == SC2C_CLOSE_IDLE);
+    uint32_t attempt = 2;
+    uint32_t ms = sc2c_reconnect_ms(&a->c, &attempt, 7);
+    CHECK(attempt == 2 && ms <= SC2C_SOFT_RECONNECT_MS + 2000u);
+    /* and the next session starts clean */
+    connect_to(a, 0);
+    CHECK(sc2c_ready(&a->c) && sc2c_close_reason(&a->c) == SC2C_CLOSE_NONE);
+    disconnect(a);
+}
+
 int main(void)
 {
     uint8_t seed[32] = {9};
     sc2_mr_config_t cfg = {.relay_id = "mr.test", .seed = seed, .rng = {sc2t_xs_fn, NULL}, .now_s = mr_now,
-                           .send = mr_send, .alloc = t_alloc, .release = t_release, .sessions = NSESS};
+                           .send = mr_send, .alloc = t_alloc, .release = t_release, .sessions = NSESS,
+                           .kick = mr_kick};
     CHECK_RC(sc2_mr_init(&mr, &cfg), SC2_OK);
 
-    static tdev_t a;
+    static tdev_t a, a2;
     d_init(&a, "alice", "a", NULL);
+    d_init(&a2, "alice2", "b", &a); /* same device key, second connection */
     devs[ndevs++] = &a;
+    devs[ndevs++] = &a2;
 
     announced_closes(&a);
     reconnect_delays(&a);
     replaced_backoff(&a);
+    replaced_by_relay(&a, &a2);
+    idle_by_relay(&a);
 
+    d_free(&a2);
     d_free(&a);
     for (unsigned s = 0; s < NSESS; s++) {
         q_clear(&to_client[s]);
     }
     sc2_mr_free(mr);
-    return sc2t_report("sc2_client_test: announced closes, reconnect delays, replaced backoff");
+    return sc2t_report("sc2_client_test: announced closes, reconnect delays, replaced backoff, mini-relay kicks");
 }

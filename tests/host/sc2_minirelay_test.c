@@ -1,6 +1,6 @@
 /* Host tests for the portable mini-relay (protocol/sc2 sc2_minirelay):
- * caps and refusals that the TCP tests of the solar_os_sc2-relay repository
- * do not reach.
+ * caps, refusals and connection slots that the TCP tests of the
+ * solar_os_sc2-relay repository do not reach.
  * SPDX-License-Identifier: MIT */
 #include <stdarg.h>
 #include <stdio.h>
@@ -12,15 +12,24 @@
 #include "sc2_test_util.h"
 
 static char g_last[SC2_MR_SESSIONS_MAX][8192];
+static char g_log[SC2_MR_SESSIONS_MAX][16384]; /* recent lines, oldest dropped */
 static int g_count[SC2_MR_SESSIONS_MAX];
 static int tx(void *ctx, unsigned s, const char *line, size_t len)
 {
     (void)ctx;
     snprintf(g_last[s], sizeof(g_last[s]), "%.*s", (int)len, line);
+    size_t have = strlen(g_log[s]);
+    if (have + len + 2u > sizeof(g_log[s])) {
+        have = 0;
+    }
+    snprintf(g_log[s] + have, sizeof(g_log[s]) - have, "%.*s\n", (int)len, line);
     g_count[s]++;
     return 0;
 }
-static uint64_t now_s(void *ctx) { (void)ctx; return 1700000000u; }
+static uint64_t g_now = 1700000000u;
+static uint64_t now_s(void *ctx) { (void)ctx; return g_now; }
+static int g_kicked[SC2_MR_SESSIONS_MAX];
+static void kicked(void *ctx, unsigned s) { (void)ctx; g_kicked[s]++; }
 static void *al(void *ctx, size_t n) { (void)ctx; return calloc(1, n); }
 static void rl(void *ctx, void *p, size_t n) { (void)ctx; (void)n; free(p); }
 static const sc2_rng_t RNG = {sc2t_xs_fn, NULL};
@@ -37,6 +46,7 @@ static int L(unsigned s, const char *fmt, ...)
     return sc2_mr_line(mr, s, buf, (size_t)n);
 }
 static bool has(unsigned s, const char *needle) { return strstr(g_last[s], needle) != NULL; }
+static bool logged(unsigned s, const char *needle) { return strstr(g_log[s], needle) != NULL; }
 
 static void b64(char *out, size_t cap, const uint8_t *in, size_t n)
 {
@@ -44,10 +54,9 @@ static void b64(char *out, size_t cap, const uint8_t *in, size_t n)
     (void)sc2_b64_encode(out, cap, &w, in, n);
 }
 
-/* hello + auth for a fresh identity on session s */
-static void login(unsigned s, sc2_identity_t *id, char hex[33], const char *admit)
+/* hello + auth for identity id on session s */
+static void login_as(unsigned s, const sc2_identity_t *id, char hex[33], const char *admit)
 {
-    CHECK_RC(sc2_identity_generate(id, &RNG), SC2_OK);
     sc2_mr_open(mr, s);
     CHECK_RC(admit ? L(s, "{\"type\":\"hello\",\"v\":2,\"proto\":\"sc2\",\"admit\":\"%s\"}", admit)
                    : L(s, "{\"type\":\"hello\",\"v\":2,\"proto\":\"sc2\"}"), SC2_MR_OK);
@@ -60,6 +69,13 @@ static void login(unsigned s, sc2_identity_t *id, char hex[33], const char *admi
     CHECK_RC(sc2_frame_auth(buf, sizeof(buf), &n, "a", id->ik_pub, sig, false), SC2_OK);
     (void)sc2_mr_line(mr, s, buf, n);
     CHECK_RC(sc2_device_id_hex(hex, id->ik_pub), SC2_OK);
+}
+
+/* hello + auth for a fresh identity on session s */
+static void login(unsigned s, sc2_identity_t *id, char hex[33], const char *admit)
+{
+    CHECK_RC(sc2_identity_generate(id, &RNG), SC2_OK);
+    login_as(s, id, hex, admit);
 }
 
 static void publish(unsigned s, const sc2_identity_t *id, unsigned opks, uint32_t first)
@@ -93,11 +109,98 @@ static int dm(unsigned s, const char *from, const char *to, unsigned msg_n)
                 "\"pn\":0,\"n\":%u,\"nonce\":\"%s\",\"ct\":\"%s\"}}", to, from, rkb, msg_n, nb, cb);
 }
 
+/* Connection slots: one session per device, idle and login timeouts (pings
+ * are not activity), eviction of the longest-idle session when full.
+ * On entry sessions 0 (a) and 1 (b) are logged in; 2 and 3 are free. */
+static void slots(const sc2_identity_t *a, const sc2_identity_t *b)
+{
+    char ah[33], bh[33];
+    sc2_mr_stats_t st;
+    memset(g_kicked, 0, sizeof(g_kicked));
+
+    /* a logs in again on 2: the session on 0 is replaced */
+    g_log[2][0] = '\0';
+    login_as(2, a, ah, "code");
+    CHECK(logged(2, "\"type\":\"authed\"") && logged(2, "\"new\":false"));
+    CHECK(has(0, "\"code\":409") && has(0, "\"err\":\"replaced\"") && !has(0, "\"rid\""));
+    CHECK(g_kicked[0] == 1 && g_kicked[1] == 0 && g_kicked[2] == 0);
+    CHECK(!sc2_mr_active(mr, 0) && sc2_mr_active(mr, 2));
+    CHECK_RC(L(0, "{\"type\":\"ping\"}"), SC2_MR_CLOSE); /* released */
+    sc2_mr_close(mr, 0);                                  /* what the host does; harmless */
+    sc2_mr_stats(mr, &st);
+    CHECK(st.replaced_total == 1 && st.sessions == 2);
+    /* the new session works: its DMs are still there */
+    g_count[2] = 0;
+    L(2, "{\"type\":\"sync\",\"rid\":\"y\",\"inbox\":\"5\"}");
+    CHECK(g_count[2] > 1 && has(2, "\"type\":\"sync.done\""));
+
+    /* idle: pings do not count, any other frame does */
+    uint64_t t0 = g_now;
+    CHECK(sc2_mr_tick(mr) == 0);
+    g_now = t0 + SC2_MR_IDLE_S - 10u;
+    L(1, "{\"type\":\"presence.set\",\"status\":\"online\"}"); /* b is active */
+    for (unsigned i = 0; i < 9; i++) {
+        g_now++;
+        CHECK_RC(L(2, "{\"type\":\"ping\",\"rid\":\"p\"}"), SC2_MR_OK);
+        CHECK(has(2, "\"type\":\"pong\""));
+        CHECK(sc2_mr_tick(mr) == 0);
+    }
+    g_now++; /* a on 2: SC2_MR_IDLE_S since its sync, pings only since */
+    CHECK(sc2_mr_tick(mr) == 1);
+    CHECK(has(2, "\"code\":408") && has(2, "\"err\":\"idle\"") && g_kicked[2] == 1);
+    CHECK(!sc2_mr_active(mr, 2) && sc2_mr_active(mr, 1));
+    g_now += SC2_MR_IDLE_S - 11u; /* b: one second short */
+    CHECK(sc2_mr_tick(mr) == 0);
+    g_now++;
+    CHECK(sc2_mr_tick(mr) == 1 && g_kicked[1] == 1 && has(1, "\"err\":\"idle\""));
+    sc2_mr_stats(mr, &st);
+    CHECK(st.idle_total == 2 && st.sessions == 0);
+
+    /* a login that is not finished in time */
+    sc2_mr_open(mr, 3);
+    CHECK_RC(L(3, "{\"type\":\"hello\",\"v\":2,\"proto\":\"sc2\"}"), SC2_MR_OK);
+    g_now += SC2_MR_AUTH_S - 1u;
+    L(3, "{\"type\":\"room.list\"}"); /* frames before auth do not extend it */
+    CHECK(sc2_mr_tick(mr) == 0);
+    g_now++;
+    CHECK(sc2_mr_tick(mr) == 1 && g_kicked[3] == 1 && has(3, "\"code\":408"));
+
+    /* eviction: everyone logged in; nobody idle long enough yet */
+    memset(g_kicked, 0, sizeof(g_kicked));
+    sc2_identity_t c, d;
+    char ch[33], dh[33];
+    login_as(0, a, ah, "code");
+    g_now += 5u;
+    login_as(1, b, bh, "code");
+    g_now += 5u;
+    login(2, &c, ch, "code");
+    login(3, &d, dh, "code");
+    CHECK(has(3, "\"type\":\"authed\""));
+    CHECK(sc2_mr_evict(mr) == -1);
+    g_now += SC2_MR_EVICT_MIN_S - 6u; /* a idle 64 s, b 59 s */
+    L(0, "{\"type\":\"ping\"}");    /* pings do not save a */
+    CHECK(sc2_mr_evict(mr) == 0);
+    CHECK(g_kicked[0] == 1 && has(0, "\"code\":503") && has(0, "\"err\":\"evicted\""));
+    CHECK(!sc2_mr_active(mr, 0));
+    sc2_mr_open(mr, 0); /* the host gives the slot to the newcomer */
+    CHECK(sc2_mr_active(mr, 0));
+    CHECK(sc2_mr_evict(mr) == -1); /* b is one second short; a handshake is never taken */
+    g_now++;
+    CHECK(sc2_mr_evict(mr) == 1 && g_kicked[1] == 1);
+    sc2_mr_stats(mr, &st);
+    CHECK(st.evicted_total == 2 && st.sessions == 2);
+    sc2_mr_close(mr, 0);
+    sc2_mr_close(mr, 1);
+    sc2_mr_close(mr, 2);
+    sc2_mr_close(mr, 3);
+}
+
 int main(void)
 {
     uint8_t seed[32] = {9};
     sc2_mr_config_t cfg = {.relay_id = "mr.test", .seed = seed, .rng = RNG, .now_s = now_s, .send = tx,
-                           .alloc = al, .release = rl, .admit = "code", .legacy_v1 = true, .sessions = 4};
+                           .alloc = al, .release = rl, .admit = "code", .legacy_v1 = true, .sessions = 4,
+                           .kick = kicked};
     CHECK_RC(sc2_mr_init(&mr, &cfg), SC2_OK);
     printf("store %zu bytes\n", sc2_mr_size());
     CHECK(sc2_mr_size() < 200u * 1024u);
@@ -188,8 +291,8 @@ int main(void)
     L(0, "{\"type\":\"room.post\",\"rid\":\"p\",\"room\":\"pub:general\",\"post\":{}}");
     CHECK(has(0, "not_member"));
 
-    sc2_mr_close(mr, 0);
-    sc2_mr_close(mr, 1);
+    slots(&a, &b);
+
     sc2_mr_free(mr);
-    return sc2t_report("sc2_minirelay_test: handshake, admission, keys, mailbox caps");
+    return sc2t_report("sc2_minirelay_test: handshake, admission, keys, mailbox caps, connection slots");
 }

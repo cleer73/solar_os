@@ -1160,7 +1160,13 @@ static void chatd_accept_client(chatd_job_state_t *state)
         return;
     }
 
-    const int slot = chatd_find_free_client(state);
+    int slot = chatd_find_free_client(state);
+#if CHATD_SC2
+    if (slot < 0 && state->mr != NULL && sc2_mr_evict(state->mr) >= 0) {
+        /* an SC2 session idle for a while was closed (503 evicted) to make room */
+        slot = chatd_find_free_client(state);
+    }
+#endif
     if (slot < 0) {
         static const char busy[] =
             "{\"type\":\"error\",\"text\":\"server full\",\"code\":503}\n";
@@ -1210,6 +1216,7 @@ static void chatd_close_all_sockets(chatd_job_state_t *state)
 }
 
 static void chatd_sc2_stop(chatd_job_state_t *state);
+static void chatd_sc2_tick(chatd_job_state_t *state);
 
 static void chatd_free_buffers(chatd_job_state_t *state)
 {
@@ -1276,6 +1283,7 @@ static void chatd_job_task(void *arg)
             .tv_usec = CHATD_SELECT_TIMEOUT_MS * 1000,
         };
         const int ready = select(max_fd + 1, &readfds, NULL, NULL, &timeout);
+        chatd_sc2_tick(state);
         if (ready < 0) {
             if (errno != EINTR && !state->stop_requested) {
                 state->last_error = ESP_FAIL;
@@ -1473,6 +1481,37 @@ static int chatd_sc2_rng(void *ctx, uint8_t *out, size_t len)
     return SC2_OK;
 }
 
+static uint64_t chatd_sc2_mono(void *ctx)
+{
+    (void)ctx;
+    return chatd_now_ms() / 1000U;
+}
+
+/* The mini-relay closed a session itself (replaced, idle, evicted); its
+ * final error frame is already sent. */
+static void chatd_sc2_kick(void *ctx, unsigned session)
+{
+    chatd_job_state_t *state = ctx;
+    if (session < CHATD_MAX_CLIENTS && state->clients[session].active) {
+        SOLAR_OS_LOGI(TAG, "SC2 session closed by the relay: %s", state->clients[session].peer);
+        chatd_close_client(state, session, false);
+    }
+}
+
+/* Idle and login timeouts of the mini-relay's sessions, once a second. */
+static void chatd_sc2_tick(chatd_job_state_t *state)
+{
+    static uint64_t last_s;
+    if (state->mr == NULL) {
+        return;
+    }
+    const uint64_t now = chatd_now_ms() / 1000U;
+    if (now != last_s) {
+        last_s = now;
+        (void)sc2_mr_tick(state->mr);
+    }
+}
+
 static uint64_t chatd_sc2_now(void *ctx)
 {
     (void)ctx;
@@ -1566,6 +1605,8 @@ static esp_err_t chatd_sc2_start(chatd_job_state_t *state, const chatd_opts_t *o
         .admit = state->token_set ? state->token : NULL, /* the chatd token admits new SC2 devices */
         .legacy_v1 = state->legacy_v1,
         .sessions = CHATD_MAX_CLIENTS,
+        .mono_s = chatd_sc2_mono, /* slot timers survive wall-clock steps (SNTP) */
+        .kick = chatd_sc2_kick,
     };
     const int rc = sc2_mr_init(&state->mr, &cfg);
     sc2_memzero(seed, sizeof(seed));
@@ -1590,15 +1631,23 @@ static void chatd_sc2_stop(chatd_job_state_t *state)
     if (state->mr != NULL) {
         sc2_mr_stats_t st;
         sc2_mr_stats(state->mr, &st);
-        SOLAR_OS_LOGI(TAG, "SC2 relay: devices=%u mailbox=%u dms=%llu posts=%llu refused=%llu", st.devices,
-                      st.inbox, (unsigned long long)st.dm_total, (unsigned long long)st.posts_total,
-                      (unsigned long long)st.refused_total);
+        SOLAR_OS_LOGI(TAG,
+                      "SC2 relay: devices=%u mailbox=%u dms=%llu posts=%llu refused=%llu replaced=%llu idle=%llu "
+                      "evicted=%llu",
+                      st.devices, st.inbox, (unsigned long long)st.dm_total, (unsigned long long)st.posts_total,
+                      (unsigned long long)st.refused_total, (unsigned long long)st.replaced_total,
+                      (unsigned long long)st.idle_total, (unsigned long long)st.evicted_total);
         sc2_mr_free(state->mr);
         state->mr = NULL;
     }
 }
 #else
 static void chatd_sc2_stop(chatd_job_state_t *state)
+{
+    (void)state;
+}
+
+static void chatd_sc2_tick(chatd_job_state_t *state)
 {
     (void)state;
 }

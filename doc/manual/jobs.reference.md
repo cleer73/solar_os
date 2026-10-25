@@ -326,6 +326,20 @@ The mini-relay is a fixed-size subset of the relay protocol:
 | Offline DM mailbox (store and forward) | 24 messages, 12 per device, 3200-byte envelopes |
 | Public room `pub:general` | last 24 posts |
 
+The six connections are held for a bounded time, as on the self-hosted
+relay:
+
+- One session per device: when a device logs in again, its older session
+  gets `409 replaced` and is closed (this also clears a connection left
+  half-open by a network change).
+- Keepalive pings are not activity. A session that sends nothing else for
+  5 minutes gets `408 idle` and is closed; the client reconnects and picks
+  up waiting DMs at its next sync. A login has to finish within 30 seconds.
+- When all six connections are taken, a new one takes the slot of the
+  session that has been idle longest, if that one has been idle for at
+  least a minute (`503 evicted`); otherwise the newcomer gets
+  `503 server_full`.
+
 Private rooms and other public rooms are refused (`501`/`404`); use a full
 relay for those. All stores live in one PSRAM block (about 135 KiB), so the
 mailbox and history are lost when chatd stops. Without PSRAM the mini-relay

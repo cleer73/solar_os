@@ -64,6 +64,8 @@ typedef struct {
     uint8_t live;
     uint8_t joined;
     int8_t dev;
+    uint64_t opened; /* slot clock at sc2_mr_open() */
+    uint64_t active; /* slot clock at the last frame other than ping/pong */
     uint8_t challenge[SC2_AUTH_CHALLENGE_LEN];
     char admit[SC2_MR_ADMIT_MAX + 1];
 } mr_sess_t;
@@ -76,15 +78,19 @@ struct sc2_mr {
     uint8_t pub[SC2_KEY_LEN];
     sc2_rng_t rng;
     uint64_t (*now_s)(void *ctx);
+    uint64_t (*mono_s)(void *ctx);
     int (*send)(void *ctx, unsigned session, const char *line, size_t len);
+    void (*kick)(void *ctx, unsigned session);
     void (*release)(void *ctx, void *ptr, size_t len);
     void *ctx;
     bool legacy_v1;
     bool has_admit;
     unsigned nsess;
+    unsigned idle_s;
     uint64_t pub_seq;
     unsigned pub_head; /* next ring slot */
     uint64_t dm_total, posts_total, refused_total;
+    uint64_t replaced_total, idle_total, evicted_total;
     mr_sess_t sess[SC2_MR_SESSIONS_MAX];
     mr_dev_t dev[SC2_MR_DEVICES];
     mr_inbox_t inbox[SC2_MR_INBOX];
@@ -207,9 +213,7 @@ static void send_simple(sc2_mr_t *mr, unsigned s, const char *type, const char *
     ob_send(mr, s, &o);
 }
 
-/* Error frame; returns SC2_MR_CLOSE when close is set. */
-static int send_err(sc2_mr_t *mr, unsigned s, const char *rid, unsigned code, const char *err, const char *text,
-                    bool close)
+static void err_frame(sc2_mr_t *mr, unsigned s, const char *rid, unsigned code, const char *err, const char *text)
 {
     ob_t o;
     ob_head(&o, mr, "error", rid);
@@ -221,10 +225,46 @@ static int send_err(sc2_mr_t *mr, unsigned s, const char *rid, unsigned code, co
     ob_s(&o, text);
     ob_s(&o, "\"}");
     ob_send(mr, s, &o);
+}
+
+/* Error frame; returns SC2_MR_CLOSE when close is set. */
+static int send_err(sc2_mr_t *mr, unsigned s, const char *rid, unsigned code, const char *err, const char *text,
+                    bool close)
+{
+    err_frame(mr, s, rid, code, err, text);
     if (code == 403 || code == 503 || code == 507 || code == 413) {
         mr->refused_total++;
     }
     return close ? SC2_MR_CLOSE : SC2_MR_OK;
+}
+
+/* ---------------- connection slots ---------------- */
+
+static bool has_clock(const sc2_mr_t *mr)
+{
+    return mr->mono_s != NULL || mr->now_s != NULL;
+}
+
+static uint64_t slot_clock(const sc2_mr_t *mr)
+{
+    return mr->mono_s != NULL ? mr->mono_s(mr->ctx) : mr->now_s != NULL ? mr->now_s(mr->ctx) : 0;
+}
+
+static uint64_t since(uint64_t now, uint64_t then)
+{
+    return now > then ? now - then : 0; /* a clock that went back counts as no time */
+}
+
+/* Close session k on the relay's own initiative: final error frame (no
+ * rid), release the slot, tell the host. */
+static void kick(sc2_mr_t *mr, unsigned k, unsigned code, const char *err, const char *text)
+{
+    err_frame(mr, k, NULL, code, err, text);
+    sc2_memzero(&mr->sess[k], sizeof(mr->sess[k]));
+    mr->sess[k].dev = -1;
+    if (mr->kick != NULL) {
+        mr->kick(mr->ctx, k);
+    }
 }
 
 /* ---------------- lookups ---------------- */
@@ -474,6 +514,14 @@ static int h_auth(sc2_mr_t *mr, unsigned s, const sc2_json_val_t *root, const ch
         memcpy(dv->id, id, sizeof(id));
         memcpy(dv->ik, ik, sizeof(ik));
         (void)sc2_hex_encode(dv->hex, sizeof(dv->hex), id, sizeof(id));
+    }
+    /* one live session per device key: a new login replaces the older one
+     * (a reconnect after a network change often leaves a half-open socket) */
+    for (unsigned i = 0; !fresh && i < mr->nsess; i++) {
+        if (i != s && mr->sess[i].state == ST_AUTHED && mr->sess[i].dev == d) {
+            kick(mr, i, 409, "replaced", "session replaced by a newer login of this device");
+            mr->replaced_total++;
+        }
     }
     mr_dev_t *dv = &mr->dev[d];
     uint64_t now = mr->now_s != NULL ? mr->now_s(mr->ctx) : 0;
@@ -986,6 +1034,9 @@ int sc2_mr_line(sc2_mr_t *mr, unsigned s, const char *line, size_t len)
     if (sc2_frame_peek(line, len, &root, type, rid) != SC2_OK || !rid_safe(rid)) {
         return send_err(mr, s, NULL, 400, "bad_request", "unparsable frame", ss->state == ST_NEW);
     }
+    if (strcmp(type, "ping") != 0 && strcmp(type, "pong") != 0) {
+        ss->active = slot_clock(mr); /* pings keep NAT state warm but are not activity */
+    }
     if (ss->state == ST_NEW) {
         if (strcmp(type, "hello") != 0) {
             return send_err(mr, s, rid, 401, "auth_required", "hello required", true);
@@ -1105,11 +1156,14 @@ int sc2_mr_init(sc2_mr_t **out, const sc2_mr_config_t *cfg)
     }
     mr->rng = cfg->rng;
     mr->now_s = cfg->now_s;
+    mr->mono_s = cfg->mono_s;
     mr->send = cfg->send;
+    mr->kick = cfg->kick;
     mr->release = cfg->release;
     mr->ctx = cfg->ctx;
     mr->legacy_v1 = cfg->legacy_v1;
     mr->nsess = cfg->sessions;
+    mr->idle_s = cfg->idle_s != 0 ? cfg->idle_s : SC2_MR_IDLE_S;
     *out = mr;
     return SC2_OK;
 }
@@ -1136,7 +1190,51 @@ void sc2_mr_open(sc2_mr_t *mr, unsigned s)
         memset(&mr->sess[s], 0, sizeof(mr->sess[s]));
         mr->sess[s].state = ST_NEW;
         mr->sess[s].dev = -1;
+        mr->sess[s].opened = mr->sess[s].active = slot_clock(mr);
     }
+}
+
+unsigned sc2_mr_tick(sc2_mr_t *mr)
+{
+    if (mr == NULL || !has_clock(mr)) {
+        return 0;
+    }
+    uint64_t now = slot_clock(mr);
+    unsigned n = 0;
+    for (unsigned i = 0; i < mr->nsess; i++) {
+        const mr_sess_t *ss = &mr->sess[i];
+        if ((ss->state == ST_NEW || ss->state == ST_WELCOMED) && since(now, ss->opened) >= SC2_MR_AUTH_S) {
+            kick(mr, i, 408, "idle", "login not completed in time");
+        } else if (ss->state == ST_AUTHED && since(now, ss->active) >= mr->idle_s) {
+            kick(mr, i, 408, "idle", "closed after a period without activity; reconnect to continue");
+        } else {
+            continue;
+        }
+        mr->idle_total++;
+        n++;
+    }
+    return n;
+}
+
+int sc2_mr_evict(sc2_mr_t *mr)
+{
+    if (mr == NULL || !has_clock(mr)) {
+        return -1;
+    }
+    uint64_t now = slot_clock(mr);
+    int best = -1;
+    for (unsigned i = 0; i < mr->nsess; i++) {
+        const mr_sess_t *ss = &mr->sess[i];
+        if (ss->state == ST_AUTHED && since(now, ss->active) >= SC2_MR_EVICT_MIN_S &&
+            (best < 0 || ss->active < mr->sess[best].active)) {
+            best = (int)i;
+        }
+    }
+    if (best >= 0) {
+        kick(mr, (unsigned)best, 503, "evicted", "relay full; this idle session was closed to admit another");
+        mr->evicted_total++;
+    }
+    return best;
 }
 
 void sc2_mr_close(sc2_mr_t *mr, unsigned s)
@@ -1173,4 +1271,7 @@ void sc2_mr_stats(const sc2_mr_t *mr, sc2_mr_stats_t *out)
     out->dm_total = mr->dm_total;
     out->posts_total = mr->posts_total;
     out->refused_total = mr->refused_total;
+    out->replaced_total = mr->replaced_total;
+    out->idle_total = mr->idle_total;
+    out->evicted_total = mr->evicted_total;
 }
