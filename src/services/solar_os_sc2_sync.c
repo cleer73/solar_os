@@ -303,13 +303,22 @@ static void drop(esp_err_t err, const char *why)
     }
 }
 
+/* chats://...#pin=: the pinned SPKI is the trust anchor, so a self-signed
+ * relay works. The handshake runs without a CA chain (VERIFY_OPTIONAL) and
+ * pin_matches() checks the key before anything is sent. */
+static esp_err_t pin_only_attach(void *conf)
+{
+    mbedtls_ssl_conf_authmode((mbedtls_ssl_config *)conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+    return ESP_OK;
+}
+
 static void try_connect(void)
 {
     esp_tls_cfg_t tc;
     memset(&tc, 0, sizeof(tc));
     tc.timeout_ms = SC2_SYNC_CONNECT_MS;
     if (s.cfg->tls) {
-        tc.crt_bundle_attach = esp_crt_bundle_attach;
+        tc.crt_bundle_attach = s.cfg->pin[0] != '\0' ? pin_only_attach : esp_crt_bundle_attach;
     } else {
         tc.is_plain_tcp = true;
     }
@@ -318,7 +327,8 @@ static void try_connect(void)
         drop(ESP_ERR_NO_MEM, "TLS allocation failed");
         return;
     }
-    status(false, ESP_OK, "connecting to %s:%u (%s)", s.host, (unsigned)s.cfg->port, s.cfg->tls ? "TLS" : "plain TCP");
+    status(false, ESP_OK, "connecting to %s:%u (%s)", s.host, (unsigned)s.cfg->port,
+           s.cfg->tls ? (s.cfg->pin[0] != '\0' ? "TLS, pinned key" : "TLS") : "plain TCP");
     if (esp_tls_conn_new_sync(s.host, (int)strlen(s.host), s.cfg->port, &tc, s.tls) != 1) {
         drop(ESP_FAIL, s.cfg->tls ? "TLS connection failed" : "TCP connection failed");
         return;
@@ -620,8 +630,17 @@ void solar_os_sc2_sync_stop(void)
 static void provider_changed(solar_os_messaging_provider_id_t id, bool enabled)
 {
     (void)id;
-    if (enabled) {
-        esp_err_t err = solar_os_sc2_sync_start();
+    if (enabled && s.running) {
+        s.checked_at = 0; /* pick up the new or changed instance now */
+        (void)solar_os_sc2_sync_start();
+    } else if (enabled) {
+        /* Through the job manager: `job` shows sc2-sync running, and a start
+         * that finds no SRAM for the worker stack is queued and retried
+         * instead of being dropped. */
+        esp_err_t err = solar_os_jobs_start(NULL, "sc2-sync", 0, NULL);
+        if (err == ESP_ERR_NOT_FOUND) {
+            err = solar_os_sc2_sync_start();
+        }
         if (err != ESP_OK) {
             SOLAR_OS_LOGW(TAG, "cannot start: %s", esp_err_to_name(err));
         }

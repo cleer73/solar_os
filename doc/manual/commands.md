@@ -155,7 +155,8 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `irc` | `irc join\|query <instance> <channel\|nick>`; `irc leave <conversation-id>` | Open rooms and private conversations through shared Messaging. |
 | `irc` | `irc sasl <instance> <account> <password>`; `irc sasl <instance> off`; `irc pass <instance> <password\|off>`; `irc ca <instance> <PEM-path\|default>` | Set optional authentication and TLS trust. See `man messaging.irc`. |
 | `sc2` | `sc2 id`; `sc2 status` | Show this device's SC2 end-to-end identity (device ID, fingerprint, prekeys) and the service state. Creates the identity on first use. See `man python.sc2`. |
-| `sc2` | `sc2 safety <device>` | Show the safety number shared with a stored peer, to compare out of band. |
+| `sc2` | `sc2 safety <peer>` | Show the safety number shared with a stored peer, to compare out of band. `<peer>` is a 32-hex device ID, a unique prefix (6+ hex digits) of a known peer, or an alias. |
+| `sc2` | `sc2 alias`; `sc2 alias <name> <peer>`; `sc2 alias <name> off` | List, save or delete peer nicknames (up to 16, in the SC2 store) for `sc2 safety` and `messages query <sc2-instance> <peer>`. |
 | `sc2` | `sc2 selftest`; `sc2 bench [n]` | Run the SC2 known-answer and two-device session tests in RAM, or time the primitives and a DM/room round trip. Neither touches stored keys. |
 | `gateway` | `gateway configure <url> [token]` | Save gateway connection settings. The gateway uses the global SolarOS user identity. |
 | `messages` | `messages classes` / `messages instances` | List available provider classes or configured instances. |
@@ -165,7 +166,7 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `messages` | `messages add meshcore <name> radio <radio> <profile>` | Save a MeshCore instance on a local radio. |
 | `messages` | `messages add meshcore <name> ble <address> <type> [pin]` | Save a MeshCore companion binding. |
 | `messages` | `messages add link <name> <transport>` | Bind an independent Chat projection to a named Link transport. |
-| `messages` | `messages add sc2 <name> chats://<host>:<port>[#pin=sha256/<b64>] [admit]` | Save an SC2 end-to-end relay instance; `messages configure <name> admit <code>\|off` or `pin <pin>\|off` change it. No relay transport yet in this build. See `man messaging`. |
+| `messages` | `messages add sc2 <name> chats://<host>:<port>[#pin=sha256/<b64>] [admit]` | Save an SC2 end-to-end relay instance; it is enabled at once and the sc2-sync job connects to it (`messages disconnect <name>` turns it off). `messages configure <name> admit <code>\|off` or `pin <pin>\|off` change it. With a pin, the pinned key alone authenticates the relay (self-signed certificates work); without one the CA bundle is used. See `man messaging`. |
 | `gateway` | `gateway connect [url] [token]` | Enable gateway synchronization, optionally updating settings. |
 | `gateway` | `gateway disconnect` | Disable gateway synchronization. |
 | `gateway` | `gateway rooms` | List known and joined gateway rooms. |

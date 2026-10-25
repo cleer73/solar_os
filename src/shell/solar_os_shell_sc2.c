@@ -13,13 +13,15 @@ static void sc2_usage(solar_os_shell_io_t *io)
 {
     solar_os_shell_io_writeln(io, "sc2 id                show this device's SC2 identity");
     solar_os_shell_io_writeln(io, "sc2 status            service, store and session counts");
-    solar_os_shell_io_writeln(io, "sc2 safety <device>   safety number with a stored peer");
+    solar_os_shell_io_writeln(io, "sc2 safety <peer>     safety number with a stored peer");
+    solar_os_shell_io_writeln(io, "sc2 alias [<name> <peer>|<name> off]  list, save or delete a peer nickname");
+    solar_os_shell_io_writeln(io, "<peer>: 32-hex device id, unique prefix (>= 6 hex) of a known peer, or alias");
     solar_os_shell_io_writeln(io, "sc2 selftest          run known-answer and session tests");
     solar_os_shell_io_writeln(io, "sc2 bench [n]         time the primitives (n iterations, default 10)");
 #if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
     solar_os_shell_io_writeln(io, "sc2 relay             relay connection (sc2-sync) status");
     solar_os_shell_io_writeln(io, "relay setup: messages add sc2 <name> chat://HOST:7777 | chats://HOST:7778[#pin=sha256/B64]");
-    solar_os_shell_io_writeln(io, "peer: messages query <name> <device-id>, then messages send <conv> <text>");
+    solar_os_shell_io_writeln(io, "peer: messages query <name> <peer>, then messages send <conv> <text>");
 #endif
 }
 
@@ -63,9 +65,55 @@ static void sc2_print_status(solar_os_shell_io_t *io)
                              (unsigned)st.sessions, (unsigned)st.rooms);
 }
 
-static void sc2_print_safety(solar_os_shell_io_t *io, const char *peer)
+static bool sc2_peer_arg(solar_os_shell_io_t *io, const char *ref, char out[SC2_DEVICE_ID_HEX_LEN + 1])
+{
+    esp_err_t err = solar_os_sc2_resolve_peer(ref, out);
+    if (err != ESP_OK) {
+        solar_os_shell_io_printf(io, "sc2: %s: %s\n", ref, solar_os_sc2_peer_ref_error(err));
+        return false;
+    }
+    return true;
+}
+
+static void sc2_alias(solar_os_shell_io_t *io, int argc, char **argv)
+{
+    char name[SOLAR_OS_SC2_ALIAS_NAME_MAX + 1];
+    char dev[SC2_DEVICE_ID_HEX_LEN + 1];
+    if (argc == 2) {
+        size_t i = 0;
+        for (; i < SOLAR_OS_SC2_ALIAS_MAX && solar_os_sc2_alias_get(i, name, dev) == ESP_OK; i++) {
+            solar_os_shell_io_printf(io, "%-16s %s\n", name, dev);
+        }
+        if (i == 0) {
+            solar_os_shell_io_writeln(io, "sc2: no aliases (sc2 alias <name> <device-id>)");
+        }
+        return;
+    }
+    if (!solar_os_sc2_alias_name_valid(argv[2])) {
+        solar_os_shell_io_writeln(io, "sc2: alias names are 1-16 of A-Z a-z 0-9 . _ - and not all hex digits");
+        return;
+    }
+    bool off = strcmp(argv[3], "off") == 0;
+    if (!off && !sc2_peer_arg(io, argv[3], dev)) {
+        return;
+    }
+    esp_err_t err = solar_os_sc2_alias_set(argv[2], off ? NULL : dev);
+    if (err == ESP_OK) {
+        solar_os_shell_io_printf(io, off ? "sc2: alias %s deleted\n" : "sc2: alias %s = %s\n", argv[2], dev);
+    } else {
+        solar_os_shell_io_printf(io, "sc2: alias: %s\n",
+                                 err == ESP_ERR_NO_MEM ? "alias list is full (16)" :
+                                 err == ESP_ERR_NOT_FOUND ? "no such alias" : solar_os_sc2_err_text(err));
+    }
+}
+
+static void sc2_print_safety(solar_os_shell_io_t *io, const char *ref)
 {
     sc2e_safety_t safety;
+    char peer[SC2_DEVICE_ID_HEX_LEN + 1];
+    if (!sc2_peer_arg(io, ref, peer)) {
+        return;
+    }
     esp_err_t err = solar_os_sc2_safety(peer, &safety);
     if (err != ESP_OK) {
         sc2_fail(io, err);
@@ -133,6 +181,10 @@ void solar_os_shell_cmd_sc2(solar_os_context_t *ctx, int argc, char **argv)
 #endif
     if (argc == 3 && strcmp(argv[1], "safety") == 0) {
         sc2_print_safety(io, argv[2]);
+        return;
+    }
+    if ((argc == 2 || argc == 4) && strcmp(argv[1], "alias") == 0) {
+        sc2_alias(io, argc, argv);
         return;
     }
     if (argc == 2 && strcmp(argv[1], "selftest") == 0) {

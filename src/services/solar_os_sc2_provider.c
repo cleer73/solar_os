@@ -506,6 +506,7 @@ static esp_err_t sc2p_create(const char *name, int argc, const char *const *argv
         return ESP_ERR_NO_MEM;
     }
     config->version = SOLAR_OS_SC2_RELAY_CONFIG_VERSION;
+    config->enabled = true; /* a new relay connects at once; `messages disconnect` turns it off */
     error = solar_os_sc2_relay_parse_url(argv[0], config);
     if (error == ESP_OK && argc == 2 &&
         !sc2p_copy(config->admit, sizeof(config->admit), argv[1], strlen(argv[1]))) {

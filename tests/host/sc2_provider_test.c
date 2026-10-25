@@ -110,7 +110,7 @@ static void test_registry(void)
     assert(solar_os_messaging_provider_is_class(id, "sc2"));
     solar_os_sc2_relay_config_t config;
     assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
-    assert(config.tls && !strcmp(config.pin, PIN_A) && !strcmp(config.admit, "invite-42") && !config.enabled);
+    assert(config.tls && !strcmp(config.pin, PIN_A) && !strcmp(config.admit, "invite-42") && config.enabled);
 
     solar_os_conversation_id_t pub = 0, priv = 0, dm = 0;
     assert(solar_os_messaging_join(id, "PUB:General", &pub) == ESP_OK && pub);

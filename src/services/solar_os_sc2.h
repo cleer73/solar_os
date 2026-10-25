@@ -58,6 +58,22 @@ esp_err_t solar_os_sc2_peer_info(const char *peer, sc2e_peer_info_t *info);
 esp_err_t solar_os_sc2_safety(const char *peer, sc2e_safety_t *safety);
 esp_err_t solar_os_sc2_forget_peer(const char *peer);
 
+/* Peer references for shell commands: a full 32-hex device ID, a saved alias
+ * or a unique hex prefix (>= SOLAR_OS_SC2_PREFIX_MIN) of a stored peer bundle
+ * or DM session. ESP_ERR_NOT_FOUND unknown, ESP_ERR_INVALID_STATE ambiguous,
+ * ESP_ERR_INVALID_SIZE prefix too short; solar_os_sc2_peer_ref_error() has
+ * the text. Aliases: up to SOLAR_OS_SC2_ALIAS_MAX names in <store>/alias.txt;
+ * names are 1..16 of [A-Za-z0-9._-] and not all hex. device NULL deletes. */
+#define SOLAR_OS_SC2_PREFIX_MIN 6u
+#define SOLAR_OS_SC2_ALIAS_MAX 16u
+#define SOLAR_OS_SC2_ALIAS_NAME_MAX 16u
+esp_err_t solar_os_sc2_resolve_peer(const char *ref, char out[SC2_DEVICE_ID_HEX_LEN + 1]);
+const char *solar_os_sc2_peer_ref_error(esp_err_t err);
+bool solar_os_sc2_alias_name_valid(const char *name);
+esp_err_t solar_os_sc2_alias_set(const char *name, const char *device);
+esp_err_t solar_os_sc2_alias_get(size_t index, char name[SOLAR_OS_SC2_ALIAS_NAME_MAX + 1],
+                                 char device[SC2_DEVICE_ID_HEX_LEN + 1]);
+
 esp_err_t solar_os_sc2_keys_publish(const char *rid, uint32_t opk_target, char *out, size_t cap, size_t *out_len);
 esp_err_t solar_os_sc2_add_bundle(const char *line, size_t len, char device[SC2_DEVICE_ID_HEX_LEN + 1]);
 

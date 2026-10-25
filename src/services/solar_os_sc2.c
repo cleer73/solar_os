@@ -617,6 +617,251 @@ esp_err_t solar_os_sc2_forget_peer(const char *peer)
     SC2_CALL(sc2e_forget_peer(s_sc2.engine, peer));
 }
 
+/* ---------------------------------------------------------------------- */
+/* Peer references: full device ID, saved alias or unique hex prefix.      */
+/* Aliases are "<name> <device>\n" lines in <base>/alias.txt (no secrets). */
+/* ---------------------------------------------------------------------- */
+
+#define SC2_ALIAS_LINE (SOLAR_OS_SC2_ALIAS_NAME_MAX + SC2_DEVICE_ID_HEX_LEN + 4u)
+
+/* Lower-cased copy of an all-hex string; its length, or 0 if not hex/too long. */
+static size_t ref_hex(const char *in, char *out, size_t cap)
+{
+    size_t n = 0;
+    for (; in[n] != '\0'; n++) {
+        char c = in[n];
+        if (c >= 'A' && c <= 'F') {
+            c = (char)(c - 'A' + 'a');
+        }
+        if (n + 1u >= cap || !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return 0;
+        }
+        out[n] = c;
+    }
+    out[n] = '\0';
+    return n;
+}
+
+static void alias_path(char *out, size_t cap, const char *ext)
+{
+    snprintf(out, cap, "%s/alias.%s", s_sc2.base, ext);
+}
+
+/* Split "<name> <device>" in place; false for a malformed line. */
+static bool alias_split(char *line, char **dev)
+{
+    char *sp = strchr(line, ' ');
+    if (sp == NULL) {
+        return false;
+    }
+    *sp = '\0';
+    *dev = sp + 1;
+    (*dev)[strcspn(*dev, "\r\n")] = '\0';
+    return strlen(*dev) == SC2_DEVICE_ID_HEX_LEN;
+}
+
+/* Caller holds the service lock. index < 0 looks name up instead. */
+static bool alias_read(const char *name, int index, char *name_out, char dev_out[SC2_DEVICE_ID_HEX_LEN + 1])
+{
+    char path[SC2_PATH_MAX];
+    char line[SC2_ALIAS_LINE];
+    char *dev;
+    bool found = false;
+    alias_path(path, sizeof(path), "txt");
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return false;
+    }
+    while (!found && fgets(line, sizeof(line), f) != NULL) {
+        if (!alias_split(line, &dev)) {
+            continue;
+        }
+        found = index < 0 ? strcmp(line, name) == 0 : index-- == 0;
+        if (found) {
+            memcpy(dev_out, dev, SC2_DEVICE_ID_HEX_LEN + 1u);
+            if (name_out != NULL) {
+                strlcpy(name_out, line, SOLAR_OS_SC2_ALIAS_NAME_MAX + 1u);
+            }
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+/* Count stored records <dir>/<id>.a|b whose ID starts with prefix: 0, 1 or 2 (= several). */
+static int prefix_scan(const char *dir, const char *prefix, size_t len, char out[SC2_DEVICE_ID_HEX_LEN + 1],
+                       int found)
+{
+    char path[SC2_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", s_sc2.base, dir);
+    DIR *d = opendir(path);
+    if (d == NULL) {
+        return found;
+    }
+    struct dirent *ent;
+    char id[SC2_DEVICE_ID_HEX_LEN + 1];
+    while (found < 2 && (ent = readdir(d)) != NULL) {
+        if (strlen(ent->d_name) != SC2_DEVICE_ID_HEX_LEN + 2u || ent->d_name[SC2_DEVICE_ID_HEX_LEN] != '.') {
+            continue;
+        }
+        memcpy(id, ent->d_name, SC2_DEVICE_ID_HEX_LEN);
+        id[SC2_DEVICE_ID_HEX_LEN] = '\0';
+        if (ref_hex(id, id, sizeof(id)) != SC2_DEVICE_ID_HEX_LEN || strncmp(id, prefix, len) != 0) {
+            continue;
+        }
+        if (found == 0) {
+            memcpy(out, id, sizeof(id));
+            found = 1;
+        } else if (strcmp(out, id) != 0) {
+            found = 2;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+esp_err_t solar_os_sc2_resolve_peer(const char *ref, char out[SC2_DEVICE_ID_HEX_LEN + 1])
+{
+    if (ref == NULL || out == NULL || ref[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char hex[SC2_DEVICE_ID_HEX_LEN + 1];
+    size_t n = ref_hex(ref, hex, sizeof(hex));
+    if (n == SC2_DEVICE_ID_HEX_LEN) {
+        memcpy(out, hex, sizeof(hex));
+        return ESP_OK;
+    }
+    esp_err_t err = sc2_enter();
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (alias_read(ref, -1, NULL, out)) {
+        err = ESP_OK;
+    } else if (n >= SOLAR_OS_SC2_PREFIX_MIN) {
+        int found = prefix_scan(SC2E_DIR_PEER, hex, n, out, 0);
+        found = prefix_scan(SC2E_DIR_DM, hex, n, out, found);
+        err = found == 1 ? ESP_OK : (found == 2 ? ESP_ERR_INVALID_STATE : ESP_ERR_NOT_FOUND);
+    } else {
+        err = n > 0 ? ESP_ERR_INVALID_SIZE : ESP_ERR_NOT_FOUND;
+    }
+    sc2_leave();
+    return err;
+}
+
+const char *solar_os_sc2_peer_ref_error(esp_err_t err)
+{
+    switch (err) {
+    case ESP_ERR_NOT_FOUND:
+        return "no known peer or alias by that name (give the 32-hex device id, a unique prefix of a known peer, "
+               "or save one with `sc2 alias <name> <device-id>`)";
+    case ESP_ERR_INVALID_STATE:
+        return "prefix matches more than one known peer; give more hex digits";
+    case ESP_ERR_INVALID_SIZE:
+        return "device id prefix too short (need at least 6 hex digits)";
+    default:
+        return solar_os_sc2_err_text(err);
+    }
+}
+
+bool solar_os_sc2_alias_name_valid(const char *name)
+{
+    size_t n = name != NULL ? strlen(name) : 0;
+    bool hex = true;
+    if (n == 0 || n > SOLAR_OS_SC2_ALIAS_NAME_MAX) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        bool digit = c >= '0' && c <= '9';
+        bool alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        if (!digit && !alpha && c != '-' && c != '_' && c != '.') {
+            return false;
+        }
+        if (!digit && !((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            hex = false;
+        }
+    }
+    return !hex; /* an all-hex name would shadow device id prefixes */
+}
+
+esp_err_t solar_os_sc2_alias_get(size_t index, char name[SOLAR_OS_SC2_ALIAS_NAME_MAX + 1],
+                                 char device[SC2_DEVICE_ID_HEX_LEN + 1])
+{
+    if (name == NULL || device == NULL || index > (size_t)SOLAR_OS_SC2_ALIAS_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = sc2_enter();
+    if (err != ESP_OK) {
+        return err;
+    }
+    bool found = alias_read(NULL, (int)index, name, device);
+    sc2_leave();
+    return found ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t solar_os_sc2_alias_set(const char *name, const char *device)
+{
+    char hex[SC2_DEVICE_ID_HEX_LEN + 1];
+    if (!solar_os_sc2_alias_name_valid(name) ||
+        (device != NULL && ref_hex(device, hex, sizeof(hex)) != SC2_DEVICE_ID_HEX_LEN)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = sc2_enter();
+    if (err != ESP_OK) {
+        return err;
+    }
+    char path[SC2_PATH_MAX];
+    char tmp[SC2_PATH_MAX];
+    char bak[SC2_PATH_MAX];
+    char line[SC2_ALIAS_LINE];
+    char *dev;
+    size_t kept = 0;
+    bool removed = false;
+    alias_path(path, sizeof(path), "txt");
+    alias_path(tmp, sizeof(tmp), "tmp");
+    alias_path(bak, sizeof(bak), "bak");
+    FILE *in = fopen(path, "r");
+    FILE *out = fopen(tmp, "w");
+    err = out != NULL ? ESP_OK : ESP_FAIL;
+    while (err == ESP_OK && in != NULL && fgets(line, sizeof(line), in) != NULL) {
+        if (!alias_split(line, &dev)) {
+            continue;
+        }
+        if (strcmp(line, name) == 0) {
+            removed = true;
+        } else if (fprintf(out, "%s %s\n", line, dev) < 0) {
+            err = ESP_FAIL;
+        } else {
+            kept++;
+        }
+    }
+    if (in != NULL) {
+        fclose(in);
+    }
+    if (err == ESP_OK && device != NULL) {
+        if (kept >= SOLAR_OS_SC2_ALIAS_MAX) {
+            err = ESP_ERR_NO_MEM;
+        } else if (fprintf(out, "%s %s\n", name, hex) < 0) {
+            err = ESP_FAIL;
+        }
+    } else if (err == ESP_OK && !removed) {
+        err = ESP_ERR_NOT_FOUND;
+    }
+    if (out != NULL) {
+        if (err == ESP_OK && solar_os_storage_sync_file(out) != ESP_OK) {
+            err = ESP_FAIL;
+        }
+        fclose(out);
+    }
+    if (err == ESP_OK) {
+        err = solar_os_storage_replace_file(tmp, path, bak);
+    } else {
+        (void)remove(tmp);
+    }
+    sc2_leave();
+    return err;
+}
+
 esp_err_t solar_os_sc2_keys_publish(const char *rid, uint32_t opk_target, char *out, size_t cap, size_t *out_len)
 {
     SC2_CALL(sc2e_keys_publish(s_sc2.engine, rid, opk_target, out, cap, out_len));

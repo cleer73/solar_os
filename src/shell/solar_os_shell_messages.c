@@ -8,6 +8,9 @@
 #include "solar_os_messaging.h"
 #include "solar_os_shell_common.h"
 #include "solar_os_shell_io.h"
+#if SOLAR_OS_PACKAGE_SERVICE_SC2_PROVIDER
+#include "solar_os_sc2.h"
+#endif
 
 static const char * const messages_commands[] = {
     "status", "conversations", "list", "send", "read", "delete",
@@ -23,6 +26,9 @@ static void messages_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io, "  messages configure <instance> <settings...>");
     solar_os_shell_io_writeln(io, "  messages remove <instance|id> (delete history)");
     solar_os_shell_io_writeln(io, "  messages join|query <instance> <target>");
+#if SOLAR_OS_PACKAGE_SERVICE_SC2_PROVIDER
+    solar_os_shell_io_writeln(io, "    sc2 query target: device id, unique prefix (>= 6 hex) or `sc2 alias` name");
+#endif
     solar_os_shell_io_writeln(io, "  messages leave <conversation-id>");
     solar_os_shell_io_writeln(io, "  messages connect|disconnect <instance>");
     solar_os_shell_io_writeln(io, "  messages conversations");
@@ -421,9 +427,23 @@ void solar_os_shell_cmd_messages(solar_os_context_t *ctx,
     if (argc == 4 && (strcmp(argv[1], "join") == 0 || strcmp(argv[1], "query") == 0)) {
         solar_os_messaging_provider_id_t instance = 0;
         (void)messages_parse_provider(argv[2], &instance);
-        esp_err_t error = strcmp(argv[1], "join") == 0 ? solar_os_messaging_join(instance, argv[3], &conversation_id) :
-            solar_os_messaging_open_direct(instance, argv[3], &conversation_id);
-        if (error == ESP_OK) solar_os_shell_io_printf(io, "messages: conversation %" PRIu32 "\n", conversation_id);
+        const char *target = argv[3];
+#if SOLAR_OS_PACKAGE_SERVICE_SC2_PROVIDER
+        /* sc2 peers: full device id, unique prefix of a known peer, or alias */
+        char peer[SC2_DEVICE_ID_HEX_LEN + 1];
+        if (strcmp(argv[1], "query") == 0 && solar_os_messaging_provider_is_class(instance, "sc2")) {
+            esp_err_t resolved = solar_os_sc2_resolve_peer(target, peer);
+            if (resolved != ESP_OK) {
+                solar_os_shell_io_printf(io, "messages: %s: %s\n", target, solar_os_sc2_peer_ref_error(resolved));
+                return;
+            }
+            target = peer;
+        }
+#endif
+        esp_err_t error = strcmp(argv[1], "join") == 0 ? solar_os_messaging_join(instance, target, &conversation_id) :
+            solar_os_messaging_open_direct(instance, target, &conversation_id);
+        if (error == ESP_OK) solar_os_shell_io_printf(io, "messages: conversation %" PRIu32 "%s%s\n", conversation_id,
+                                                      target != argv[3] ? " with " : "", target != argv[3] ? target : "");
         else solar_os_shell_io_printf(io, "messages: %s\n", solar_os_shell_error_text(error));
         return;
     }
