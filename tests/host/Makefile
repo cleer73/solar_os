@@ -1319,3 +1319,33 @@ ifneq ($(SC2_MBEDTLS_DIR),)
 test: sc2-mbedtls-test
 endif
 TARGETS += $(SC2_TARGETS) $(SC2_MBEDTLS_TARGETS) $(SC2_VENDOR_OBJS)
+
+# SC2 portable device engine (src/services/solar_os_sc2_engine.c) and the
+# selftest/bench shared with the firmware `sc2 selftest` command.
+SC2E_DIR := $(ROOT)/src/services
+SC2E_SRCS := $(SC2E_DIR)/solar_os_sc2_engine.c $(SC2E_DIR)/solar_os_sc2_selftest.c
+SC2E_HDRS := $(SC2E_DIR)/solar_os_sc2_engine.h $(SC2E_DIR)/solar_os_sc2_selftest.h
+
+sc2_engine_test: sc2_engine_test.c $(SC2E_SRCS) $(SC2E_HDRS) $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) $(SC2_INC) -I$(SC2E_DIR) $< $(SC2E_SRCS) $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+sc2_engine_mbedtls_test: sc2_engine_test.c sc2_mbedtls_config.h $(SC2E_SRCS) $(SC2E_HDRS) $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	@test -n "$(SC2_MBEDTLS_DIR)" || { echo "set SC2_MBEDTLS_DIR to an mbedTLS 3.x source tree"; exit 1; }
+	$(CC) $(CFLAGS) -DSC2_USE_MBEDTLS=1 '-DMBEDTLS_CONFIG_FILE="sc2_mbedtls_config.h"' -I. \
+		-I$(SC2_MBEDTLS_DIR)/include $(SC2_INC) -I$(SC2E_DIR) $< $(SC2E_SRCS) $(SC2_SRCS) \
+		$(SC2_VENDOR_OBJS) $(SC2_MBEDTLS_SRCS) -o $@
+
+.PHONY: sc2-engine-test sc2-engine-mbedtls-test
+sc2-engine-test: sc2_engine_test
+	./sc2_engine_test
+
+sc2-engine-mbedtls-test: sc2_engine_mbedtls_test
+	./sc2_engine_mbedtls_test
+
+all: sc2_engine_test
+sc2-test: sc2-engine-test
+test: sc2-engine-test
+ifneq ($(SC2_MBEDTLS_DIR),)
+sc2-mbedtls-test: sc2-engine-mbedtls-test
+endif
+TARGETS += sc2_engine_test sc2_engine_mbedtls_test
