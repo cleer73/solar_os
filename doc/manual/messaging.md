@@ -212,8 +212,13 @@ does. A session that only sent keepalive pings for the relay's idle timeout
 (`503 reconnect`) and an idle session closed to make room on a full relay
 (`503 evicted`) are normal: `sc2-sync` reconnects after one to three
 seconds, does not count a failed attempt and does not move to a fallback.
-DMs wait in the relay's mailbox and rooms catch up at the next sync. Every
-other drop, including `503 server_full`, goes through the backoff.
+DMs wait in the relay's mailbox and rooms catch up at the next sync. When
+the same device key logs in on another connection, the relay closes the
+older session with `409 replaced`; `sc2-sync` then waits 4 seconds, longer
+each time it happens again in a row (up to a minute), and stays on the same
+relay. Two devices that share one identity keep replacing each other this
+way; give every device its own. Every other drop, including
+`503 server_full`, goes through the backoff.
 
 A device can also be the relay: `job start chatd` serves a small SC2
 mini-relay (login, DM mailbox, prekeys and the public room `pub:general`,

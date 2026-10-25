@@ -1142,7 +1142,8 @@ static bool code_retryable(uint64_t code)
 }
 
 /* Error frames the relay sends, without a rid, right before it closes a
- * session on purpose. 503 is also "server_full", which stays a failure. */
+ * session on purpose. 503 is also "server_full", which stays a failure, and
+ * 409 also answers room commits. */
 static sc2c_close_t close_reason(uint64_t code, const char *err)
 {
     if (code == 408) {
@@ -1153,6 +1154,9 @@ static sc2c_close_t close_reason(uint64_t code, const char *err)
     }
     if (code == 503 && strcmp(err, "evicted") == 0) {
         return SC2C_CLOSE_EVICTED;
+    }
+    if (code == 409 && strcmp(err, "replaced") == 0) {
+        return SC2C_CLOSE_REPLACED;
     }
     return SC2C_CLOSE_NONE;
 }
@@ -1171,6 +1175,9 @@ static void on_error(sc2c_t *c, const char *rid, const sc2_json_val_t *root)
     sc2c_close_t closing = rid[0] == '\0' && c->state >= SC2C_SYNCING ? close_reason(code, err) : SC2C_CLOSE_NONE;
     if (closing != SC2C_CLOSE_NONE) {
         c->closed = (uint8_t)closing;
+        if (closing == SC2C_CLOSE_REPLACED && c->replaced < 16u) {
+            c->replaced++;
+        }
         notice(c, (int)code, why);
         return;
     }
@@ -1525,6 +1532,9 @@ void sc2c_on_disconnected(sc2c_t *c)
     }
     memset(c->claims, 0, sizeof(c->claims));
     c->dm_hold = 0;
+    if (c->closed != SC2C_CLOSE_REPLACED) {
+        c->replaced = 0; /* the streak ends with any other kind of close */
+    }
     sc2_lines_init(c->rx);
     set_state(c, SC2C_OFFLINE);
 }
@@ -1949,6 +1959,8 @@ const char *sc2c_close_name(sc2c_close_t why)
         return "relay session lifetime reached";
     case SC2C_CLOSE_EVICTED:
         return "relay full, idle session closed";
+    case SC2C_CLOSE_REPLACED:
+        return "replaced by another login of this device";
     default:
         return "none";
     }
@@ -1956,8 +1968,12 @@ const char *sc2c_close_name(sc2c_close_t why)
 
 uint32_t sc2c_reconnect_ms(const sc2c_t *c, uint32_t *attempt, uint32_t random)
 {
-    if (sc2c_close_soft(sc2c_close_reason(c))) {
+    sc2c_close_t why = sc2c_close_reason(c);
+    if (sc2c_close_soft(why)) {
         return SC2C_SOFT_RECONNECT_MS + random % 2001u;
+    }
+    if (why == SC2C_CLOSE_REPLACED && *attempt < (uint32_t)c->replaced + 1u) {
+        *attempt = (uint32_t)c->replaced + 1u; /* 4 s, 8 s, ... up to 60 s */
     }
     return sc2c_backoff_ms(attempt, random);
 }

@@ -21,8 +21,11 @@
  * sc2c_close_reason() keeps that reason after the disconnect so the host
  * can tell such a close from a failure: it reconnects after a short pause
  * (sc2c_reconnect_ms()) without counting a failed attempt and without
- * failing over to another relay. Every other drop goes through the
- * exponential backoff.
+ * failing over to another relay. 409 replaced (this device logged in on
+ * another connection) backs off instead, so two connections with the same
+ * device key do not take the slot from each other every second; it does
+ * not fail over either. Every other drop goes through the exponential
+ * backoff.
  *
  * RAM: three heap buffers per connection (receive line, transmit frame,
  * plaintext work), about 37 KiB with SC2_LOW_RAM and 41 KiB otherwise, plus
@@ -92,6 +95,7 @@ typedef enum {
     SC2C_CLOSE_IDLE,      /* 408 idle: only pings for the relay's idle timeout */
     SC2C_CLOSE_RECONNECT, /* 503 reconnect: the relay's session lifetime ran out */
     SC2C_CLOSE_EVICTED,   /* 503 evicted: relay full, this idle session made room */
+    SC2C_CLOSE_REPLACED,  /* 409 replaced: a newer login of this device key took over */
 } sc2c_close_t;
 
 typedef enum {
@@ -210,6 +214,7 @@ typedef struct {
     uint8_t self_id[SC2_DEVICE_ID_LEN];
     uint8_t state;   /* sc2c_conn_state_t */
     uint8_t closed;  /* sc2c_close_t of the current or last session */
+    uint8_t replaced; /* sessions in a row that ended with 409 replaced */
     bool auto_admit; /* admin: add devices that present a valid invite */
     bool no_opks;    /* keys.publish without one-time prekeys */
     bool sync_more;
@@ -295,7 +300,9 @@ bool sc2c_close_soft(sc2c_close_t why);
 const char *sc2c_close_name(sc2c_close_t why);
 /* Delay before the next connection attempt after a session ended with
  * sc2c_close_reason(c). Soft closes: SC2C_SOFT_RECONNECT_MS plus jitter,
- * *attempt untouched. Otherwise the same as sc2c_backoff_ms(). */
+ * *attempt untouched. Replaced: the backoff, starting at 4 s and growing
+ * with every replaced session in a row even though each login in between
+ * resets *attempt. Otherwise the same as sc2c_backoff_ms(). */
 uint32_t sc2c_reconnect_ms(const sc2c_t *c, uint32_t *attempt, uint32_t random);
 
 const char *sc2c_state_name(int state);

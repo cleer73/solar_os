@@ -383,7 +383,7 @@ static void drop(esp_err_t err, const char *why)
     }
     /* the backoff paces the attempts, also across relays; after an idle,
      * evicted or expired session the next attempt comes after a short pause
-     * and is not counted */
+     * and is not counted; a replaced session backs off on the same relay */
     uint32_t delay = closed != SC2C_CLOSE_NONE ? sc2c_reconnect_ms(s.c, &s.attempt, esp_random())
                                                : sc2c_backoff_ms(&s.attempt, esp_random());
     s.retry_at = mono_ms() + delay;

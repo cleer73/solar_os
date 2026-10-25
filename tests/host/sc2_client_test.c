@@ -298,6 +298,8 @@ static void announced_closes(tdev_t *a)
         /* the answer to one request never ends the session */
         {"{\"type\":\"error\",\"rid\":\"o1\",\"code\":503,\"err\":\"evicted\",\"text\":\"x\"}", SC2C_CLOSE_NONE},
         {"{\"type\":\"error\",\"code\":409,\"err\":\"epoch_conflict\",\"text\":\"x\"}", SC2C_CLOSE_NONE},
+        {"{\"type\":\"error\",\"code\":409,\"err\":\"replaced\",\"text\":\"session replaced\"}",
+         SC2C_CLOSE_REPLACED},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         connect_to(a, 0);
@@ -310,7 +312,8 @@ static void announced_closes(tdev_t *a)
         disconnect(a);
         /* still readable after the disconnect, for the reconnect decision */
         CHECK(sc2c_close_reason(&a->c) == cases[i].want);
-        CHECK(sc2c_close_soft(cases[i].want) == (cases[i].want != SC2C_CLOSE_NONE));
+        CHECK(sc2c_close_soft(cases[i].want) ==
+              (cases[i].want != SC2C_CLOSE_NONE && cases[i].want != SC2C_CLOSE_REPLACED));
     }
     /* during login a refusal is never a soft close */
     sc2_mr_open(mr, 0);
@@ -342,6 +345,50 @@ static void reconnect_delays(tdev_t *a)
     CHECK(attempt == 4 && ms >= 6000u && ms <= 10000u);
 }
 
+/* Replaced sessions back off, and keep backing off further while it goes
+ * on, although each login in between resets the host's attempt counter. */
+static void replaced_backoff(tdev_t *a)
+{
+    static const char replaced[] = "{\"type\":\"error\",\"code\":409,\"err\":\"replaced\",\"text\":\"x\"}";
+    static const char idle[] = "{\"type\":\"error\",\"code\":408,\"err\":\"idle\",\"text\":\"x\"}";
+    /* start from a clean streak */
+    connect_to(a, 0);
+    disconnect(a);
+    uint32_t prev = 0;
+    for (unsigned round = 0; round < 8; round++) {
+        uint32_t attempt = 0; /* reset by the login, as sc2-sync does on READY */
+        connect_to(a, 0);
+        CHECK(sc2c_ready(&a->c));
+        feed_line(a, replaced);
+        disconnect(a);
+        CHECK(sc2c_close_reason(&a->c) == SC2C_CLOSE_REPLACED);
+        uint32_t ms = sc2c_reconnect_ms(&a->c, &attempt, 0); /* no jitter: lowest delay */
+        CHECK(ms >= 3000u);
+        CHECK(ms >= prev);
+        CHECK(round < 4 ? ms > prev : ms == 45000u); /* 60 s minus the jitter */
+        CHECK(attempt == round + 3u || (round >= 4 && attempt >= 7u));
+        prev = ms;
+    }
+    /* any other close ends the streak */
+    connect_to(a, 0);
+    feed_line(a, idle);
+    disconnect(a);
+    connect_to(a, 0);
+    feed_line(a, replaced);
+    disconnect(a);
+    uint32_t attempt = 0;
+    uint32_t ms = sc2c_reconnect_ms(&a->c, &attempt, 0);
+    CHECK(ms == 3000u && attempt == 3u);
+    /* a plain drop ends it too */
+    connect_to(a, 0);
+    disconnect(a);
+    connect_to(a, 0);
+    feed_line(a, replaced);
+    disconnect(a);
+    attempt = 0;
+    CHECK(sc2c_reconnect_ms(&a->c, &attempt, 0) == 3000u);
+}
+
 int main(void)
 {
     uint8_t seed[32] = {9};
@@ -355,11 +402,12 @@ int main(void)
 
     announced_closes(&a);
     reconnect_delays(&a);
+    replaced_backoff(&a);
 
     d_free(&a);
     for (unsigned s = 0; s < NSESS; s++) {
         q_clear(&to_client[s]);
     }
     sc2_mr_free(mr);
-    return sc2t_report("sc2_client_test: announced closes, reconnect delays");
+    return sc2t_report("sc2_client_test: announced closes, reconnect delays, replaced backoff");
 }
