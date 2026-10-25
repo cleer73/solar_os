@@ -98,6 +98,7 @@ void sc2_jw_u64(sc2_jw_t *w, uint64_t v);
 /* Decimal string ("4523"). */
 void sc2_jw_u64_str(sc2_jw_t *w, uint64_t v);
 void sc2_jw_bool(sc2_jw_t *w, bool v);
+void sc2_jw_null(sc2_jw_t *w);
 void sc2_jw_b64(sc2_jw_t *w, const uint8_t *data, size_t len);
 void sc2_jw_hex(sc2_jw_t *w, const uint8_t *data, size_t len);
 /* NUL-terminates; returns the first error or SC2_OK with *out_len set. */

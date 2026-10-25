@@ -890,6 +890,12 @@ void sc2_jw_bool(sc2_jw_t *w, bool v)
     put(w, v ? "true" : "false", v ? 4u : 5u);
 }
 
+void sc2_jw_null(sc2_jw_t *w)
+{
+    pre_value(w);
+    put(w, "null", 4u);
+}
+
 void sc2_jw_b64(sc2_jw_t *w, const uint8_t *data, size_t len)
 {
     pre_value(w);

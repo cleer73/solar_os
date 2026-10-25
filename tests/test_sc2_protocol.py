@@ -37,7 +37,7 @@ class Sc2ProtocolTest(unittest.TestCase):
                 subprocess.run(["cc", "-std=c11", "-w", *SANITIZE, "-fno-sanitize=shift", *INCLUDES,
                                 "-c", str(src), "-o", str(obj)], check=True)
                 objects.append(str(obj))
-            for name in ("crypto", "session", "frame"):
+            for name in ("crypto", "session", "frame", "admin"):
                 binary = Path(directory) / name
                 subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", *SANITIZE, *INCLUDES,
                                 str(HOST / f"sc2_{name}_test.c"), *sources(), *objects, "-o", str(binary)],

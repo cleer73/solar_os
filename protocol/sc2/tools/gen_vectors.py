@@ -645,6 +645,216 @@ def gen_frames(ratchet, room):
     return fr
 
 
+# ------------------------------------------------- commits, moderation, invites
+
+def _ids(*labels):
+    out = {}
+    for lab in labels:
+        seed = R.stream("commit-" + lab, 32)
+        ik = R.ed_public(seed)
+        out[lab] = {"seed": seed, "ik": ik, "id": R.device_id(ik)}
+    return out
+
+
+def gen_commit():
+    """A signed membership chain plus commits that every implementation must refuse."""
+    P = _ids("a", "b", "c", "d", "e")
+    room = R.stream("commit-room", 16)
+    plan = [("a", "create", None), ("a", "add", "b"), ("a", "add", "c"), ("a", "promote", "b"),
+            ("b", "add", "d"), ("a", "remove", "c"), ("b", "demote", "a"), ("b", "rotate", None),
+            ("b", "remove", "a")]
+    r = R.Roster(room)
+    steps = []
+    for by, op, tgt in plan:
+        rec = r.make(P[by]["id"], op, P[tgt]["id"] if tgt else None)
+        sig = R.ed_sign(P[by]["seed"], rec)
+        assert R.ed_verify(P[by]["ik"], rec, sig) and sys_verify(P[by]["ik"], rec, sig)
+        r.apply(rec)
+        steps.append({"by": by, "op": op, "target": tgt or "", "rec": rec.hex(), "sig": sig.hex(),
+                      "ik": P[by]["ik"].hex(), "id": R.commit_id(rec).hex(), "count": len(r.members),
+                      "roster_hash": R.roster_hash(r.members).hex()})
+
+    def at(k):
+        x = R.Roster(room)
+        for st in steps[:k]:
+            x.apply(bytes.fromhex(st["rec"]))
+        return x
+
+    def rec_for(x, by, op, tgt, **over):
+        target = P[by]["id"] if op == "create" else (bytes(16) if op == "rotate" else P[tgt]["id"])
+        try:
+            m = x._after(op, target)
+        except KeyError:
+            m = dict(x.members)
+        f = {"room": room, "epoch": x.epoch + 1, "prev": x.head, "by": P[by]["id"], "target": target,
+             "count": len(m), "hash": R.roster_hash(m)}
+        f.update(over)
+        return R.commit_record(f["room"], f["epoch"], f["prev"], f["by"], op, f["target"], f["count"], f["hash"])
+
+    bad = []
+
+    def add_bad(note, k, rec, signer, fail, ik=None, sig=None):
+        sig = sig if sig is not None else R.ed_sign(P[signer]["seed"], rec)
+        key = ik if ik is not None else P[signer]["ik"]
+        refused = False
+        try:  # the reference must refuse it at the same stage
+            if fail == "decode":
+                R.commit_parse(rec)
+            elif fail == "verify":
+                R.commit_parse(rec)
+                if R.device_id(key) != rec[64:80] or not R.ed_verify(key, rec, sig):
+                    raise ValueError("signature")
+            else:
+                R.commit_parse(rec)
+                at(k).apply(rec)
+        except ValueError:
+            refused = True
+        assert refused, "reference accepted bad commit: " + note
+        bad.append({"note": note, "at": k, "rec": rec.hex(), "sig": sig.hex(), "ik": key.hex(), "fail": fail})
+
+    x3 = at(3)
+    assert rec_for(x3, "a", "promote", "b").hex() == steps[3]["rec"]
+    add_bad("wrong prev", 3, rec_for(x3, "a", "promote", "b", prev=bytes(32)), "a", "check")
+    add_bad("epoch skips", 3, rec_for(x3, "a", "promote", "b", epoch=x3.epoch + 2), "a", "check")
+    add_bad("replayed commit", 3, bytes.fromhex(steps[2]["rec"]), "a", "check")
+    add_bad("signer not admin", 3, rec_for(x3, "c", "add", "d"), "c", "check")
+    add_bad("roster hash wrong", 3, rec_for(x3, "a", "promote", "b", hash=bytes(32)), "a", "check")
+    add_bad("count wrong", 3, rec_for(x3, "a", "promote", "b", count=2), "a", "check")
+    add_bad("add existing member", 3, rec_for(x3, "a", "add", "b"), "a", "check")
+    add_bad("remove non-member", 3, rec_for(x3, "a", "remove", "e"), "a", "check")
+    add_bad("remove last admin", 3, rec_for(x3, "a", "remove", "a"), "a", "check")
+    add_bad("demote last admin", 3, rec_for(x3, "a", "demote", "a"), "a", "check")
+    add_bad("promote an admin", 3, rec_for(x3, "a", "promote", "a"), "a", "check")
+    add_bad("other room", 3, rec_for(x3, "a", "promote", "b", room=bytes(16)), "a", "check")
+    add_bad("second genesis", 3, R.commit_record(room, 1, bytes(32), P["a"]["id"], "create", P["a"]["id"], 1,
+                                                  R.roster_hash({P["a"]["id"]: 1})), "a", "check")
+    for note, off, val in (("unknown op", 80, 9), ("unknown suite", 11, 2), ("bad label", 0, ord("X")),
+                           ("zero count", 97, 0), ("count over 32", 97, 33)):
+        rec = bytearray(rec_for(x3, "a", "promote", "b"))
+        rec[off] = val
+        add_bad(note, 3, bytes(rec), "a", "decode")
+    add_bad("genesis epoch 2", 0, R.commit_record(room, 2, bytes(32), P["a"]["id"], "create", P["a"]["id"], 1,
+                                                   R.roster_hash({P["a"]["id"]: 1})), "a", "decode")
+    add_bad("genesis target other", 0, R.commit_record(room, 1, bytes(32), P["a"]["id"], "create", P["b"]["id"],
+                                                        1, R.roster_hash({P["b"]["id"]: 1})), "a", "decode")
+    add_bad("rotate with target", 3, rec_for(x3, "a", "rotate", None, target=P["b"]["id"]), "a", "decode")
+    add_bad("add at epoch 1", 0, R.commit_record(room, 1, bytes(32), P["a"]["id"], "add", P["b"]["id"], 2,
+                                                  bytes(32)), "a", "decode")
+    good = rec_for(x3, "a", "promote", "b")
+    add_bad("key does not match by", 3, good, "a", "verify", ik=P["c"]["ik"],
+            sig=R.ed_sign(P["c"]["seed"], good))
+    tampered = bytearray(R.ed_sign(P["a"]["seed"], good))
+    tampered[5] ^= 1
+    add_bad("tampered signature", 3, good, "a", "verify", sig=bytes(tampered))
+    other = bytearray(good)
+    other[97 + 1] ^= 1  # signature over different bytes
+    add_bad("signature over other bytes", 3, good, "a", "verify", sig=R.ed_sign(P["a"]["seed"], bytes(other)))
+    return {"room": room.hex(), "members": {k: {"id": v["id"].hex(), "ik": v["ik"].hex()} for k, v in P.items()},
+            "steps": steps, "bad": bad, "final_epoch": r.epoch, "final_head": r.head.hex()}
+
+
+def gen_mod():
+    seed = R.stream("relay", 32)
+    pub = R.ed_public(seed)
+    author = R.device_id(R.ed_public(R.stream("post-ik", 32)))
+    cases = [
+        ("remove", "pub:general", 99814, T0 + 60, bytes.fromhex("0123456789abcdef"), author, 0),
+        ("ban", "pub:general", 99815, T0 + 61, None, author, T0 + 86400),
+        ("ban", "pub:general", 99816, T0 + 62, None, author, 0),
+        ("unban", "pub:general", 99817, T0 + 63, None, author, 0),
+        ("remove", "pub:" + "x" * 59, 1, 2, bytes.fromhex("ffffffffffffffff"), bytes(range(16)), 0),
+    ]
+    out = []
+    for action, room, seq, ts, ref, dev, until in cases:
+        rec = R.mod_record(action, room, seq, ts, ref, dev, until)
+        sig = R.ed_sign(seed, rec)
+        assert sys_verify(pub, rec, sig)
+        fr = R.mod_frame(seed, action, room, seq, ts, ref, dev, until)
+        assert json.loads(fr)["sig"] == R.b64(sig)
+        out.append({"action": action, "room": room, "seq": seq, "ts": ts, "ref": ref.hex() if ref else "",
+                    "device": dev.hex(), "until": until, "rec": rec.hex(), "sig": sig.hex(), "frame": fr})
+    good = json.loads(out[0]["frame"])
+    bad_frames = []
+
+    def bad(note, **chg):
+        f = dict(good)
+        for k, v in chg.items():
+            if v is None:
+                f.pop(k, None)
+            else:
+                f[k] = v
+        bad_frames.append({"note": note, "frame": R.dumps(f)})
+
+    bad("remove without ref", ref=None)
+    bad("remove without device", device=None)
+    bad("until on remove", until=5)
+    bad("by not relay", by="admin")
+    bad("unknown action", action="mute")
+    bad("room too long", room="pub:" + "x" * 60)
+    bad("zero ref", ref="0000000000000000")
+    bad("seq not a string", seq=99814)
+    bad("short sig", sig=R.b64(bytes(63)))
+    unban = next(json.loads(c["frame"]) for c in out if c["action"] == "unban")
+    assert unban["action"] == "unban"
+    f = dict(unban, until=5)
+    bad_frames.append({"note": "until on unban", "frame": R.dumps(f)})
+    tamper = dict(good, seq="99815")
+    return {"relay_seed": seed.hex(), "relay_pub": pub.hex(), "cases": out, "bad_frames": bad_frames,
+            "tampered": R.dumps(tamper)}
+
+
+def gen_invite():
+    admin_seed = R.stream("invite-admin", 32)
+    admin_ik = R.ed_public(admin_seed)
+    room = R.stream("invite-room", 16)
+    secret = R.stream("invite-secret", 16)
+    joiner = R.device_id(R.ed_public(R.stream("invite-joiner", 32)))
+    key = R.invite_key(secret, room)
+    proof = R.invite_proof(key, joiner)
+    assert key == sys_hmac(secret, b"SC2-INVITE\x01" + room) if SYS else True
+    url = "chats://relay.example:7778#pin=sha256/" + R.b64(R.sha256(b"spki"))
+    code = R.invite_code(room, secret, admin_ik, url)
+    bad = []
+    c = bytearray(code)
+    c[37] ^= 1
+    bad.append({"note": "admin id does not match ik", "code": bytes(c).hex()})
+    bad.append({"note": "url not chat(s)://", "code": R.invite_code(room, secret, admin_ik, "chats://x").hex()
+                .replace(b"chats://x".hex(), b"https:/xx".hex())})
+    bad.append({"note": "length mismatch", "code": (code + b"!").hex()})
+    c = bytearray(code)
+    c[4] = 2
+    bad.append({"note": "unknown version", "code": bytes(c).hex()})
+    c = bytearray(code)
+    c[86 + 5] = 0x20
+    bad.append({"note": "space in url", "code": bytes(c).hex()})
+    return {"room": room.hex(), "secret": secret.hex(), "joiner": joiner.hex(), "key": key.hex(),
+            "proof": proof.hex(), "admin_seed": admin_seed.hex(), "admin_ik": admin_ik.hex(),
+            "admin_id": R.device_id(admin_ik).hex(), "url": url, "code": code.hex(), "text": R.invite_text(code),
+            "bad": bad}
+
+
+def gen_frames_admin(commit, mod, invite):
+    fr = {}
+    room = commit["room"]
+    st = commit["steps"]
+    fr["room_create_private"] = R.frame("room.create", rid="r1", room=room, kind="private",
+                                        commit=R.b64(bytes.fromhex(st[0]["rec"])),
+                                        sig=R.b64(bytes.fromhex(st[0]["sig"])))
+    fr["room_commit"] = R.frame("room.commit", rid="c1", room=room, commit=R.b64(bytes.fromhex(st[1]["rec"])),
+                                sig=R.b64(bytes.fromhex(st[1]["sig"])))
+    fr["room_commit_msg"] = R.frame("room.commit", room=room, seq="4524", commit=R.b64(bytes.fromhex(st[1]["rec"])),
+                                    sig=R.b64(bytes.fromhex(st[1]["sig"])))
+    fr["room_invite"] = R.frame("room.invite", rid="i1", room=invite["room"],
+                                key=R.b64(bytes.fromhex(invite["key"])))
+    fr["room_invite_revoke"] = R.frame("room.invite", rid="i2", room=invite["room"],
+                                       key=R.b64(bytes.fromhex(invite["key"])), revoke=True)
+    fr["room_join_private"] = R.frame("room.join", rid="j1", room=invite["room"],
+                                      invite=R.b64(bytes.fromhex(invite["proof"])))
+    for i, name in enumerate(("room_mod_remove", "room_mod_ban", "room_mod_ban_indef", "room_mod_unban")):
+        fr[name] = mod["cases"][i]["frame"]
+    return fr
+
+
 # ------------------------------------------------------------- C output
 
 def cstr(s):
@@ -745,6 +955,43 @@ def emit_c(v):
     for k, x in v["frames"].items():
         L.append("#define SC2V_FRAME_%s %s" % (k.upper(), cstr(x)))
     L.append("")
+    cm = v["commit"]
+    L.append("typedef struct { const char *by, *op, *rec, *sig, *ik, *id; unsigned count; const char *roster_hash; }"
+             " sc2v_commit_t;")
+    L.append("typedef struct { const char *note; unsigned at; const char *rec, *sig, *ik, *fail; } sc2v_commit_bad_t;")
+    L.append("typedef struct { const char *action, *room; unsigned long long seq, ts; const char *ref, *device;"
+             " unsigned long long until; const char *rec, *sig, *frame; } sc2v_mod_t;")
+    L.append("typedef struct { const char *note, *frame; } sc2v_mod_bad_t;")
+    L.append("typedef struct { const char *note, *code; } sc2v_invite_bad_t;")
+    L.append("")
+    L.append("#define SC2V_COMMIT_ROOM %s" % cstr(cm["room"]))
+    L.append("#define SC2V_COMMIT_FINAL_EPOCH %du" % cm["final_epoch"])
+    L.append("#define SC2V_COMMIT_FINAL_HEAD %s" % cstr(cm["final_head"]))
+    for k, m in cm["members"].items():
+        L.append("#define SC2V_COMMIT_ID_%s %s" % (k.upper(), cstr(m["id"])))
+        L.append("#define SC2V_COMMIT_IK_%s %s" % (k.upper(), cstr(m["ik"])))
+    table("SC2V_COMMIT_STEPS", "sc2v_commit_t", [("by", "s"), ("op", "s"), ("rec", "s"), ("sig", "s"), ("ik", "s"),
+                                                 ("id", "s"), ("count", "i"), ("roster_hash", "s")], cm["steps"])
+    table("SC2V_COMMIT_BAD", "sc2v_commit_bad_t", [("note", "s"), ("at", "i"), ("rec", "s"), ("sig", "s"),
+                                                   ("ik", "s"), ("fail", "s")], cm["bad"])
+    md = v["mod"]
+    L.append("#define SC2V_MOD_RELAY_SEED %s" % cstr(md["relay_seed"]))
+    L.append("#define SC2V_MOD_RELAY_PUB %s" % cstr(md["relay_pub"]))
+    L.append("#define SC2V_MOD_TAMPERED %s" % cstr(md["tampered"]))
+    L.append("static const sc2v_mod_t SC2V_MOD[] = {")
+    for c in md["cases"]:
+        L.append("    {%s, %s, %dull, %dull, %s, %s, %dull, %s, %s, %s}," % (
+            cstr(c["action"]), cstr(c["room"]), c["seq"], c["ts"], cstr(c["ref"]), cstr(c["device"]), c["until"],
+            cstr(c["rec"]), cstr(c["sig"]), cstr(c["frame"])))
+    L.append("};")
+    L.append("")
+    table("SC2V_MOD_BAD", "sc2v_mod_bad_t", [("note", "s"), ("frame", "s")], md["bad_frames"])
+    iv = v["invite"]
+    for k in ("room", "secret", "joiner", "key", "proof", "admin_seed", "admin_ik", "admin_id", "url", "code",
+              "text"):
+        L.append("#define SC2V_INVITE_%s %s" % (k.upper(), cstr(iv[k])))
+    L.append("")
+    table("SC2V_INVITE_BAD", "sc2v_invite_bad_t", [("note", "s"), ("code", "s")], iv["bad"])
     L.append("#define SC2V_COUNT(a) (sizeof(a) / sizeof((a)[0]))")
     return "\n".join(L) + "\n"
 
@@ -767,6 +1014,8 @@ def build():
         "identity": gen_identity(), "x3dh": gen_x3dh(), "ratchet": ratchet, "room": room,
         "safety": gen_safety(), "frames": gen_frames(ratchet, room),
     }
+    v["commit"], v["mod"], v["invite"] = gen_commit(), gen_mod(), gen_invite()
+    v["frames"].update(gen_frames_admin(v["commit"], v["mod"], v["invite"]))
     js = json.dumps(v, indent=1, ensure_ascii=False, sort_keys=False) + "\n"
     return js, emit_c(v)
 

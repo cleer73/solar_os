@@ -826,3 +826,248 @@ int sc2_frame_room_pub_decode(const char *line, size_t len, char room[SC2_ROOM_N
     }
     return rc;
 }
+
+/* ---------------- private-room membership and invites ---------------- */
+
+static int commit_frame(char *out, size_t cap, size_t *out_len, const char *type, const char *rid,
+                        const uint8_t room[SC2_ROOM_ID_LEN], const uint8_t rec[SC2_COMMIT_LEN],
+                        const uint8_t sig[SC2_SIG_LEN], bool create)
+{
+    sc2_jw_t w;
+    sc2_commit_t c;
+    if (out == NULL || room == NULL || rec == NULL || sig == NULL) {
+        return SC2_ERR_ARG;
+    }
+    if (sc2_commit_decode(&c, rec) != SC2_OK || memcmp(c.room, room, SC2_ROOM_ID_LEN) != 0 ||
+        (create && c.op != SC2_COMMIT_CREATE) || (!create && c.op == SC2_COMMIT_CREATE)) {
+        return SC2_ERR_ARG;
+    }
+    sc2_jw_init(&w, out, cap);
+    sc2_jw_object_begin(&w);
+    sc2_jw_key(&w, "type");
+    sc2_jw_cstring(&w, type);
+    put_rid(&w, rid);
+    sc2_jw_key(&w, "room");
+    sc2_jw_hex(&w, room, SC2_ROOM_ID_LEN);
+    if (create) {
+        sc2_jw_key(&w, "kind");
+        sc2_jw_cstring(&w, "private");
+    }
+    sc2_jw_key(&w, "commit");
+    sc2_jw_b64(&w, rec, SC2_COMMIT_LEN);
+    sc2_jw_key(&w, "sig");
+    sc2_jw_b64(&w, sig, SC2_SIG_LEN);
+    sc2_jw_object_end(&w);
+    return sc2_jw_finish(&w, out_len);
+}
+
+int sc2_frame_room_create_private(char *out, size_t cap, size_t *out_len, const char *rid,
+                                  const uint8_t room[SC2_ROOM_ID_LEN], const uint8_t rec[SC2_COMMIT_LEN],
+                                  const uint8_t sig[SC2_SIG_LEN])
+{
+    return commit_frame(out, cap, out_len, "room.create", rid, room, rec, sig, true);
+}
+
+int sc2_frame_room_commit(char *out, size_t cap, size_t *out_len, const char *rid,
+                          const uint8_t room[SC2_ROOM_ID_LEN], const uint8_t rec[SC2_COMMIT_LEN],
+                          const uint8_t sig[SC2_SIG_LEN])
+{
+    return commit_frame(out, cap, out_len, "room.commit", rid, room, rec, sig, false);
+}
+
+int sc2_frame_room_commit_decode(const char *line, size_t len, uint8_t room[SC2_ROOM_ID_LEN], uint64_t *seq,
+                                 uint8_t rec[SC2_COMMIT_LEN], uint8_t sig[SC2_SIG_LEN])
+{
+    sc2_json_val_t root, v;
+    if (line == NULL || room == NULL || seq == NULL || rec == NULL || sig == NULL) {
+        return SC2_ERR_ARG;
+    }
+    int rc = sc2_json_root(line, len, &root);
+    if (rc == SC2_OK) {
+        rc = expect_type(&root, "room.commit");
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get_hex_exact(&root, "room", room, SC2_ROOM_ID_LEN));
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get(&root, "seq", &v));
+    }
+    if (rc == SC2_OK) {
+        rc = sc2_json_u64_str(&v, seq);
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get_b64_exact(&root, "commit", rec, SC2_COMMIT_LEN));
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get_b64_exact(&root, "sig", sig, SC2_SIG_LEN));
+    }
+    if (rc == SC2_OK && memcmp(rec + 12, room, SC2_ROOM_ID_LEN) != 0) {
+        rc = SC2_ERR_FORMAT; /* record names another room */
+    }
+    return rc;
+}
+
+int sc2_frame_room_invite(char *out, size_t cap, size_t *out_len, const char *rid,
+                          const uint8_t room[SC2_ROOM_ID_LEN], const uint8_t key[SC2_INVITE_KEY_LEN], bool revoke)
+{
+    sc2_jw_t w;
+    if (out == NULL || room == NULL || key == NULL) {
+        return SC2_ERR_ARG;
+    }
+    sc2_jw_init(&w, out, cap);
+    sc2_jw_object_begin(&w);
+    sc2_jw_key(&w, "type");
+    sc2_jw_cstring(&w, "room.invite");
+    put_rid(&w, rid);
+    sc2_jw_key(&w, "room");
+    sc2_jw_hex(&w, room, SC2_ROOM_ID_LEN);
+    sc2_jw_key(&w, "key");
+    sc2_jw_b64(&w, key, SC2_INVITE_KEY_LEN);
+    if (revoke) {
+        sc2_jw_key(&w, "revoke");
+        sc2_jw_bool(&w, true);
+    }
+    sc2_jw_object_end(&w);
+    return sc2_jw_finish(&w, out_len);
+}
+
+int sc2_frame_room_join_private(char *out, size_t cap, size_t *out_len, const char *rid,
+                                const uint8_t room[SC2_ROOM_ID_LEN], const uint8_t proof[32])
+{
+    sc2_jw_t w;
+    if (out == NULL || room == NULL) {
+        return SC2_ERR_ARG;
+    }
+    sc2_jw_init(&w, out, cap);
+    sc2_jw_object_begin(&w);
+    sc2_jw_key(&w, "type");
+    sc2_jw_cstring(&w, "room.join");
+    put_rid(&w, rid);
+    sc2_jw_key(&w, "room");
+    sc2_jw_hex(&w, room, SC2_ROOM_ID_LEN);
+    if (proof != NULL) {
+        sc2_jw_key(&w, "invite");
+        sc2_jw_b64(&w, proof, 32);
+    }
+    sc2_jw_object_end(&w);
+    return sc2_jw_finish(&w, out_len);
+}
+
+/* ---------------- relay-signed moderation ---------------- */
+
+int sc2_frame_room_mod_decode(const char *line, size_t len, sc2_mod_t *mod, uint8_t sig[SC2_SIG_LEN])
+{
+    sc2_json_val_t root, v;
+    char action[8];
+    size_t n = 0;
+    if (line == NULL || mod == NULL || sig == NULL) {
+        return SC2_ERR_ARG;
+    }
+    memset(mod, 0, sizeof(*mod));
+    int rc = sc2_json_root(line, len, &root);
+    if (rc == SC2_OK) {
+        rc = expect_type(&root, "room.mod");
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get_string(&root, "room", mod->room, SC2_MOD_ROOM_MAX + 1u, &mod->room_len));
+        if (rc == SC2_ERR_BOUNDS || (rc == SC2_OK && (mod->room_len == 0 || strlen(mod->room) != mod->room_len))) {
+            rc = SC2_ERR_FORMAT;
+        }
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get(&root, "seq", &v));
+    }
+    if (rc == SC2_OK) {
+        rc = sc2_json_u64_str(&v, &mod->seq);
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get_string(&root, "action", action, sizeof(action), &n));
+        if (rc == SC2_ERR_BOUNDS) {
+            rc = SC2_ERR_FORMAT;
+        }
+    }
+    if (rc == SC2_OK) {
+        mod->action = sc2_mod_action_parse(action, n);
+        if (mod->action == 0) {
+            rc = SC2_ERR_FORMAT;
+        }
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get_u64(&root, "ts", UINT64_MAX, &mod->ts));
+    }
+    if (rc == SC2_OK) {
+        rc = sc2_json_get_hex_exact(&root, "ref", mod->ref, SC2_MSG_ID_LEN);
+        if (rc == SC2_ERR_NOT_FOUND && mod->action != SC2_MOD_REMOVE) {
+            rc = SC2_OK;
+        }
+        rc = req(rc);
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get_hex_exact(&root, "device", mod->device, SC2_DEVICE_ID_LEN));
+    }
+    if (rc == SC2_OK) {
+        rc = sc2_json_get(&root, "until", &v);
+        if (rc == SC2_ERR_NOT_FOUND) {
+            rc = SC2_OK;
+        } else if (rc == SC2_OK && mod->action != SC2_MOD_BAN) {
+            rc = SC2_ERR_FORMAT;
+        } else if (rc == SC2_OK && v.type != SC2_JSON_NULL) {
+            rc = sc2_json_u64(&v, UINT64_MAX, &mod->until);
+        }
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get(&root, "by", &v));
+        if (rc == SC2_OK && !sc2_json_string_eq(&v, "relay")) {
+            rc = SC2_ERR_FORMAT;
+        }
+    }
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get_b64_exact(&root, "sig", sig, SC2_SIG_LEN));
+    }
+    if (rc == SC2_OK) {
+        uint8_t rec[SC2_MOD_LEN];
+        rc = sc2_mod_encode(rec, mod) == SC2_OK ? SC2_OK : SC2_ERR_FORMAT; /* field rules */
+    }
+    return rc;
+}
+
+int sc2_frame_room_mod(char *out, size_t cap, size_t *out_len, const sc2_mod_t *mod, const uint8_t sig[SC2_SIG_LEN])
+{
+    sc2_jw_t w;
+    uint8_t rec[SC2_MOD_LEN];
+    if (out == NULL || mod == NULL || sig == NULL || sc2_mod_encode(rec, mod) != SC2_OK) {
+        return SC2_ERR_ARG;
+    }
+    sc2_jw_init(&w, out, cap);
+    sc2_jw_object_begin(&w);
+    sc2_jw_key(&w, "type");
+    sc2_jw_cstring(&w, "room.mod");
+    sc2_jw_key(&w, "room");
+    sc2_jw_string(&w, mod->room, mod->room_len);
+    sc2_jw_key(&w, "seq");
+    sc2_jw_u64_str(&w, mod->seq);
+    sc2_jw_key(&w, "action");
+    sc2_jw_cstring(&w, sc2_mod_action_name(mod->action));
+    sc2_jw_key(&w, "ts");
+    sc2_jw_u64(&w, mod->ts);
+    if (mod->action == SC2_MOD_REMOVE) {
+        sc2_jw_key(&w, "ref");
+        sc2_jw_hex(&w, mod->ref, SC2_MSG_ID_LEN);
+    }
+    sc2_jw_key(&w, "device");
+    sc2_jw_hex(&w, mod->device, SC2_DEVICE_ID_LEN);
+    if (mod->action == SC2_MOD_BAN) {
+        sc2_jw_key(&w, "until");
+        if (mod->until == 0) {
+            sc2_jw_null(&w);
+        } else {
+            sc2_jw_u64(&w, mod->until);
+        }
+    }
+    sc2_jw_key(&w, "by");
+    sc2_jw_cstring(&w, "relay");
+    sc2_jw_key(&w, "sig");
+    sc2_jw_b64(&w, sig, SC2_SIG_LEN);
+    sc2_jw_object_end(&w);
+    return sc2_jw_finish(&w, out_len);
+}

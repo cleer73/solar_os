@@ -37,6 +37,13 @@ L_ROOM = b"SC2-ROOM\x01"
 L_PUB = b"SC2-PUB\x01"
 L_SAFETY = b"SC2-SAFETY\x01"
 L_SAFETY_FULL = b"SC2-SAFETY-FULL\x01"
+L_COMMIT = b"SC2-COMMIT\x01"
+L_MOD = b"SC2-MOD\x01"
+L_INVITE = b"SC2-INVITE\x01"
+L_JOIN = b"SC2-JOIN\x01"
+COMMIT_OPS = {"create": 1, "add": 2, "remove": 3, "promote": 4, "demote": 5, "rotate": 6}
+MOD_ACTIONS = {"remove": 1, "ban": 2, "unban": 3}
+ROOM_MEMBERS_MAX = 32
 
 
 class Rng:
@@ -386,6 +393,144 @@ def room_seal(mk, nonce, hdr, pt, ik_seed):
     ct = aead_seal(mk, nonce, pad(pt), hdr)
     sig = ed_sign(ik_seed, L_ROOM + hdr + nonce + ct)
     return ct, sig
+
+
+# ---------------- membership commits (fixed 130-byte records) ----------------
+
+def roster_hash(roster) -> bytes:
+    """roster: {device_id(16 bytes): role} with role 1 = admin, 0 = member."""
+    return sha256(b"".join(d + bytes([roster[d]]) for d in sorted(roster)))
+
+
+def commit_record(room, epoch, prev, by, op, target, count, rhash) -> bytes:
+    rec = (L_COMMIT + bytes([SUITE]) + room + struct.pack(">I", epoch) + prev + by + bytes([COMMIT_OPS[op]]) +
+           target + bytes([count]) + rhash)
+    assert len(rec) == 130
+    return rec
+
+
+def commit_parse(rec: bytes):
+    if len(rec) != 130 or rec[:11] != L_COMMIT or rec[11] != SUITE:
+        raise ValueError("bad commit record")
+    ops = {v: k for k, v in COMMIT_OPS.items()}
+    if rec[80] not in ops:
+        raise ValueError("unknown op")
+    c = {"room": rec[12:28], "epoch": struct.unpack(">I", rec[28:32])[0], "prev": rec[32:64],
+         "by": rec[64:80], "op": ops[rec[80]], "target": rec[81:97], "count": rec[97], "hash": rec[98:130]}
+    z16 = bytes(16)
+    if not 1 <= c["count"] <= ROOM_MEMBERS_MAX or c["epoch"] == 0 or c["by"] == z16:
+        raise ValueError("bad commit fields")
+    if c["op"] == "create":
+        if c["epoch"] != 1 or c["count"] != 1 or c["prev"] != bytes(32) or c["target"] != c["by"]:
+            raise ValueError("bad genesis shape")
+    elif c["epoch"] == 1:
+        raise ValueError("only a genesis commit may have epoch 1")
+    elif (c["op"] == "rotate") != (c["target"] == z16):
+        raise ValueError("rotate has no target; other ops need one")
+    return c
+
+
+def commit_id(rec: bytes) -> bytes:
+    return sha256(rec)
+
+
+class Roster:
+    """Client view of a private room's signed membership (independent of the C core)."""
+
+    def __init__(self, room: bytes):
+        self.room, self.epoch, self.head, self.members = room, 0, bytes(32), {}
+
+    def _after(self, op, target):
+        m = dict(self.members)
+        if op == "create":
+            m[target] = 1
+        elif op == "add":
+            m[target] = 0
+        elif op == "remove":
+            del m[target]
+        elif op == "promote":
+            m[target] = 1
+        elif op == "demote":
+            m[target] = 0
+        return m
+
+    def _check(self, by, op, target):
+        if op == "create":
+            if self.epoch or self.members or target != by:
+                raise ValueError("bad genesis")
+            return
+        if not self.epoch or self.members.get(by) != 1:
+            raise ValueError("not an admin")
+        admins = sum(self.members.values())
+        if op == "add" and (target in self.members or len(self.members) >= ROOM_MEMBERS_MAX):
+            raise ValueError("cannot add")
+        if op == "remove" and (target not in self.members or (self.members[target] == 1 and admins <= 1)):
+            raise ValueError("cannot remove")
+        if op == "promote" and self.members.get(target) != 0:
+            raise ValueError("cannot promote")
+        if op == "demote" and (self.members.get(target) != 1 or admins <= 1):
+            raise ValueError("cannot demote")
+        if op == "rotate" and target != bytes(16):
+            raise ValueError("rotate has no target")
+
+    def make(self, by, op, target=None):
+        target = by if op == "create" else (bytes(16) if op == "rotate" else target)
+        self._check(by, op, target)
+        m = self._after(op, target)
+        return commit_record(self.room, self.epoch + 1, self.head, by, op, target, len(m), roster_hash(m))
+
+    def apply(self, rec):
+        c = commit_parse(rec)
+        if c["room"] != self.room or c["epoch"] != self.epoch + 1 or c["prev"] != self.head:
+            raise ValueError("out of order")
+        self._check(c["by"], c["op"], c["target"])
+        m = self._after(c["op"], c["target"])
+        if len(m) != c["count"] or roster_hash(m) != c["hash"]:
+            raise ValueError("roster mismatch")
+        self.members, self.epoch, self.head = m, c["epoch"], commit_id(rec)
+
+
+# ---------------- relay-signed moderation (fixed 122-byte records) ----------------
+
+def mod_record(action, room: str, seq, ts, ref=None, device=None, until=0) -> bytes:
+    r = room.encode()
+    assert 0 < len(r) <= 63
+    rec = (L_MOD + bytes([SUITE, MOD_ACTIONS[action]]) + r + bytes(64 - len(r)) + struct.pack(">QQ", seq, ts) +
+           (ref or bytes(8)) + (device or bytes(16)) + struct.pack(">Q", until or 0))
+    assert len(rec) == 122
+    return rec
+
+
+def mod_frame(relay_seed, action, room, seq, ts, ref=None, device=None, until=None):
+    f = {"type": "room.mod", "room": room, "seq": str(seq), "action": action, "ts": ts}
+    if action == "remove":
+        f["ref"] = ref.hex()
+    f["device"] = device.hex()
+    if action == "ban":
+        f["until"] = until if until else None
+    f["by"] = "relay"
+    f["sig"] = b64(ed_sign(relay_seed, mod_record(action, room, seq, ts, ref, device, until or 0)))
+    return dumps(f)
+
+
+# ---------------- invites ----------------
+
+def invite_key(secret: bytes, room: bytes) -> bytes:
+    return hmac256(secret, L_INVITE + room)
+
+
+def invite_proof(key: bytes, joiner: bytes) -> bytes:
+    return hmac256(key, L_JOIN + joiner)
+
+
+def invite_code(room: bytes, secret: bytes, admin_ik: bytes, url: str) -> bytes:
+    u = url.encode("ascii")
+    assert 0 < len(u) <= 200 and (url.startswith("chat://") or url.startswith("chats://"))
+    return b"SC2I\x01" + room + secret + device_id(admin_ik) + admin_ik + bytes([len(u)]) + u
+
+
+def invite_text(code: bytes) -> str:
+    return "sc2i:" + b64(code)
 
 
 # ---------------- public posts ----------------

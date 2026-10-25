@@ -10,7 +10,9 @@
 #define SC2_FRAME_H
 
 #include <stdbool.h>
+#include "sc2_commit.h"
 #include "sc2_json.h"
+#include "sc2_mod.h"
 #include "sc2_ratchet.h"
 
 #ifdef __cplusplus
@@ -140,6 +142,37 @@ int sc2_post_decode(const sc2_json_val_t *post_obj, sc2_post_t *post, char *body
 /* {"type":"room.pub","room":..,"seq":"..","post":{...}} */
 int sc2_frame_room_pub_decode(const char *line, size_t len, char room[SC2_ROOM_NAME_MAX + 1], uint64_t *seq,
                               sc2_post_t *post, char *body_buf, size_t body_cap);
+
+/* ---- Private-room membership and invites ---- */
+/* {"type":"room.create","rid":..,"room":"<hex>","kind":"private","commit":"<b64 130>","sig":"<b64 64>"}
+ * with the genesis commit record. */
+int sc2_frame_room_create_private(char *out, size_t cap, size_t *out_len, const char *rid,
+                                  const uint8_t room[SC2_ROOM_ID_LEN], const uint8_t rec[SC2_COMMIT_LEN],
+                                  const uint8_t sig[SC2_SIG_LEN]);
+/* C->R {"type":"room.commit","rid":..,"room":..,"commit":..,"sig":..} */
+int sc2_frame_room_commit(char *out, size_t cap, size_t *out_len, const char *rid,
+                          const uint8_t room[SC2_ROOM_ID_LEN], const uint8_t rec[SC2_COMMIT_LEN],
+                          const uint8_t sig[SC2_SIG_LEN]);
+/* R->C {"type":"room.commit","room":..,"seq":"..","commit":..,"sig":..}. The
+ * record is only decoded into rec; the caller checks it (sc2_commit_decode,
+ * sc2_commit_verify, sc2_roster_apply). The record must name the frame's room. */
+int sc2_frame_room_commit_decode(const char *line, size_t len, uint8_t room[SC2_ROOM_ID_LEN], uint64_t *seq,
+                                 uint8_t rec[SC2_COMMIT_LEN], uint8_t sig[SC2_SIG_LEN]);
+/* {"type":"room.invite","rid":..,"room":..,"key":"<b64 32>"[,"revoke":true]} (admins only) */
+int sc2_frame_room_invite(char *out, size_t cap, size_t *out_len, const char *rid,
+                          const uint8_t room[SC2_ROOM_ID_LEN], const uint8_t key[SC2_INVITE_KEY_LEN], bool revoke);
+/* {"type":"room.join","rid":..,"room":"<hex>"[,"invite":"<b64 32 proof>"]}; proof may be NULL. */
+int sc2_frame_room_join_private(char *out, size_t cap, size_t *out_len, const char *rid,
+                                const uint8_t room[SC2_ROOM_ID_LEN], const uint8_t proof[32]);
+
+/* ---- Relay-signed moderation ---- */
+/* {"type":"room.mod","room":..,"seq":"..","action":"remove|ban|unban","ts":..,
+ *  ["ref":"<16 hex>",]"device":"<32 hex>",["until":<u64>|null,]"by":"relay","sig":..}
+ * ref only on remove (required), until only on ban (null or absent = 0 =
+ * indefinite). Verify with sc2_mod_verify and the relay key. */
+int sc2_frame_room_mod_decode(const char *line, size_t len, sc2_mod_t *mod, uint8_t sig[SC2_SIG_LEN]);
+/* Relay side / tests: write the frame for mod and its signature. */
+int sc2_frame_room_mod(char *out, size_t cap, size_t *out_len, const sc2_mod_t *mod, const uint8_t sig[SC2_SIG_LEN]);
 
 #ifdef __cplusplus
 }
