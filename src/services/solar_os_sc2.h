@@ -76,6 +76,23 @@ esp_err_t solar_os_sc2_alias_set(const char *name, const char *device);
 esp_err_t solar_os_sc2_alias_get(size_t index, char name[SOLAR_OS_SC2_ALIAS_NAME_MAX + 1],
                                  char device[SC2_DEVICE_ID_HEX_LEN + 1]);
 
+/* Safety-number verification, kept per peer in <store>/verified.txt (up to
+ * SOLAR_OS_SC2_VERIFIED_MAX peers). Marking verified needs the peer's keys
+ * (ESP_ERR_NOT_FOUND otherwise); unverifying an unknown peer is a no-op. */
+#define SOLAR_OS_SC2_VERIFIED_MAX 64u
+esp_err_t solar_os_sc2_verified_get(const char *device, bool *verified);
+esp_err_t solar_os_sc2_verified_set(const char *device, bool verified);
+
+/* One-time notice for public rooms (signed posts are public and
+ * non-deniable): seen state per room in <store>/notice.txt, up to
+ * SOLAR_OS_SC2_NOTICE_MAX rooms. Any read error counts as not seen. */
+#define SOLAR_OS_SC2_NOTICE_MAX 64u
+#define SOLAR_OS_SC2_PUBLIC_NOTICE                                                                  \
+    "Public room: posts are signed with your device key and readable by anyone on the relay. "   \
+    "Signed posts are non-deniable: anyone can prove you wrote them. Do not post secrets here."
+bool solar_os_sc2_notice_seen(const char *room);
+esp_err_t solar_os_sc2_notice_mark(const char *room);
+
 esp_err_t solar_os_sc2_keys_publish(const char *rid, uint32_t opk_target, char *out, size_t cap, size_t *out_len);
 esp_err_t solar_os_sc2_add_bundle(const char *line, size_t len, char device[SC2_DEVICE_ID_HEX_LEN + 1]);
 

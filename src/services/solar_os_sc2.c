@@ -618,10 +618,14 @@ esp_err_t solar_os_sc2_forget_peer(const char *peer)
 
 /* ---------------------------------------------------------------------- */
 /* Peer references: full device ID, saved alias or unique hex prefix.      */
-/* Aliases are "<name> <device>\n" lines in <base>/alias.txt (no secrets). */
+/* Aliases are "<name> <device>\n" lines in <base>/alias.txt, verified     */
+/* peers "<device> <own device>\n" lines in <base>/verified.txt (public    */
+/* data only: the same small record file code serves both).               */
 /* ---------------------------------------------------------------------- */
 
-#define SC2_ALIAS_LINE (SOLAR_OS_SC2_ALIAS_NAME_MAX + SC2_DEVICE_ID_HEX_LEN + 4u)
+/* "<key> <device>\r\n": key is an alias name or (verified.txt) a device ID. */
+#define SC2_ALIAS_LINE (SC2_DEVICE_ID_HEX_LEN + SC2_DEVICE_ID_HEX_LEN + 4u)
+_Static_assert(SOLAR_OS_SC2_ALIAS_NAME_MAX <= SC2_DEVICE_ID_HEX_LEN, "alias records reuse the verified line size");
 
 /* Lower-cased copy of an all-hex string; its length, or 0 if not hex/too long. */
 static size_t ref_hex(const char *in, char *out, size_t cap)
@@ -641,9 +645,13 @@ static size_t ref_hex(const char *in, char *out, size_t cap)
     return n;
 }
 
-static void alias_path(char *out, size_t cap, const char *ext)
+#define SC2_REC_ALIAS "alias"
+#define SC2_REC_VERIFIED "verified"
+#define SC2_REC_NOTICE "notice"
+
+static void alias_path(char *out, size_t cap, const char *stem, const char *ext)
 {
-    snprintf(out, cap, "%s/alias.%s", s_sc2.base, ext);
+    snprintf(out, cap, "%s/%s.%s", s_sc2.base, stem, ext);
 }
 
 /* Split "<name> <device>" in place; false for a malformed line. */
@@ -660,13 +668,14 @@ static bool alias_split(char *line, char **dev)
 }
 
 /* Caller holds the service lock. index < 0 looks name up instead. */
-static bool alias_read(const char *name, int index, char *name_out, char dev_out[SC2_DEVICE_ID_HEX_LEN + 1])
+static bool alias_read(const char *stem, const char *name, int index, char *name_out,
+                       char dev_out[SC2_DEVICE_ID_HEX_LEN + 1])
 {
     char path[SC2_PATH_MAX];
     char line[SC2_ALIAS_LINE];
     char *dev;
     bool found = false;
-    alias_path(path, sizeof(path), "txt");
+    alias_path(path, sizeof(path), stem, "txt");
     FILE *f = fopen(path, "r");
     if (f == NULL) {
         return false;
@@ -734,7 +743,7 @@ esp_err_t solar_os_sc2_resolve_peer(const char *ref, char out[SC2_DEVICE_ID_HEX_
     if (err != ESP_OK) {
         return err;
     }
-    if (alias_read(ref, -1, NULL, out)) {
+    if (alias_read(SC2_REC_ALIAS, ref, -1, NULL, out)) {
         err = ESP_OK;
     } else if (n >= SOLAR_OS_SC2_PREFIX_MIN) {
         int found = prefix_scan(SC2E_DIR_PEER, hex, n, out, 0);
@@ -793,22 +802,16 @@ esp_err_t solar_os_sc2_alias_get(size_t index, char name[SOLAR_OS_SC2_ALIAS_NAME
     if (err != ESP_OK) {
         return err;
     }
-    bool found = alias_read(NULL, (int)index, name, device);
+    bool found = alias_read(SC2_REC_ALIAS, NULL, (int)index, name, device);
     sc2_leave();
     return found ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
-esp_err_t solar_os_sc2_alias_set(const char *name, const char *device)
+/* Caller holds the service lock. Replace (or with hex NULL delete) the
+ * record `name` of file `stem`, keeping at most max records. */
+static esp_err_t rec_set(const char *stem, size_t max, const char *name, const char *hex)
 {
-    char hex[SC2_DEVICE_ID_HEX_LEN + 1];
-    if (!solar_os_sc2_alias_name_valid(name) ||
-        (device != NULL && ref_hex(device, hex, sizeof(hex)) != SC2_DEVICE_ID_HEX_LEN)) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    esp_err_t err = sc2_enter();
-    if (err != ESP_OK) {
-        return err;
-    }
+    esp_err_t err;
     char path[SC2_PATH_MAX];
     char tmp[SC2_PATH_MAX];
     char bak[SC2_PATH_MAX];
@@ -816,9 +819,9 @@ esp_err_t solar_os_sc2_alias_set(const char *name, const char *device)
     char *dev;
     size_t kept = 0;
     bool removed = false;
-    alias_path(path, sizeof(path), "txt");
-    alias_path(tmp, sizeof(tmp), "tmp");
-    alias_path(bak, sizeof(bak), "bak");
+    alias_path(path, sizeof(path), stem, "txt");
+    alias_path(tmp, sizeof(tmp), stem, "tmp");
+    alias_path(bak, sizeof(bak), stem, "bak");
     FILE *in = fopen(path, "r");
     FILE *out = fopen(tmp, "w");
     err = out != NULL ? ESP_OK : ESP_FAIL;
@@ -837,8 +840,8 @@ esp_err_t solar_os_sc2_alias_set(const char *name, const char *device)
     if (in != NULL) {
         fclose(in);
     }
-    if (err == ESP_OK && device != NULL) {
-        if (kept >= SOLAR_OS_SC2_ALIAS_MAX) {
+    if (err == ESP_OK && hex != NULL) {
+        if (kept >= max) {
             err = ESP_ERR_NO_MEM;
         } else if (fprintf(out, "%s %s\n", name, hex) < 0) {
             err = ESP_FAIL;
@@ -857,6 +860,105 @@ esp_err_t solar_os_sc2_alias_set(const char *name, const char *device)
     } else {
         (void)remove(tmp);
     }
+    return err;
+}
+
+esp_err_t solar_os_sc2_alias_set(const char *name, const char *device)
+{
+    char hex[SC2_DEVICE_ID_HEX_LEN + 1];
+    if (!solar_os_sc2_alias_name_valid(name) ||
+        (device != NULL && ref_hex(device, hex, sizeof(hex)) != SC2_DEVICE_ID_HEX_LEN)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = sc2_enter();
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = rec_set(SC2_REC_ALIAS, SOLAR_OS_SC2_ALIAS_MAX, name, device != NULL ? hex : NULL);
+    sc2_leave();
+    return err;
+}
+
+/* A verified record names the own device that verified the peer, so a new
+ * identity (store wiped or restored elsewhere) starts unverified. The peer
+ * key itself cannot change under its device ID (the ID hashes the key). */
+esp_err_t solar_os_sc2_verified_get(const char *device, bool *verified)
+{
+    char hex[SC2_DEVICE_ID_HEX_LEN + 1];
+    char by[SC2_DEVICE_ID_HEX_LEN + 1];
+    if (device == NULL || verified == NULL || ref_hex(device, hex, sizeof(hex)) != SC2_DEVICE_ID_HEX_LEN) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = sc2_enter();
+    if (err != ESP_OK) {
+        return err;
+    }
+    *verified = alias_read(SC2_REC_VERIFIED, hex, -1, NULL, by) && strcmp(by, s_sc2.engine->self_hex) == 0;
+    sc2_leave();
+    return ESP_OK;
+}
+
+esp_err_t solar_os_sc2_verified_set(const char *device, bool verified)
+{
+    char hex[SC2_DEVICE_ID_HEX_LEN + 1];
+    if (device == NULL || ref_hex(device, hex, sizeof(hex)) != SC2_DEVICE_ID_HEX_LEN) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = sc2_enter();
+    if (err != ESP_OK) {
+        return err;
+    }
+    sc2e_peer_info_t info;
+    if (verified && (sc2e_peer_info(s_sc2.engine, hex, &info) != SC2_OK || !info.known)) {
+        err = ESP_ERR_NOT_FOUND; /* nothing to compare yet: fetch the keys first */
+    } else {
+        err = rec_set(SC2_REC_VERIFIED, SOLAR_OS_SC2_VERIFIED_MAX, hex, verified ? s_sc2.engine->self_hex : NULL);
+        if (!verified && err == ESP_ERR_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    }
+    sc2_leave();
+    return err;
+}
+
+/* First-join notices: the record key is a hash of the room key, so any
+ * room name fits the record line. */
+static void notice_key(const char *room, char out[SC2_DEVICE_ID_HEX_LEN + 1])
+{
+    uint8_t h[SC2_SHA256_LEN];
+    if (sc2_sha256(h, (const uint8_t *)room, strlen(room)) != SC2_OK) {
+        memset(h, 0, sizeof(h));
+    }
+    for (size_t i = 0; i < SC2_DEVICE_ID_HEX_LEN / 2u; i++) {
+        snprintf(out + 2u * i, 3, "%02x", h[i]);
+    }
+}
+
+bool solar_os_sc2_notice_seen(const char *room)
+{
+    char key[SC2_DEVICE_ID_HEX_LEN + 1];
+    char by[SC2_DEVICE_ID_HEX_LEN + 1];
+    if (room == NULL || sc2_enter() != ESP_OK) {
+        return false; /* any doubt: show the notice */
+    }
+    notice_key(room, key);
+    bool seen = alias_read(SC2_REC_NOTICE, key, -1, NULL, by);
+    sc2_leave();
+    return seen;
+}
+
+esp_err_t solar_os_sc2_notice_mark(const char *room)
+{
+    char key[SC2_DEVICE_ID_HEX_LEN + 1];
+    if (room == NULL || room[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = sc2_enter();
+    if (err != ESP_OK) {
+        return err;
+    }
+    notice_key(room, key);
+    err = rec_set(SC2_REC_NOTICE, SOLAR_OS_SC2_NOTICE_MAX, key, s_sc2.engine->self_hex);
     sc2_leave();
     return err;
 }

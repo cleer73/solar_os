@@ -130,6 +130,17 @@ connects the first enabled `sc2` instance; `sc2 relay` shows its state.
 unique prefix of at least 6 hex digits of a peer whose keys or session are
 stored, or a nickname saved with `sc2 alias NAME DEVICE`.
 
+Safety numbers: in Chat, `/safety` on an sc2 DM (or `/safety PEER`) opens a
+screen with the short code, the eight words and the full number; compare them
+with the other device, then press `V` to mark the peer verified (`U` takes it
+back). `/verify` opens the same screen, `/unverify` clears the mark. From the
+shell: `sc2 safety PEER`, `sc2 verify PEER`, `sc2 unverify PEER`. The mark is
+stored in the SC2 store and Chat labels sc2 DMs `(verified)` or `(unverified)`.
+The device ID is a hash of the peer's identity key, so a peer cannot change its
+key under a verified ID. Public sc2 rooms are labelled `(public)`; the first
+time one is opened in Chat (or joined with `messages join`) a notice explains
+that posts are signed and non-deniable. It is shown once per room.
+
 Gateway conversations use the v1 protocol. They are always marked `legacy
 insecure`, and also `transport secured` with `chats://` or `tls://`. The server
 can read and change these messages, and sender names are not signed by the

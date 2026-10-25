@@ -445,6 +445,20 @@ void solar_os_shell_cmd_messages(solar_os_context_t *ctx,
         if (error == ESP_OK) solar_os_shell_io_printf(io, "messages: conversation %" PRIu32 "%s%s\n", conversation_id,
                                                       target != argv[3] ? " with " : "", target != argv[3] ? target : "");
         else solar_os_shell_io_printf(io, "messages: %s\n", solar_os_shell_error_text(error));
+#if SOLAR_OS_PACKAGE_SERVICE_SC2_PROVIDER
+        solar_os_messaging_conversation_t *joined = error == ESP_OK && strcmp(argv[1], "join") == 0 &&
+                solar_os_messaging_provider_is_class(instance, "sc2") ?
+            solar_os_memory_alloc(sizeof(*joined), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED, "messages.shell.join") : NULL;
+        if (joined != NULL) {
+            if (solar_os_messaging_conversation_get(conversation_id, joined) == ESP_OK &&
+                (joined->security_flags & SOLAR_OS_SECURITY_PUBLIC_SIGNED) != 0u &&
+                !solar_os_sc2_notice_seen(joined->provider_key)) {
+                solar_os_shell_io_printf(io, "messages: %s\n", SOLAR_OS_SC2_PUBLIC_NOTICE);
+                (void)solar_os_sc2_notice_mark(joined->provider_key);
+            }
+            solar_os_memory_free(joined);
+        }
+#endif
         return;
     }
     solar_os_messaging_provider_id_t provider = 0;

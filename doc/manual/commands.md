@@ -156,6 +156,7 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `irc` | `irc sasl <instance> <account> <password>`; `irc sasl <instance> off`; `irc pass <instance> <password\|off>`; `irc ca <instance> <PEM-path\|default>` | Set optional authentication and TLS trust. See `man messaging.irc`. |
 | `sc2` | `sc2 id`; `sc2 status` | Show this device's SC2 end-to-end identity (device ID, fingerprint, prekeys) and the service state. Creates the identity on first use. See `man python.sc2`. |
 | `sc2` | `sc2 safety <peer>` | Show the safety number shared with a stored peer, to compare out of band. `<peer>` is a 32-hex device ID, a unique prefix (6+ hex digits) of a known peer, or an alias. |
+| `sc2` | `sc2 verify <peer>`; `sc2 unverify <peer>` | Mark the safety number with a peer as compared (or take that back). Chat shows sc2 DMs as `(verified)` or `(unverified)`; the record is kept in the SC2 store (up to 64 peers). Verifying needs the peer's keys (message it first). |
 | `sc2` | `sc2 alias`; `sc2 alias <name> <peer>`; `sc2 alias <name> off` | List, save or delete peer nicknames (up to 16, in the SC2 store) for `sc2 safety` and `messages query <sc2-instance> <peer>`. |
 | `sc2` | `sc2 selftest`; `sc2 bench [n]` | Run the SC2 known-answer and two-device session tests in RAM, or time the primitives and a DM/room round trip. Neither touches stored keys. |
 | `gateway` | `gateway configure <url> [token]` | Save gateway connection settings. The gateway uses the global SolarOS user identity. |

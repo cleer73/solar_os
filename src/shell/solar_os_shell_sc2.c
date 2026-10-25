@@ -14,6 +14,7 @@ static void sc2_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io, "sc2 id                show this device's SC2 identity");
     solar_os_shell_io_writeln(io, "sc2 status            service, store and session counts");
     solar_os_shell_io_writeln(io, "sc2 safety <peer>     safety number with a stored peer");
+    solar_os_shell_io_writeln(io, "sc2 verify|unverify <peer>  mark the safety number compared (or not)");
     solar_os_shell_io_writeln(io, "sc2 alias [<name> <peer>|<name> off]  list, save or delete a peer nickname");
     solar_os_shell_io_writeln(io, "<peer>: 32-hex device id, unique prefix (>= 6 hex) of a known peer, or alias");
     solar_os_shell_io_writeln(io, "sc2 selftest          run known-answer and session tests");
@@ -119,9 +120,31 @@ static void sc2_print_safety(solar_os_shell_io_t *io, const char *ref)
         sc2_fail(io, err);
         return;
     }
+    bool verified = false;
+    (void)solar_os_sc2_verified_get(peer, &verified);
+    solar_os_shell_io_printf(io, "peer:  %s (%s)\n", peer, verified ? "verified" : "NOT verified");
     solar_os_shell_io_printf(io, "short: %s\n", safety.short_form);
     solar_os_shell_io_printf(io, "words: %s\n", safety.words);
     solar_os_shell_io_printf(io, "full:  %s\n", safety.full_form);
+    if (!verified) {
+        solar_os_shell_io_printf(io, "Compare with the other device, then: sc2 verify %s\n", ref);
+    }
+}
+
+static void sc2_verify(solar_os_shell_io_t *io, const char *ref, bool verified)
+{
+    char peer[SC2_DEVICE_ID_HEX_LEN + 1];
+    if (!sc2_peer_arg(io, ref, peer)) {
+        return;
+    }
+    esp_err_t err = solar_os_sc2_verified_set(peer, verified);
+    if (err == ESP_OK) {
+        solar_os_shell_io_printf(io, "sc2: %s %s\n", peer, verified ? "marked verified" : "marked NOT verified");
+    } else {
+        solar_os_shell_io_printf(io, "sc2: %s: %s\n", verified ? "verify" : "unverify",
+                                 err == ESP_ERR_NOT_FOUND ? "no keys for this peer yet (message it first)" :
+                                 err == ESP_ERR_NO_MEM ? "verified list is full (64)" : solar_os_sc2_err_text(err));
+    }
 }
 
 static void sc2_selftest_line(void *ctx, const char *name, int rc)
@@ -181,6 +204,10 @@ void solar_os_shell_cmd_sc2(solar_os_context_t *ctx, int argc, char **argv)
 #endif
     if (argc == 3 && strcmp(argv[1], "safety") == 0) {
         sc2_print_safety(io, argv[2]);
+        return;
+    }
+    if (argc == 3 && (strcmp(argv[1], "verify") == 0 || strcmp(argv[1], "unverify") == 0)) {
+        sc2_verify(io, argv[2], argv[1][0] == 'v');
         return;
     }
     if ((argc == 2 || argc == 4) && strcmp(argv[1], "alias") == 0) {

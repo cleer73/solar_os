@@ -1417,3 +1417,22 @@ all: sc2_engine_lowram_test
 sc2-test: sc2-engine-lowram-test
 test: sc2-engine-lowram-test
 TARGETS += sc2_engine_lowram_test
+
+# The SolarOS SC2 service on a host directory: aliases, safety-number
+# verification records and public-room notices, with a second
+# in-memory engine as the peer.
+SC2S_SRCS := $(ROOT)/src/services/solar_os_sc2.c $(SC2E_SRCS)
+sc2_service_test: sc2_service_test.c $(SC2S_SRCS) $(ROOT)/src/services/solar_os_sc2.h $(SC2E_HDRS) $(SC2_SRCS) \
+        $(SC2_HDRS) $(SC2_VENDOR_OBJS) sc2_service_stubs/esp_random.h
+	$(CC) $(CFLAGS) -Wno-format-truncation -pthread -D_GNU_SOURCE -DpdTICKS_TO_MS\(ticks\)=\(ticks\) -include compat.h \
+		-Isc2_service_stubs -Imessaging_stubs -I. -I$(ROOT)/src -I$(ROOT)/src/services $(SC2_INC) \
+		$< $(SC2S_SRCS) $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+.PHONY: sc2-service-test
+sc2-service-test: sc2_service_test
+	./sc2_service_test
+
+all: sc2_service_test
+sc2-test: sc2-service-test
+test: sc2-service-test
+TARGETS += sc2_service_test
