@@ -731,7 +731,10 @@ int sc2e_keys_publish(sc2e_t *e, const char *rid, uint32_t opk_target, char *out
     if (e == NULL || !e->open || out == NULL || out_len == NULL) {
         return SC2_ERR_ARG;
     }
-    if (opk_target > SC2E_OPK_MAX) {
+    const bool with_opks = opk_target != SC2E_OPK_NONE;
+    if (!with_opks) {
+        opk_target = 0;
+    } else if (opk_target > SC2E_OPK_MAX) {
         opk_target = SC2E_OPK_MAX;
     }
     sc2e_prekeys_t *pk = &e->pre;
@@ -785,7 +788,7 @@ int sc2e_keys_publish(sc2e_t *e, const char *rid, uint32_t opk_target, char *out
     sc2_jw_object_end(&w);
     sc2_jw_key(&w, "opks");
     sc2_jw_array_begin(&w);
-    for (uint32_t i = 0; i < pk->opk_count; i++) {
+    for (uint32_t i = 0; with_opks && i < pk->opk_count; i++) {
         sc2_jw_object_begin(&w);
         sc2_jw_key(&w, "id");
         sc2_jw_u64(&w, pk->opk[i].id);

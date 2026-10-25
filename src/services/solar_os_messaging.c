@@ -2012,6 +2012,15 @@ uint64_t solar_os_messaging_provider_cursor(
     solar_os_messaging_provider_id_t provider,
     const char *provider_key)
 {
+    return solar_os_messaging_provider_cursor_masked(provider, provider_key, 0, 0);
+}
+
+uint64_t solar_os_messaging_provider_cursor_masked(
+    solar_os_messaging_provider_id_t provider,
+    const char *provider_key,
+    uint64_t mask,
+    uint64_t tag)
+{
     if (!messaging_provider_valid(provider) ||
         !messaging_text_valid(provider_key,
                               SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX,
@@ -2035,8 +2044,9 @@ uint64_t solar_os_messaging_provider_cursor(
             &messaging.messages[(oldest + i) %
                                 SOLAR_OS_MESSAGING_MESSAGE_CAPACITY].message;
         if (message->conversation_id == conversation_id &&
-            message->provider_message_key > cursor) {
-            cursor = message->provider_message_key;
+            (message->provider_message_key & mask) == tag &&
+            (message->provider_message_key & ~mask) > cursor) {
+            cursor = message->provider_message_key & ~mask;
         }
     }
     messaging_unlock();

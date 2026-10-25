@@ -195,7 +195,10 @@ int sc2e_forget_peer(sc2e_t *e, const char *peer_hex);
 
 /* Build a keys.publish frame. Tops up one-time prekeys to opk_target (at most
  * SC2E_OPK_MAX) and rotates the signed prekey when it is older than
- * SC2E_SPK_ROTATE_SECONDS. Prekeys are persisted before the frame is returned. */
+ * SC2E_SPK_ROTATE_SECONDS. Prekeys are persisted before the frame is returned.
+ * opk_target SC2E_OPK_NONE publishes the signed prekey alone (fallback relays:
+ * a one-time prekey must never be handed out by two relays). */
+#define SC2E_OPK_NONE UINT32_MAX
 int sc2e_keys_publish(sc2e_t *e, const char *rid, uint32_t opk_target, char *out, size_t cap, size_t *out_len);
 /* Verify and store a keys.bundle frame. Writes the peer's hex device ID. */
 int sc2e_add_bundle(sc2e_t *e, const char *line, size_t len, char device_out[SC2_DEVICE_ID_HEX_LEN + 1]);

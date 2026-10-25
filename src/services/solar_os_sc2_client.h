@@ -183,6 +183,7 @@ typedef struct {
     uint8_t self_id[SC2_DEVICE_ID_LEN];
     uint8_t state;   /* sc2c_conn_state_t */
     bool auto_admit; /* admin: add devices that present a valid invite */
+    bool no_opks;    /* keys.publish without one-time prekeys */
     bool sync_more;
     uint32_t pub_max; /* public body limit from room.state (default 1024) */
     uint64_t inbox_done; /* highest inbox seq processed in this session */
@@ -207,6 +208,7 @@ typedef struct {
     const char *expect_relay; /* relay id to insist on, or NULL */
     const char *invite_url;   /* relay URL written into invites, or NULL */
     bool auto_admit;
+    bool no_opks;             /* publish the signed prekey only (fallback relays) */
 } sc2c_config_t;
 
 /* Allocate buffers and load the persisted outbox index. */

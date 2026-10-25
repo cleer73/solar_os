@@ -141,6 +141,34 @@ key under a verified ID. Public sc2 rooms are labelled `(public)`; the first
 time one is opened in Chat (or joined with `messages join`) a notice explains
 that posts are signed and non-deniable. It is shown once per room.
 
+Fallback relays: `messages configure NAME fallback URL [URL URL]` gives an
+`sc2` instance up to three fallback relays (same URL forms as the primary,
+each with its own `#pin=`); it replaces the whole list, `fallback off` clears
+it. `sc2-sync` keeps one connection. After two failed attempts in a row (the
+normal reconnect backoff paces them) it moves to the next relay. On a fallback
+it probes the primary every 15 minutes and stays there once it works. On the
+primary it visits each fallback in turn for about 30 seconds every 15 minutes
+(every minute until each relay has seen this device once) to publish the key
+bundle and collect DMs that peers sent there; visits wait while messages are
+queued. `sc2 relay` shows the relay in use. Trade-offs:
+
+- The identity, admission code and room list are the same on every relay;
+  the admission code must work on all of them.
+- One-time prekeys are published on the primary only, so the same prekey can
+  never be claimed on two relays. A peer that starts a new session through a
+  fallback uses the signed prekey alone; the first message of that session
+  then lacks the extra forward secrecy a one-time prekey gives. Existing
+  sessions are not affected.
+- Peers only meet on a relay they both use. If you and a peer are on
+  different relays, a DM waits in the other relay's mailbox until the next
+  visit (up to about 15 minutes).
+- A public room on two relays is one conversation: posts from each relay are
+  kept apart by relay index, so each relay resumes from its own position.
+  Reordering the fallback list may re-fetch or skip some recent history.
+  Private rooms live on the relay that hosts them.
+- Queued messages are sent through whichever relay is in use, never during a
+  visit.
+
 Gateway conversations use the v1 protocol. They are always marked `legacy
 insecure`, and also `transport secured` with `chats://` or `tls://`. The server
 can read and change these messages, and sender names are not signed by the

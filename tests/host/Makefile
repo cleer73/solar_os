@@ -1436,3 +1436,16 @@ all: sc2_service_test
 sc2-test: sc2-service-test
 test: sc2-service-test
 TARGETS += sc2_service_test
+
+# sc2-sync relay choice: failover, return to the primary, fallback visits.
+sc2_relay_policy_test: sc2_relay_policy_test.c $(ROOT)/src/services/solar_os_sc2_relay_policy.h
+	$(CC) $(CFLAGS) -I$(ROOT)/src/services $< -o $@
+
+.PHONY: sc2-relay-policy-test
+sc2-relay-policy-test: sc2_relay_policy_test
+	./sc2_relay_policy_test
+
+all: sc2_relay_policy_test
+sc2-test: sc2-relay-policy-test
+test: sc2-relay-policy-test
+TARGETS += sc2_relay_policy_test

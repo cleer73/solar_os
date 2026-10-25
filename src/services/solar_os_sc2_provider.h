@@ -17,13 +17,23 @@
 #include "esp_err.h"
 #include "solar_os_messaging.h"
 
-#define SOLAR_OS_SC2_RELAY_CONFIG_VERSION 1U
+/* 2: fallback relays appended (version 1 profiles load with none). */
+#define SOLAR_OS_SC2_RELAY_CONFIG_VERSION 2U
 #define SOLAR_OS_SC2_RELAY_URL_MAX 128U
 #define SOLAR_OS_SC2_RELAY_PIN_MAX 72U      /* "sha256/" + base64 of 32 bytes */
 #define SOLAR_OS_SC2_RELAY_ADMIT_MAX 64U
 #define SOLAR_OS_SC2_RELAY_ROOM_CAPACITY 16U
+#define SOLAR_OS_SC2_RELAY_FALLBACK_MAX 3U  /* relays tried when the primary is unreachable */
 #define SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX "pub:"
 #define SOLAR_OS_SC2_PUBLIC_ROOM_NAME_MAX 59U /* after "pub:", fits a provider key */
+
+/* One relay endpoint (the fallback list; the primary keeps its v1 fields). */
+typedef struct {
+    bool tls;
+    uint16_t port;
+    char url[SOLAR_OS_SC2_RELAY_URL_MAX];       /* empty: unused slot */
+    char pin[SOLAR_OS_SC2_RELAY_PIN_MAX];
+} solar_os_sc2_relay_endpoint_t;
 
 typedef struct {
     uint32_t version;
@@ -34,7 +44,15 @@ typedef struct {
     char pin[SOLAR_OS_SC2_RELAY_PIN_MAX];       /* empty: CA bundle; set: this SPKI pin only */
     char admit[SOLAR_OS_SC2_RELAY_ADMIT_MAX];   /* optional admission code */
     char rooms[SOLAR_OS_SC2_RELAY_ROOM_CAPACITY][SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX];
+    /* Version 2. Same identity, admission code and rooms on every relay;
+     * sc2-sync uses one relay at a time (see doc/manual/messaging.md). */
+    solar_os_sc2_relay_endpoint_t fallback[SOLAR_OS_SC2_RELAY_FALLBACK_MAX];
 } solar_os_sc2_relay_config_t;
+
+/* Relay i of a config: 0 the primary, 1.. the set fallbacks. Returns the
+ * relay count (>= 1 for a valid config); out may be NULL. */
+size_t solar_os_sc2_relay_endpoint(const solar_os_sc2_relay_config_t *config, size_t i,
+                                   solar_os_sc2_relay_endpoint_t *out);
 
 typedef enum {
     SOLAR_OS_SC2_TARGET_INVALID = 0,

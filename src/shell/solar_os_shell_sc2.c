@@ -22,6 +22,7 @@ static void sc2_usage(solar_os_shell_io_t *io)
 #if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
     solar_os_shell_io_writeln(io, "sc2 relay             relay connection (sc2-sync) status");
     solar_os_shell_io_writeln(io, "relay setup: messages add sc2 <name> chat://HOST:7777 | chats://HOST:7778[#pin=sha256/B64]");
+    solar_os_shell_io_writeln(io, "fallbacks:   messages configure <name> fallback <url> [<url> <url>] | fallback off");
     solar_os_shell_io_writeln(io, "peer: messages query <name> <peer>, then messages send <conv> <text>");
 #endif
 }
@@ -199,6 +200,15 @@ void solar_os_shell_cmd_sc2(solar_os_context_t *ctx, int argc, char **argv)
                                  st.instance, st.tls ? "chats" : "chat", st.host, st.port,
                                  st.ready ? "ready" : (st.connected ? "logging in" : "offline"),
                                  st.relay_id[0] ? st.relay_id : "-", st.outbox, st.attempt);
+        if (st.relays > 1) {
+            if (st.relay == 0) {
+                solar_os_shell_io_printf(io, "relay:    primary (%u fallbacks)%s\n", st.relays - 1u,
+                                         st.visiting ? ", probing" : "");
+            } else {
+                solar_os_shell_io_printf(io, "relay:    fallback %u of %u%s\n", st.relay, st.relays - 1u,
+                                         st.visiting ? ", visiting (keys and mailbox)" : "");
+            }
+        }
         return;
     }
 #endif

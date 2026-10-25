@@ -125,6 +125,31 @@ static void test_selftest_and_bench(void)
     CHECK(live_allocs == 0);
 }
 
+/* A fallback relay holds the signed prekey only: SPK-only X3DH works and
+ * leaves the one-time prekeys for the primary. */
+static void test_no_opk_bundle(void)
+{
+    sc2e_test_host_t h = host();
+    dev_t a, b;
+    sc2e_dm_result_t res;
+    size_t pl = 0;
+    dev_open(&a, &h);
+    dev_open(&b, &h);
+    give_bundle(&b, &a, 4);
+    uint32_t before = a.e.pre.opk_count;
+    give_bundle(&a, &b, SC2E_OPK_NONE);
+    sc2e_peer_info_t pi;
+    CHECK_RC(sc2e_peer_info(&b.e, a.info.device_id, &pi), SC2_OK);
+    CHECK(pi.known && !pi.opk_available);
+    const char *inner = "{\"t\":\"text\",\"body\":\"via fallback\"}";
+    CHECK_RC(send_dm(&b, &a, inner, &res, &pl), SC2_OK);
+    CHECK(pl == strlen(inner) && memcmp(pt, inner, pl) == 0);
+    CHECK(a.e.pre.opk_count == before);
+    CHECK_RC(send_dm(&a, &b, "{\"t\":\"text\",\"body\":\"reply\"}", &res, &pl), SC2_OK);
+    dev_close(&a);
+    dev_close(&b);
+}
+
 static void test_publish_and_bundle_rules(void)
 {
     sc2e_test_host_t h = host();
@@ -140,6 +165,11 @@ static void test_publish_and_bundle_rules(void)
     CHECK(a.e.pre.opk_count == SC2E_OPK_MAX);
     CHECK(strstr(f1, "\"type\":\"keys.publish\"") != NULL);
     CHECK(strstr(f1, "\"rid\"") == NULL);
+    /* Fallback relays get the signed prekey only; the OPKs stay for the primary. */
+    CHECK_RC(sc2e_keys_publish(&a.e, NULL, SC2E_OPK_NONE, f1, sizeof(f1), &n), SC2_OK);
+    CHECK(a.e.pre.opk_count == SC2E_OPK_MAX);
+    CHECK(strstr(f1, "\"opks\":[]") != NULL);
+    CHECK_RC(sc2e_keys_publish(&a.e, NULL, 1000, f1, sizeof(f1), &n), SC2_OK);
 
     /* A bundle must hash to its device ID and carry valid signatures. */
     CHECK_RC(sc2e_relay_bundle(f1, n, &a.info, f2, sizeof(f2), &m), SC2_OK);
@@ -462,6 +492,7 @@ int main(void)
 {
     test_selftest_and_bench();
     test_publish_and_bundle_rules();
+    test_no_opk_bundle();
     test_dm_policies();
     test_post_rules();
     test_open_errors();

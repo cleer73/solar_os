@@ -33,6 +33,7 @@
 #include "solar_os_sc2.h"
 #include "solar_os_sc2_client.h"
 #include "solar_os_sc2_provider.h"
+#include "solar_os_sc2_relay_policy.h"
 #include "solar_os_task.h"
 
 static const char *TAG = "sc2-sync";
@@ -43,6 +44,12 @@ _Static_assert(sizeof(((solar_os_sc2_sync_status_t *)0)->host) >= SOLAR_OS_SC2_R
 #define SC2_SYNC_WRITE_MS 8000u
 #define SC2_SYNC_CHECK_MS 2000u
 #define SC2_SYNC_DEFAULT_ROOM "pub:general"
+/* Multi-relay: see solar_os_sc2_relay_policy.h. Inbound provider message keys carry the relay index in the top byte (0
+ * for the primary, as before), so per-relay sequence numbers never collide
+ * and room cursors stay per relay. */
+#define SC2_SYNC_TAG_SHIFT 56u
+#define SC2_SYNC_TAG_MASK (0xFFull << SC2_SYNC_TAG_SHIFT)
+#define SC2_SYNC_TAG(relay) ((uint64_t)(relay) << SC2_SYNC_TAG_SHIFT)
 
 typedef struct {
     TaskHandle_t task;
@@ -53,6 +60,8 @@ typedef struct {
     bool ready;
     bool client_ok;
     bool auto_joined;
+    bool rebuild;     /* relay switch pending: rebuild the client */
+    sc2rp_t rp;       /* relay in use, home relay, visits */
     uint32_t attempt;
     uint64_t retry_at;
     uint64_t checked_at;
@@ -61,6 +70,7 @@ typedef struct {
     solar_os_messaging_provider_id_t id;
     solar_os_sc2_relay_config_t *cfg;  /* active */
     solar_os_sc2_relay_config_t *next; /* scratch for change detection */
+    solar_os_sc2_relay_endpoint_t *ep; /* relay in use (copy from cfg) */
     solar_os_messaging_outbound_t *ob;
     sc2c_t *c;
     esp_tls_t *tls;
@@ -191,7 +201,7 @@ static void on_message(const sc2c_event_t *ev)
         .conversation_key = ev->conv,
         .conversation_kind = dm ? SOLAR_OS_CONVERSATION_DIRECT : SOLAR_OS_CONVERSATION_ROOM,
         .conversation_title = title,
-        .provider_message_key = ev->seq,
+        .provider_message_key = (ev->seq & ~SC2_SYNC_TAG_MASK) | SC2_SYNC_TAG(s.rp.relay),
         .timestamp_ms = ev->ts != 0 ? ev->ts * 1000u : (uint64_t)h_wall(NULL) * 1000u,
         .security_flags = solar_os_sc2_conversation_security(
             s.cfg, dm ? SOLAR_OS_SC2_TARGET_DEVICE : SOLAR_OS_SC2_TARGET_PUBLIC_ROOM, dm),
@@ -223,10 +233,16 @@ static void h_event(void *ctx, const sc2c_event_t *ev)
         s.ready = ev->code == SC2C_READY;
         if (ev->code == SC2C_READY) {
             s.attempt = 0;
-            status(true, ESP_OK, "connected to %s:%u (%s)", s.host, (unsigned)s.cfg->port, s.c->relay_id);
-            SOLAR_OS_LOGI(TAG, "ready: relay %s as %s", s.c->relay_id, s.c->self_hex);
+            sc2rp_ready(&s.rp, mono_ms());
+            if (s.rp.relay == 0) {
+                status(true, ESP_OK, "connected to %s:%u (%s)", s.host, (unsigned)s.ep->port, s.c->relay_id);
+            } else {
+                status(true, ESP_OK, "connected to %s:%u (%s), fallback %u%s", s.host, (unsigned)s.ep->port,
+                       s.c->relay_id, (unsigned)s.rp.relay, s.rp.visiting ? ", visit" : "");
+            }
+            SOLAR_OS_LOGI(TAG, "ready: relay %u %s as %s", (unsigned)s.rp.relay, s.c->relay_id, s.c->self_hex);
         } else if (ev->code != SC2C_OFFLINE) {
-            status(false, ESP_OK, "%s with %s:%u", sc2c_state_name(ev->code), s.host, (unsigned)s.cfg->port);
+            status(false, ESP_OK, "%s with %s:%u", sc2c_state_name(ev->code), s.host, (unsigned)s.ep->port);
         }
         break;
     case SC2C_EV_ROOM: {
@@ -253,7 +269,7 @@ static void h_event(void *ctx, const sc2c_event_t *ev)
 
 static bool pin_matches(void)
 {
-    if (s.cfg->pin[0] == '\0') {
+    if (s.ep->pin[0] == '\0') {
         return true;
     }
     mbedtls_ssl_context *ssl = esp_tls_get_ssl_context(s.tls);
@@ -276,7 +292,7 @@ static bool pin_matches(void)
         return false;
     }
     static const char prefix[] = "sha256/";
-    const char *pin = s.cfg->pin;
+    const char *pin = s.ep->pin;
     if (strncmp(pin, prefix, sizeof(prefix) - 1u) == 0) {
         pin += sizeof(prefix) - 1u;
     }
@@ -295,12 +311,25 @@ static void drop(esp_err_t err, const char *why)
     if (s.client_ok && was) {
         sc2c_on_disconnected(s.c);
     }
-    if (why != NULL) {
-        uint32_t delay = sc2c_backoff_ms(&s.attempt, esp_random());
-        s.retry_at = mono_ms() + delay;
-        status(false, err, "%s; retry in %u s", why, (unsigned)((delay + 999u) / 1000u));
-        SOLAR_OS_LOGW(TAG, "%s (%s:%u); retry in %u ms", why, s.host, (unsigned)s.cfg->port, (unsigned)delay);
+    if (why == NULL) {
+        return;
     }
+    const unsigned from = s.rp.relay;
+    sc2rp_action_t act = sc2rp_failed(&s.rp);
+    s.rebuild = act != SC2RP_STAY;
+    if (act == SC2RP_SWITCH_NOW) {
+        /* a visited relay is not needed now: straight back home, no backoff */
+        SOLAR_OS_LOGW(TAG, "%s (relay %u %s:%u); back to relay %u", why, from, s.host, (unsigned)s.ep->port,
+                      (unsigned)s.rp.relay);
+        s.retry_at = mono_ms();
+        return;
+    }
+    /* the existing backoff paces the attempts, also across relays */
+    uint32_t delay = sc2c_backoff_ms(&s.attempt, esp_random());
+    s.retry_at = mono_ms() + delay;
+    const char *next = act == SC2RP_STAY ? "" : s.rp.relay == 0 ? ", next: primary" : ", next: fallback";
+    status(false, err, "%s; retry in %u s%s", why, (unsigned)((delay + 999u) / 1000u), next);
+    SOLAR_OS_LOGW(TAG, "%s (%s:%u); retry in %u ms%s", why, s.host, (unsigned)s.ep->port, (unsigned)delay, next);
 }
 
 /* chats://...#pin=: the pinned SPKI is the trust anchor, so a self-signed
@@ -317,8 +346,8 @@ static void try_connect(void)
     esp_tls_cfg_t tc;
     memset(&tc, 0, sizeof(tc));
     tc.timeout_ms = SC2_SYNC_CONNECT_MS;
-    if (s.cfg->tls) {
-        tc.crt_bundle_attach = s.cfg->pin[0] != '\0' ? pin_only_attach : esp_crt_bundle_attach;
+    if (s.ep->tls) {
+        tc.crt_bundle_attach = s.ep->pin[0] != '\0' ? pin_only_attach : esp_crt_bundle_attach;
     } else {
         tc.is_plain_tcp = true;
     }
@@ -327,13 +356,14 @@ static void try_connect(void)
         drop(ESP_ERR_NO_MEM, "TLS allocation failed");
         return;
     }
-    status(false, ESP_OK, "connecting to %s:%u (%s)", s.host, (unsigned)s.cfg->port,
-           s.cfg->tls ? (s.cfg->pin[0] != '\0' ? "TLS, pinned key" : "TLS") : "plain TCP");
-    if (esp_tls_conn_new_sync(s.host, (int)strlen(s.host), s.cfg->port, &tc, s.tls) != 1) {
-        drop(ESP_FAIL, s.cfg->tls ? "TLS connection failed" : "TCP connection failed");
+    status(false, ESP_OK, "connecting to %s:%u (%s%s)", s.host, (unsigned)s.ep->port,
+           s.ep->tls ? (s.ep->pin[0] != '\0' ? "TLS, pinned key" : "TLS") : "plain TCP",
+           s.rp.relay == 0 ? "" : s.rp.visiting ? ", visiting fallback" : ", fallback");
+    if (esp_tls_conn_new_sync(s.host, (int)strlen(s.host), s.ep->port, &tc, s.tls) != 1) {
+        drop(ESP_FAIL, s.ep->tls ? "TLS connection failed" : "TCP connection failed");
         return;
     }
-    if (s.cfg->tls && !pin_matches()) {
+    if (s.ep->tls && !pin_matches()) {
         drop(ESP_ERR_INVALID_RESPONSE, "relay TLS key does not match the pin");
         return;
     }
@@ -385,7 +415,8 @@ static void pump_input(uint32_t wait_ms)
 
 static void push_outbox(void)
 {
-    if (!s.ready || solar_os_messaging_outbox_peek(s.id, s.ob) != ESP_OK) {
+    /* not while visiting: peers look for us (and our posts) on our home relay */
+    if (!s.ready || s.rp.visiting || solar_os_messaging_outbox_peek(s.id, s.ob) != ESP_OK) {
         return;
     }
     uint64_t now = mono_ms();
@@ -454,7 +485,8 @@ static void add_rooms(void)
         if (strncmp(key, SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX, strlen(SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX)) != 0) {
             continue; /* private rooms: not in this build */
         }
-        (void)sc2c_room_add(s.c, key, solar_os_messaging_provider_cursor(s.id, key));
+        (void)sc2c_room_add(s.c, key, solar_os_messaging_provider_cursor_masked(s.id, key, SC2_SYNC_TAG_MASK,
+                                                                                 SC2_SYNC_TAG(s.rp.relay)));
     }
     if (!have_general && !s.auto_joined) {
         /* #general by default: through Messaging so it shows in the chat UI
@@ -476,7 +508,44 @@ static void client_close(void)
 static bool same_link(const solar_os_sc2_relay_config_t *a, const solar_os_sc2_relay_config_t *b)
 {
     return a->enabled == b->enabled && a->tls == b->tls && a->port == b->port && strcmp(a->url, b->url) == 0 &&
-           strcmp(a->pin, b->pin) == 0 && strcmp(a->admit, b->admit) == 0;
+           strcmp(a->pin, b->pin) == 0 && strcmp(a->admit, b->admit) == 0 &&
+           memcmp(a->fallback, b->fallback, sizeof(a->fallback)) == 0;
+}
+
+/* (Re)build the client for relay s.rp.relay. Same store tag on every relay: the
+ * persisted outbox follows whichever relay is in use. Fallback relays get the
+ * signed prekey only (no one-time prekey may be claimable on two relays). */
+static bool build_client(void)
+{
+    client_close();
+    (void)solar_os_sc2_relay_endpoint(s.cfg, s.rp.relay, s.ep);
+    const char *h = strstr(s.ep->url, "://");
+    h = h != NULL ? h + 3 : s.ep->url;
+    size_t hl = strcspn(h, ":");
+    if (hl >= sizeof(s.host)) {
+        hl = sizeof(s.host) - 1u;
+    }
+    memcpy(s.host, h, hl);
+    s.host[hl] = '\0';
+    snprintf(s.tag, sizeof(s.tag), "r%u", (unsigned)(s.id % 10000000u));
+    sc2c_host_t host = {h_send, h_event, h_lock, h_unlock, h_alloc, h_release, h_mono, h_wall, NULL};
+    sc2c_config_t cc = {
+        .tag = s.tag,
+        .nick = s.nick,
+        .admit = s.cfg->admit[0] != '\0' ? s.cfg->admit : NULL,
+        .no_opks = s.rp.relay != 0,
+    };
+    int rc = sc2c_init(s.c, &host, &cc);
+    s.rebuild = false;
+    if (rc != SC2_OK) {
+        status(false, ESP_ERR_NO_MEM, "client init failed: %s", sc2_strerror(rc));
+        s.retry_at = mono_ms() + 10000u;
+        return false;
+    }
+    s.client_ok = true;
+    s.auto_joined = false;
+    add_rooms();
+    return true;
 }
 
 /* Pick the first enabled sc2 instance; (re)build the client on changes. */
@@ -509,35 +578,27 @@ static void check_config(void)
     *s.cfg = *s.next;
     s.id = found;
     if (link_changed) {
-        const char *h = strstr(s.cfg->url, "://");
-        h = h != NULL ? h + 3 : s.cfg->url;
-        size_t hl = strcspn(h, ":");
-        if (hl >= sizeof(s.host)) {
-            hl = sizeof(s.host) - 1u;
-        }
-        memcpy(s.host, h, hl);
-        s.host[hl] = '\0';
-        snprintf(s.tag, sizeof(s.tag), "r%u", (unsigned)(found % 10000000u));
-        sc2c_host_t host = {h_send, h_event, h_lock, h_unlock, h_alloc, h_release, h_mono, h_wall, NULL};
-        sc2c_config_t cc = {
-            .tag = s.tag,
-            .nick = s.nick,
-            .admit = s.cfg->admit[0] != '\0' ? s.cfg->admit : NULL,
-        };
-        int rc = sc2c_init(s.c, &host, &cc);
-        if (rc != SC2_OK) {
-            status(false, ESP_ERR_NO_MEM, "client init failed: %s", sc2_strerror(rc));
-            s.retry_at = mono_ms() + 10000u;
-            return;
-        }
-        s.client_ok = true;
+        sc2rp_reset(&s.rp, (unsigned)solar_os_sc2_relay_endpoint(s.cfg, 0, NULL), mono_ms());
         s.attempt = 0;
         s.retry_at = 0;
-        s.auto_joined = false;
-        rooms_changed = true;
+        (void)build_client();
+        return;
     }
     if (rooms_changed) {
         add_rooms();
+    }
+}
+
+/* Visits (probe the primary, take keys and mailbox to the fallbacks), only
+ * when nothing is waiting to be sent. */
+static void schedule_visit(uint64_t now)
+{
+    bool idle = s.rp.visiting ||
+                (sc2c_outbox_count(s.c) == 0 && solar_os_messaging_outbox_peek(s.id, s.ob) != ESP_OK);
+    if (sc2rp_tick(&s.rp, now, idle) != SC2RP_STAY) {
+        drop(ESP_OK, NULL);
+        s.rebuild = true;
+        s.retry_at = now;
     }
 }
 
@@ -553,6 +614,9 @@ static void worker(void *arg)
         if (now - s.checked_at >= SC2_SYNC_CHECK_MS || s.checked_at == 0) {
             s.checked_at = now;
             check_config();
+        }
+        if (s.id != 0 && s.rebuild && !s.connected) {
+            (void)build_client();
         }
         if (s.id == 0 || !s.client_ok) {
             (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(SC2_SYNC_CHECK_MS));
@@ -575,6 +639,9 @@ static void worker(void *arg)
             continue;
         }
         push_outbox();
+        if (s.ready) {
+            schedule_visit(now);
+        }
     }
     client_close();
     s.id = 0;
@@ -594,10 +661,13 @@ static bool alloc_state(void)
     if (s.next == NULL) {
         s.next = solar_os_memory_calloc(1, sizeof(*s.next), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED, "sc2.sync.cfg");
     }
+    if (s.ep == NULL) {
+        s.ep = solar_os_memory_calloc(1, sizeof(*s.ep), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED, "sc2.sync.ep");
+    }
     if (s.ob == NULL) {
         s.ob = solar_os_memory_calloc(1, sizeof(*s.ob), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED, "sc2.sync.ob");
     }
-    return s.c != NULL && s.cfg != NULL && s.next != NULL && s.ob != NULL;
+    return s.c != NULL && s.cfg != NULL && s.next != NULL && s.ep != NULL && s.ob != NULL;
 }
 
 esp_err_t solar_os_sc2_sync_start(void)
@@ -689,8 +759,12 @@ void solar_os_sc2_sync_get_status(solar_os_sc2_sync_status_t *out)
         snprintf(out->relay_id, sizeof(out->relay_id), "%s", s.c->relay_id);
     }
     snprintf(out->host, sizeof(out->host), "%s", s.host);
-    if (s.cfg != NULL) {
-        out->port = s.cfg->port;
-        out->tls = s.cfg->tls;
+    if (s.ep != NULL) {
+        out->port = s.ep->port;
+        out->tls = s.ep->tls;
     }
+    out->relay = s.rp.relay;
+    out->relays = s.rp.relays;
+    out->home = s.rp.home;
+    out->visiting = s.rp.visiting;
 }

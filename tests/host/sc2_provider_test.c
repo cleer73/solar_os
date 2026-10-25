@@ -190,6 +190,95 @@ static void test_registry(void)
     assert(solar_os_messaging_instance_remove(other) == ESP_OK);
 }
 
+/* Fallback relays: parse, replace, off, TLS flag, persistence, v1 profiles. */
+static void test_fallbacks(void)
+{
+    solar_os_messaging_provider_id_t id = 0;
+    const char *settings[] = {"chats://primary.example:7778"};
+    assert(solar_os_messaging_instance_add("sc2", "multi", 1, settings, &id) == ESP_OK);
+    solar_os_conversation_id_t pub = 0;
+    assert(solar_os_messaging_join(id, "pub:general", &pub) == ESP_OK);
+    assert(conversation_of(pub).security_flags & SOLAR_OS_SECURITY_TRANSPORT_SECURED);
+
+    solar_os_sc2_relay_config_t config;
+    solar_os_sc2_relay_endpoint_t ep;
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
+    assert(solar_os_sc2_relay_endpoint(&config, 0, NULL) == 1);
+    assert(solar_os_sc2_relay_endpoint(&config, 1, &ep) == 1);
+
+    const char *fb[] = {"fallback", "chats://b.example:7443#pin=" PIN_A, "chats://c.example:7444"};
+    assert(solar_os_messaging_instance_configure(id, 3, fb) == ESP_OK);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
+    assert(solar_os_sc2_relay_endpoint(&config, 0, &ep) == 3);
+    assert(ep.tls && ep.port == 7778 && !strcmp(ep.url, "chats://primary.example:7778") && !ep.pin[0]);
+    assert(solar_os_sc2_relay_endpoint(&config, 1, &ep) == 3);
+    assert(ep.tls && ep.port == 7443 && !strcmp(ep.pin, PIN_A) && !strcmp(ep.url, "chats://b.example:7443"));
+    assert(solar_os_sc2_relay_endpoint(&config, 2, &ep) == 3 && ep.port == 7444);
+    assert(conversation_of(pub).security_flags & SOLAR_OS_SECURITY_TRANSPORT_SECURED);
+
+    /* a plaintext fallback means the transport is no longer always secured */
+    const char *plain[] = {"fallback", "chat://lan.local:7777"};
+    assert(solar_os_messaging_instance_configure(id, 2, plain) == ESP_OK);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
+    assert(solar_os_sc2_relay_endpoint(&config, 0, NULL) == 2 && !config.fallback[1].url[0]);
+    assert(!(conversation_of(pub).security_flags & SOLAR_OS_SECURITY_TRANSPORT_SECURED));
+
+    const char *bad[][5] = {
+        {"fallback", "https://b.example:1"},
+        {"fallback", "chat://b.example:1#pin=" PIN_A},
+        {"fallback", "chats://a.example:1", "chats://b.example:2", "chats://c.example:3", "chats://d.example:4"},
+        {"fallback"},
+    };
+    const size_t bad_n[] = {2, 2, 5, 1};
+    for (size_t i = 0; i < 4; i++)
+        assert(solar_os_messaging_instance_configure(id, bad_n[i], bad[i]) != ESP_OK);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && !strcmp(config.fallback[0].url, "chat://lan.local:7777"));
+
+    /* persisted across a reboot */
+    restart_provider();
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
+    assert(config.version == SOLAR_OS_SC2_RELAY_CONFIG_VERSION && !strcmp(config.fallback[0].url, "chat://lan.local:7777"));
+
+    assert(solar_os_messaging_join(id, "pub:general", &pub) == ESP_OK);
+    assert(!(conversation_of(pub).security_flags & SOLAR_OS_SECURITY_TRANSPORT_SECURED));
+    const char *off[] = {"fallback", "off"};
+    assert(solar_os_messaging_instance_configure(id, 2, off) == ESP_OK);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && !config.fallback[0].url[0]);
+    assert(conversation_of(pub).security_flags & SOLAR_OS_SECURITY_TRANSPORT_SECURED);
+
+    /* Per-relay cursors: sc2-sync tags provider message keys with the relay
+     * index (top byte), so each relay resumes from its own sequence. */
+    const uint64_t mask = 0xffull << 56;
+    const uint64_t keys[] = {5, 9, (1ull << 56) | 3, (1ull << 56) | 2, (2ull << 56) | 40};
+    for (size_t i = 0; i < 5; i++) {
+        solar_os_messaging_inbound_t in = {.provider = id, .provider_message_key = keys[i],
+            .conversation_key = "pub:general", .conversation_kind = SOLAR_OS_CONVERSATION_ROOM,
+            .conversation_title = "pub:general", .sender = "x", .body = "post"};
+        bool inserted = false;
+        assert(solar_os_messaging_publish_inbound(&in, &inserted, NULL) == ESP_OK && inserted);
+    }
+    assert(solar_os_messaging_provider_cursor_masked(id, "pub:general", mask, 0) == 9);
+    assert(solar_os_messaging_provider_cursor_masked(id, "pub:general", mask, 1ull << 56) == 3);
+    assert(solar_os_messaging_provider_cursor_masked(id, "pub:general", mask, 2ull << 56) == 40);
+    assert(solar_os_messaging_provider_cursor_masked(id, "pub:general", mask, 3ull << 56) == 0);
+    assert(solar_os_messaging_provider_cursor(id, "pub:general") == ((2ull << 56) | 40));
+
+    /* a version 1 profile (no fallback list) still loads, as version 2 */
+    config.version = 1;
+    assert(solar_os_messaging_profile_save(id, &config, offsetof(solar_os_sc2_relay_config_t, fallback)) == ESP_OK);
+    restart_provider();
+    memset(&config, 0xff, sizeof(config));
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
+    assert(config.version == SOLAR_OS_SC2_RELAY_CONFIG_VERSION && !strcmp(config.url, "chats://primary.example:7778"));
+    for (size_t i = 0; i < SOLAR_OS_SC2_RELAY_FALLBACK_MAX; i++) assert(!config.fallback[i].url[0]);
+    /* a short profile claiming version 2 is rejected */
+    config.version = 2;
+    assert(solar_os_messaging_profile_save(id, &config, offsetof(solar_os_sc2_relay_config_t, fallback)) == ESP_OK);
+    restart_provider();
+    assert(solar_os_sc2_relay_get_config(id, &config) != ESP_OK);
+    assert(solar_os_messaging_instance_remove(id) == ESP_OK);
+}
+
 static int remove_entry(const char *path, const struct stat *sb, int flag, struct FTW *ftw)
 {
     (void)sb; (void)flag; (void)ftw;
@@ -201,7 +290,8 @@ int main(void)
     assert(mkdtemp(test_root));
     test_parsing();
     test_registry();
+    test_fallbacks();
     assert(nftw(test_root, remove_entry, 16, FTW_DEPTH | FTW_PHYS) == 0);
-    puts("sc2_provider_test: parsing, registry, flags, persistence and removal OK");
+    puts("sc2_provider_test: parsing, registry, flags, fallbacks, persistence and removal OK");
     return 0;
 }

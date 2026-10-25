@@ -388,7 +388,7 @@ static int send_keys(sc2c_t *c)
 {
     size_t n = 0;
     sc2e_t *e = lock(c);
-    int rc = sc2e_keys_publish(e, "kp", SC2C_OPK_TARGET, c->tx, SC2C_TX_MAX, &n);
+    int rc = sc2e_keys_publish(e, "kp", c->no_opks ? SC2E_OPK_NONE : SC2C_OPK_TARGET, c->tx, SC2C_TX_MAX, &n);
     unlock(c);
     if (rc == SC2_OK) {
         rc = send_frame(c, c->tx, n);
@@ -1361,6 +1361,7 @@ int sc2c_init(sc2c_t *c, const sc2c_host_t *host, const sc2c_config_t *cfg)
         snprintf(c->invite_url, sizeof(c->invite_url), "%s", cfg->invite_url);
     }
     c->auto_admit = cfg->auto_admit;
+    c->no_opks = cfg->no_opks;
     c->pub_max = 1024;
     c->rx = host->alloc(host->ctx, sizeof(sc2_lines_t));
     c->tx = host->alloc(host->ctx, SC2C_TX_MAX);
