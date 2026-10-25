@@ -5,6 +5,9 @@
 #include "solar_os_sc2.h"
 #include "solar_os_shell_common.h"
 #include "solar_os_shell_io.h"
+#if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
+#include "solar_os_sc2_sync.h"
+#endif
 
 static void sc2_usage(solar_os_shell_io_t *io)
 {
@@ -13,6 +16,11 @@ static void sc2_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io, "sc2 safety <device>   safety number with a stored peer");
     solar_os_shell_io_writeln(io, "sc2 selftest          run known-answer and session tests");
     solar_os_shell_io_writeln(io, "sc2 bench [n]         time the primitives (n iterations, default 10)");
+#if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
+    solar_os_shell_io_writeln(io, "sc2 relay             relay connection (sc2-sync) status");
+    solar_os_shell_io_writeln(io, "relay setup: messages add sc2 <name> chat://HOST:7777 | chats://HOST:7778[#pin=sha256/B64]");
+    solar_os_shell_io_writeln(io, "peer: messages query <name> <device-id>, then messages send <conv> <text>");
+#endif
 }
 
 static void sc2_fail(solar_os_shell_io_t *io, esp_err_t err)
@@ -104,6 +112,25 @@ void solar_os_shell_cmd_sc2(solar_os_context_t *ctx, int argc, char **argv)
         sc2_print_status(io);
         return;
     }
+#if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
+    if (argc == 2 && strcmp(argv[1], "relay") == 0) {
+        solar_os_sc2_sync_status_t st;
+        solar_os_sc2_sync_get_status(&st);
+        if (!st.running) {
+            solar_os_shell_io_writeln(io, "sc2-sync: not running (enable an sc2 instance or `job start sc2-sync`)");
+            return;
+        }
+        if (st.instance == 0) {
+            solar_os_shell_io_writeln(io, "sc2-sync: running, no enabled sc2 instance");
+            return;
+        }
+        solar_os_shell_io_printf(io, "sc2-sync: instance %u %s://%s:%u %s%s relay_id=%s outbox=%u retries=%u\n",
+                                 st.instance, st.tls ? "chats" : "chat", st.host, st.port,
+                                 st.ready ? "ready" : (st.connected ? "logging in" : "offline"), "",
+                                 st.relay_id[0] ? st.relay_id : "-", st.outbox, st.attempt);
+        return;
+    }
+#endif
     if (argc == 3 && strcmp(argv[1], "safety") == 0) {
         sc2_print_safety(io, argv[2]);
         return;

@@ -3249,7 +3249,7 @@ capabilities = ["gfx", "expansion_gpio"]
 [groups.sc2]
 label = "SC2 end-to-end chat security"
 category = "Messaging"
-members = ["service_sc2", "service_sc2_provider"]
+members = ["service_sc2", "service_sc2_provider", "job_sc2_sync"]
 
 [packages.service_sc2]
 label = "messaging.sc2"
@@ -3293,3 +3293,11 @@ label = "messaging.sc2-provider"
 depends = ["service_sc2", "service_messaging"]
 sources = ["services/solar_os_sc2_provider.c"]
 capabilities = ["psram"]
+
+# Relay transport: sans-IO client plus the TCP/TLS worker.
+[packages.job_sc2_sync]
+label = "job.sc2-sync"
+depends = ["service_sc2_provider", "service_network"]
+sources = ["services/solar_os_sc2_client.c", "services/solar_os_sc2_sync.c", "jobs/solar_os_sc2_sync_job.c"]
+requires = ["esp-tls", "mbedtls", "esp_netif"]
+capabilities = ["psram", "wifi"]

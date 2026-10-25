@@ -10,6 +10,9 @@
 #endif
 #if SOLAR_OS_PACKAGE_SERVICE_SC2_PROVIDER
 #include "solar_os_sc2_provider.h"
+#if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
+#include "solar_os_sc2_sync.h"
+#endif
 #endif
 #include "solar_os_adc.h"
 #include "solar_os_adc_dpad.h"
@@ -202,6 +205,9 @@ void solar_os_boot_services_init(uint32_t now_ms)
     if (irc_err != ESP_OK) SOLAR_OS_LOGW(TAG, "IRC unavailable: %s", esp_err_to_name(irc_err));
 #endif
 
+#if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
+    solar_os_sc2_sync_install(); /* enabled sc2 instances start the relay worker */
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_SC2_PROVIDER
     const esp_err_t sc2_err = solar_os_sc2_provider_init();
     if (sc2_err != ESP_OK) SOLAR_OS_LOGW(TAG, "SC2 messaging unavailable: %s", esp_err_to_name(sc2_err));

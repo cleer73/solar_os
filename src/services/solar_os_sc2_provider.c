@@ -315,10 +315,24 @@ static void sc2p_snapshot(sc2p_relay_t *node, solar_os_sc2_relay_config_t *confi
     xSemaphoreGive(sc2p.lock);
 }
 
+static solar_os_sc2_transport_fn sc2p_transport;
+
+void solar_os_sc2_provider_set_transport(solar_os_sc2_transport_fn fn)
+{
+    sc2p_transport = fn;
+}
+
 static void sc2p_status(solar_os_messaging_provider_id_t id, const solar_os_sc2_relay_config_t *config)
 {
+    if (sc2p_transport != NULL && config->enabled) {
+        sc2p_transport(id, true); /* the sc2-sync worker reports the status */
+        return;
+    }
     (void)solar_os_messaging_provider_set_status(id, false, false, ESP_OK,
                                                  config->enabled ? SC2P_DETAIL_NO_TRANSPORT : SC2P_DETAIL_DISABLED);
+    if (sc2p_transport != NULL) {
+        sc2p_transport(id, false);
+    }
 }
 
 static esp_err_t sc2p_upsert_room(solar_os_messaging_provider_id_t id, const solar_os_sc2_relay_config_t *config,

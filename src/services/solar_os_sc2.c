@@ -527,6 +527,16 @@ static void sc2_leave(void)
     xSemaphoreGive(s_sc2.lock);
 }
 
+sc2e_t *solar_os_sc2_engine_lock(void)
+{
+    return sc2_enter() == ESP_OK ? s_sc2.engine : NULL;
+}
+
+void solar_os_sc2_engine_unlock(void)
+{
+    sc2_leave();
+}
+
 esp_err_t solar_os_sc2_init(void)
 {
     esp_err_t err = sc2_enter();

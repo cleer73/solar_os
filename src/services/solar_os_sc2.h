@@ -45,6 +45,10 @@ typedef struct {
 } solar_os_sc2_status_t;
 
 esp_err_t solar_os_sc2_init(void);
+/* Direct engine access for the relay client (sc2-sync). Returns NULL when the
+ * service cannot start; otherwise unlock exactly once. Keep calls short. */
+sc2e_t *solar_os_sc2_engine_lock(void);
+void solar_os_sc2_engine_unlock(void);
 /* Text for SC2 and ESP errors returned by this service. */
 const char *solar_os_sc2_err_text(esp_err_t err);
 
