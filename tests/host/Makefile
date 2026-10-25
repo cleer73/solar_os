@@ -1266,3 +1266,56 @@ test: $(TARGETS)
 clean:
 	$(RM) $(TARGETS) model_bundle_test inference_lua_json_test zoo_test
 	$(RM) -r generated
+
+# ---------------------------------------------------------------------------
+# SC2 portable crypto/session core (protocol/sc2), see protocol/sc2/README.md.
+# Appended block. Vendor crypto (orlp Ed25519, WireGuard refc) is compiled as
+# separate objects without -Werror; the SC2 sources and tests use $(CFLAGS).
+SC2_DIR := $(ROOT)/protocol/sc2
+SC2_ED_DIR := $(ROOT)/src/vendor/meshcore/ed25519
+SC2_WG_DIR := $(ROOT)/components/wireguard_lwip/src
+SC2_INC := -I$(SC2_DIR)/include -I$(SC2_DIR)/vectors -I$(SC2_ED_DIR) -I$(SC2_WG_DIR)/crypto/refc -I$(SC2_WG_DIR)
+SC2_SRCS := $(sort $(wildcard $(SC2_DIR)/src/*.c))
+SC2_HDRS := $(wildcard $(SC2_DIR)/include/*.h) $(SC2_DIR)/vectors/sc2_vectors.inc sc2_test_util.h
+SC2_VENDOR_SRCS := $(addprefix $(SC2_ED_DIR)/,fe.c ge.c sc.c sha512.c) \
+	$(addprefix $(SC2_WG_DIR)/crypto/refc/,x25519.c chacha20.c chacha20poly1305.c poly1305-donna.c) \
+	$(SC2_WG_DIR)/crypto.c
+SC2_VENDOR_OBJS := $(addprefix sc2_vendor_,$(notdir $(SC2_VENDOR_SRCS:.c=.o)))
+SC2_TARGETS := sc2_crypto_test sc2_session_test sc2_frame_test
+# Optional: the same crypto/session tests on the mbedTLS hash backend
+# (SC2_USE_MBEDTLS=1), built against an mbedTLS 3.x source tree. Defaults to
+# the ESP-IDF copy that PlatformIO installs; set SC2_MBEDTLS_DIR= to skip.
+SC2_MBEDTLS_DIR ?= $(firstword $(wildcard $(HOME)/.platformio/packages/framework-espidf/components/mbedtls/mbedtls))
+SC2_MBEDTLS_SRCS = $(addprefix $(SC2_MBEDTLS_DIR)/library/,md.c sha256.c platform_util.c)
+SC2_MBEDTLS_TARGETS := sc2_crypto_mbedtls_test sc2_session_mbedtls_test
+
+define SC2_VENDOR_RULE
+sc2_vendor_$(notdir $(1:.c=.o)): $(1)
+	$$(CC) $$(filter-out -Werror,$$(CFLAGS)) -Wno-sign-compare $$(SC2_INC) -c $(1) -o $$@
+endef
+$(foreach s,$(SC2_VENDOR_SRCS),$(eval $(call SC2_VENDOR_RULE,$(s))))
+
+$(SC2_TARGETS): %: %.c $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) $(SC2_INC) $< $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+$(SC2_MBEDTLS_TARGETS): sc2_%_mbedtls_test: sc2_%_test.c sc2_mbedtls_config.h $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	@test -n "$(SC2_MBEDTLS_DIR)" || { echo "set SC2_MBEDTLS_DIR to an mbedTLS 3.x source tree"; exit 1; }
+	$(CC) $(CFLAGS) -DSC2_USE_MBEDTLS=1 '-DMBEDTLS_CONFIG_FILE="sc2_mbedtls_config.h"' -I. \
+		-I$(SC2_MBEDTLS_DIR)/include $(SC2_INC) $< $(SC2_SRCS) $(SC2_VENDOR_OBJS) $(SC2_MBEDTLS_SRCS) -o $@
+
+.PHONY: sc2-test sc2-mbedtls-test
+sc2-test: $(SC2_TARGETS)
+	./sc2_crypto_test
+	./sc2_session_test
+	./sc2_frame_test
+
+sc2-mbedtls-test: $(SC2_MBEDTLS_TARGETS)
+	./sc2_crypto_mbedtls_test
+	./sc2_session_mbedtls_test
+
+all: $(SC2_TARGETS)
+test: sc2-test
+ifneq ($(SC2_MBEDTLS_DIR),)
+test: sc2-mbedtls-test
+endif
+TARGETS += $(SC2_TARGETS) $(SC2_MBEDTLS_TARGETS) $(SC2_VENDOR_OBJS)

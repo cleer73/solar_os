@@ -90,3 +90,8 @@ tests/host/meshcore_instances_test
 tests/host/encoder_service_test
 tests/host/pcnt_encoder_test
 tests/host/ssd1306_named_bus_test
+# SC2 host tests (tests/host/Makefile, appended block)
+/tests/host/sc2_*_test
+/tests/host/sc2_vendor_*.o
+/protocol/sc2/tools/__pycache__/
+/protocol/sc2/build/
