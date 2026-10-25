@@ -422,19 +422,26 @@ static void sc2p_status(solar_os_messaging_provider_id_t id, const solar_os_sc2_
     }
 }
 
+void solar_os_sc2_room_title(char *out, size_t cap, const char *key)
+{
+    snprintf(out, cap, "room %.8s", key != NULL ? key : "");
+}
+
 static esp_err_t sc2p_upsert_room(solar_os_messaging_provider_id_t id, const solar_os_sc2_relay_config_t *config,
                                   const char *room, solar_os_conversation_id_t *conversation)
 {
     char key[SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX];
+    char title[16];
     solar_os_sc2_target_kind_t kind = solar_os_sc2_target_normalize(room, true, key, sizeof(key));
     if (kind == SOLAR_OS_SC2_TARGET_INVALID) {
         return ESP_ERR_INVALID_ARG;
     }
+    solar_os_sc2_room_title(title, sizeof(title), key);
     const solar_os_messaging_conversation_upsert_t request = {
         .provider = id,
         .provider_key = key,
         .kind = SOLAR_OS_CONVERSATION_ROOM,
-        .title = key,
+        .title = kind == SOLAR_OS_SC2_TARGET_PRIVATE_ROOM ? title : key,
         .security_flags = solar_os_sc2_conversation_security(config, kind, false),
     };
     return solar_os_messaging_conversation_upsert(&request, conversation);

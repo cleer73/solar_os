@@ -130,6 +130,21 @@ connects the first enabled `sc2` instance; `sc2 relay` shows its state.
 unique prefix of at least 6 hex digits of a peer whose keys or session are
 stored, or a nickname saved with `sc2 alias NAME DEVICE`.
 
+Private rooms: `sc2 room create` makes a new end-to-end encrypted room on the
+primary relay with this device as its admin and prints its invite, a
+`sc2i:...` text that holds the room's invite secret. Whoever has the invite
+can join, so pass it on privately (`sc2 room invite ROOM` prints it again).
+On the other device, `sc2 room join sc2i:...` (or `sc2 room join @FILE` when
+the invite is longer than the input line) asks to join; the relay checks the
+invite proof and the admin device admits the member when it is next online
+and hands it the room key. Both rooms then appear as `room XXXXXXXX`
+conversations: use `messages send` as for any room, and `messages leave` to
+leave one (this also deletes the device's copy of the room record; an admin
+that leaves cannot invite again). `sc2 rooms` lists the instance's rooms with
+their state (`waiting for an admin`, `waiting for the room key`, `joined`).
+Invites cannot be revoked from the device yet, and members cannot be removed;
+create a new room instead.
+
 Safety numbers: in Chat, `/safety` on an sc2 DM (or `/safety PEER`) opens a
 screen with the short code, the eight words and the full number; compare them
 with the other device, then press `V` to mark the peer verified (`U` takes it
@@ -185,7 +200,9 @@ queued. `sc2 relay` shows the relay in use. Trade-offs:
 - A public room on two relays is one conversation: posts from each relay are
   kept apart by relay index, so each relay resumes from its own position.
   Reordering the fallback list may re-fetch or skip some recent history.
-  Private rooms live on the relay that hosts them.
+  Private rooms live on the primary relay: while a fallback is in use they
+  wait, and a message to one fails with "private room is on the primary
+  relay".
 - Queued messages are sent through whichever relay is in use, never during a
   visit.
 

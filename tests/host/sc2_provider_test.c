@@ -122,6 +122,11 @@ static void test_registry(void)
     c = conversation_of(priv);
     assert(c.security_flags == (SOLAR_OS_SECURITY_ENCRYPTED | SOLAR_OS_SECURITY_SHARED_KEY |
                                 SOLAR_OS_SECURITY_TRANSPORT_SECURED));
+    {
+        char want[16];
+        solar_os_sc2_room_title(want, sizeof(want), "0f0e0d0c0b0a09080706050403020100");
+        assert(!strcmp(want, "room 0f0e0d0c") && !strcmp(c.title, want));
+    }
     solar_os_conversation_id_t again = 0;
     assert(solar_os_messaging_join(id, "pub:general", &again) == ESP_OK && again == pub);
     assert(solar_os_messaging_join(id, "pub:bad name", NULL) != ESP_OK);

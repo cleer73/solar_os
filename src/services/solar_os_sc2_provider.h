@@ -86,6 +86,9 @@ esp_err_t solar_os_sc2_provider_init(void);
 esp_err_t solar_os_sc2_relay_parse_url(const char *text, solar_os_sc2_relay_config_t *config);
 bool solar_os_sc2_relay_config_valid(const solar_os_sc2_relay_config_t *config);
 
+/* Conversation title of a private room: "room " and the first 8 hex. */
+void solar_os_sc2_room_title(char *out, size_t cap, const char *key);
+
 /* Normalise a room or device target into a provider key (lower case).
  * want_room selects whether a 32-hex value is a room or a device. */
 solar_os_sc2_target_kind_t solar_os_sc2_target_normalize(const char *target, bool want_room,

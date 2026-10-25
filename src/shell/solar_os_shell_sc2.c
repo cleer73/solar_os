@@ -6,7 +6,12 @@
 #include "solar_os_shell_common.h"
 #include "solar_os_shell_io.h"
 #if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
+#include <stdio.h>
+#include <sys/stat.h>
+#include "solar_os_memory.h"
 #include "solar_os_sc2_sync.h"
+#include "solar_os_shell.h"
+#include "solar_os_storage.h"
 #endif
 
 static void sc2_usage(solar_os_shell_io_t *io)
@@ -25,6 +30,11 @@ static void sc2_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io, "add:         messages add sc2 <name> <domain> [admit] [key=<b64>] (signed HTTPS descriptor)");
     solar_os_shell_io_writeln(io, "fallbacks:   messages configure <name> fallback <url> [key=<b64>] [<url> ...] | fallback off");
     solar_os_shell_io_writeln(io, "peer: messages query <name> <peer>, then messages send <conv> <text>");
+    solar_os_shell_io_writeln(io, "sc2 rooms             rooms of the relay instance and their state");
+    solar_os_shell_io_writeln(io, "sc2 room create       new private room (you admin it); prints its invite");
+    solar_os_shell_io_writeln(io, "sc2 room invite <room>  print the invite again (room key or prefix)");
+    solar_os_shell_io_writeln(io, "sc2 room join <sc2i:...|@file>  join a private room with an invite");
+    solar_os_shell_io_writeln(io, "private room: messages send <conv> <text>; leave with messages leave <conv>");
 #endif
 }
 
@@ -167,6 +177,111 @@ static void sc2_bench_line(void *ctx, const sc2e_bench_result_t *r)
                              r->iterations, per, r->total_us / 1000u);
 }
 
+#if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
+#define SC2_ROOM_WAIT_MS 20000u
+
+/* An invite from the command line or, with @path, from a file (invites are
+ * longer than some terminals' input line). */
+static bool sc2_invite_arg(solar_os_context_t *ctx, solar_os_shell_io_t *io, const char *arg, char *out, size_t cap)
+{
+    if (arg[0] != '@') {
+        snprintf(out, cap, "%s", arg);
+        return true;
+    }
+    char path[SOLAR_OS_STORAGE_PATH_MAX];
+    if (!solar_os_shell_resolve_path_for_command(ctx, io, "sc2", arg + 1, path, sizeof(path))) {
+        return false;
+    }
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) {
+        solar_os_shell_io_printf(io, "sc2: cannot read %s\n", arg + 1);
+        return false;
+    }
+    size_t n = fread(out, 1, cap - 1u, f);
+    bool more = fgetc(f) != EOF;
+    fclose(f);
+    out[n] = '\0';
+    while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ')) {
+        out[--n] = '\0';
+    }
+    if (more || n == 0) {
+        solar_os_shell_io_printf(io, "sc2: %s does not hold one invite\n", arg + 1);
+        return false;
+    }
+    return true;
+}
+
+static void sc2_room_cmd(solar_os_context_t *ctx, solar_os_shell_io_t *io, solar_os_sc2_room_op_t op,
+                         const char *arg)
+{
+    char *buf = solar_os_memory_calloc(1, SOLAR_OS_SC2_ROOM_OUT_MAX, SOLAR_OS_MEMORY_EXTERNAL_PREFERRED, "sc2.room");
+    char *in = NULL;
+    char room[SC2_DEVICE_ID_HEX_LEN + 1] = "";
+    char why[96] = "";
+    esp_err_t err;
+    if (buf == NULL) {
+        sc2_fail(io, ESP_ERR_NO_MEM);
+        return;
+    }
+    if (op == SOLAR_OS_SC2_ROOM_JOIN) {
+        in = solar_os_memory_calloc(1, SC2_INVITE_TEXT_MAX + 2u, SOLAR_OS_MEMORY_EXTERNAL_PREFERRED, "sc2.room");
+        if (in == NULL || !sc2_invite_arg(ctx, io, arg, in, SC2_INVITE_TEXT_MAX + 2u)) {
+            if (in == NULL) {
+                sc2_fail(io, ESP_ERR_NO_MEM);
+            }
+            goto out;
+        }
+        sc2_invite_t inv;
+        if (sc2_invite_from_text(&inv, in, strlen(in)) != SC2_OK) {
+            solar_os_shell_io_writeln(io, "sc2: not a valid invite (it starts with sc2i:)");
+            goto out;
+        }
+        (void)sc2_hex_encode(room, sizeof(room), inv.room, 4u);
+        solar_os_shell_io_printf(io, "invite for room %s... on %s\n", room, inv.url);
+        sc2_memzero(&inv, sizeof(inv));
+        arg = in;
+    }
+    err = solar_os_sc2_sync_room(op, arg, room, buf, SOLAR_OS_SC2_ROOM_OUT_MAX, why, sizeof(why),
+                                           op == SOLAR_OS_SC2_ROOM_LIST || op == SOLAR_OS_SC2_ROOM_INVITE
+                                               ? 3000u
+                                               : SC2_ROOM_WAIT_MS);
+    if (err != ESP_OK) {
+        solar_os_shell_io_printf(io, "sc2: %s\n", why[0] != '\0' ? why : esp_err_to_name(err));
+        if (err == ESP_ERR_TIMEOUT && op == SOLAR_OS_SC2_ROOM_CREATE) {
+            solar_os_shell_io_writeln(io, "the room is kept if the relay confirms it: see `sc2 rooms`");
+        }
+        goto out;
+    }
+    switch (op) {
+    case SOLAR_OS_SC2_ROOM_LIST:
+        solar_os_shell_io_printf(io, "%s", buf[0] != '\0' ? buf : "no rooms\n");
+        break;
+    case SOLAR_OS_SC2_ROOM_CREATE:
+    case SOLAR_OS_SC2_ROOM_INVITE:
+        if (op == SOLAR_OS_SC2_ROOM_CREATE) {
+            solar_os_shell_io_printf(io, "created private room %s (you are its admin)\n", room);
+        }
+        solar_os_shell_io_writeln(io, "invite (secret: whoever holds it can join; share it privately):");
+        solar_os_shell_io_writeln(io, buf);
+        solar_os_shell_io_writeln(io, "members are admitted while this device is online");
+        break;
+    case SOLAR_OS_SC2_ROOM_JOIN:
+        solar_os_shell_io_printf(io, "joining private room %s; the admin's device admits you when online\n", room);
+        solar_os_shell_io_writeln(io, "state: sc2 rooms; then messages send <conv> <text>");
+        break;
+    default:
+        break;
+    }
+out:
+    sc2_memzero(buf, SOLAR_OS_SC2_ROOM_OUT_MAX);
+    solar_os_memory_free(buf);
+    if (in != NULL) {
+        sc2_memzero(in, SC2_INVITE_TEXT_MAX + 2u);
+        solar_os_memory_free(in);
+    }
+}
+#endif
+
 void solar_os_shell_cmd_sc2(solar_os_context_t *ctx, int argc, char **argv)
 {
     solar_os_shell_io_t *io = solar_os_context_shell_io(ctx);
@@ -211,6 +326,24 @@ void solar_os_shell_cmd_sc2(solar_os_context_t *ctx, int argc, char **argv)
             }
         }
         return;
+    }
+    if (argc == 2 && strcmp(argv[1], "rooms") == 0) {
+        sc2_room_cmd(ctx, io, SOLAR_OS_SC2_ROOM_LIST, NULL);
+        return;
+    }
+    if (argc >= 3 && strcmp(argv[1], "room") == 0) {
+        if (argc == 3 && strcmp(argv[2], "create") == 0) {
+            sc2_room_cmd(ctx, io, SOLAR_OS_SC2_ROOM_CREATE, NULL);
+            return;
+        }
+        if (argc == 4 && strcmp(argv[2], "invite") == 0) {
+            sc2_room_cmd(ctx, io, SOLAR_OS_SC2_ROOM_INVITE, argv[3]);
+            return;
+        }
+        if (argc == 4 && strcmp(argv[2], "join") == 0) {
+            sc2_room_cmd(ctx, io, SOLAR_OS_SC2_ROOM_JOIN, argv[3]);
+            return;
+        }
     }
 #endif
     if (argc == 3 && strcmp(argv[1], "safety") == 0) {

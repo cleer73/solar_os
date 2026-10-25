@@ -2,7 +2,8 @@
  * sc2-sync worker: relay transport for the "sc2" Messaging provider.
  * See solar_os_sc2_sync.h. RAM: one worker stack (SOLAR_OS_SC2_SYNC_STACK), the
  * client struct and its three buffers (PSRAM preferred), one outbound
- * request copy (PSRAM preferred) and the TLS session when chats:// is used.
+ * request copy and one private-room request (PSRAM preferred) and the TLS
+ * session when chats:// is used.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -11,6 +12,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <time.h>
@@ -51,6 +53,21 @@ _Static_assert(sizeof(((solar_os_sc2_sync_status_t *)0)->host) >= SOLAR_OS_SC2_R
 #define SC2_SYNC_TAG_MASK (0xFFull << SC2_SYNC_TAG_SHIFT)
 #define SC2_SYNC_TAG(relay) ((uint64_t)(relay) << SC2_SYNC_TAG_SHIFT)
 
+/* Private-room request from the shell (solar_os_sc2_sync_room). The worker
+ * owns the buffers; the caller only copies out after RQ_DONE. */
+enum { RQ_IDLE = 0, RQ_CLAIMED, RQ_POSTED, RQ_WORKING, RQ_DONE, RQ_ABANDONED };
+typedef struct {
+    volatile uint8_t state;
+    uint8_t op;
+    esp_err_t err;
+    char arg[SC2_INVITE_TEXT_MAX + 1];
+    char room[SC2_DEVICE_ID_HEX_LEN + 1];
+    char creating[SC2_DEVICE_ID_HEX_LEN + 1]; /* created, not yet confirmed (outlives a timed-out caller) */
+    char why[96];
+    char out[SOLAR_OS_SC2_ROOM_OUT_MAX];
+} sc2s_rq_t;
+static portMUX_TYPE rq_mux = portMUX_INITIALIZER_UNLOCKED;
+
 typedef struct {
     TaskHandle_t task;
     volatile bool stop;
@@ -73,6 +90,7 @@ typedef struct {
     solar_os_sc2_relay_config_t *next; /* scratch for change detection */
     solar_os_sc2_relay_endpoint_t *ep; /* relay in use (copy from cfg) */
     solar_os_messaging_outbound_t *ob;
+    sc2s_rq_t *rq;
     sc2c_t *c;
     esp_tls_t *tls;
     char host[SOLAR_OS_SC2_RELAY_URL_MAX];
@@ -177,15 +195,16 @@ static void short_id(char *out, size_t cap, const char *hex)
 static void on_message(const sc2c_event_t *ev)
 {
     bool dm = ev->kind == SC2C_DM;
-    if (!dm && ev->kind != SC2C_PUBLIC) {
-        return; /* private rooms are not wired in this build */
-    }
+    bool priv = ev->kind == SC2C_PRIVATE;
     char title[SOLAR_OS_MESSAGING_TITLE_MAX];
     char sender[SOLAR_OS_MESSAGING_SENDER_MAX];
     char sid[12];
     short_id(sid, sizeof(sid), ev->from);
     if (dm) {
         snprintf(title, sizeof(title), "sc2 %s", sid);
+        snprintf(sender, sizeof(sender), "%s", sid);
+    } else if (priv) {
+        solar_os_sc2_room_title(title, sizeof(title), ev->conv);
         snprintf(sender, sizeof(sender), "%s", sid);
     } else {
         snprintf(title, sizeof(title), "#%s", ev->conv + strlen(SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX));
@@ -205,7 +224,8 @@ static void on_message(const sc2c_event_t *ev)
         .provider_message_key = (ev->seq & ~SC2_SYNC_TAG_MASK) | SC2_SYNC_TAG(s.rp.relay),
         .timestamp_ms = ev->ts != 0 ? ev->ts * 1000u : (uint64_t)h_wall(NULL) * 1000u,
         .security_flags = solar_os_sc2_conversation_security(
-            s.cfg, dm ? SOLAR_OS_SC2_TARGET_DEVICE : SOLAR_OS_SC2_TARGET_PUBLIC_ROOM, dm),
+            s.cfg, dm ? SOLAR_OS_SC2_TARGET_DEVICE : priv ? SOLAR_OS_SC2_TARGET_PRIVATE_ROOM
+                                                         : SOLAR_OS_SC2_TARGET_PUBLIC_ROOM, dm),
         .sender = sender,
         .body = ev->body,
         .truncated = truncated,
@@ -215,6 +235,9 @@ static void on_message(const sc2c_event_t *ev)
         SOLAR_OS_LOGW(TAG, "inbound message not stored: %s", esp_err_to_name(err));
     }
 }
+
+static void rq_finish(esp_err_t err, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void rq_created(const sc2c_event_t *ev);
 
 static void h_event(void *ctx, const sc2c_event_t *ev)
 {
@@ -256,8 +279,16 @@ static void h_event(void *ctx, const sc2c_event_t *ev)
             js = SOLAR_OS_MESSAGING_JOIN_LEFT;
         }
         (void)solar_os_messaging_join_update(s.id, ev->conv, js, ev->text);
+        if (ev->code == SC2C_ROOM_FAILED && s.rq->creating[0] != '\0' && strcmp(ev->conv, s.rq->creating) == 0) {
+            s.rq->creating[0] = '\0';
+            rq_finish(ESP_FAIL, "relay refused the room%s%s", ev->text != NULL ? ": " : "",
+                      ev->text != NULL ? ev->text : "");
+        }
         break;
     }
+    case SC2C_EV_CREATED:
+        rq_created(ev);
+        break;
     case SC2C_EV_NOTICE:
         if (ev->code == SC2C_NOTICE_RELAY_KEY) {
             s.key_refused = ev->text; /* a string literal in the client */
@@ -329,6 +360,10 @@ static void drop(esp_err_t err, const char *why)
     s.ready = false;
     if (s.client_ok && was) {
         sc2c_on_disconnected(s.c);
+    }
+    if (s.rq != NULL && s.rq->creating[0] != '\0') {
+        s.rq->creating[0] = '\0';
+        rq_finish(ESP_FAIL, "connection lost before the relay confirmed the room");
     }
     if (why == NULL) {
         return;
@@ -460,9 +495,12 @@ static void push_outbox(void)
     } else if (strncmp(s.ob->provider_key, SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX,
                        strlen(SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX)) == 0) {
         kind = SC2C_PUBLIC;
+    } else if (s.rp.relay == 0) {
+        kind = SC2C_PRIVATE;
     } else {
+        /* private rooms exist on the relay that hosts them (the primary) */
         (void)solar_os_messaging_outbox_update(s.ob->id, SOLAR_OS_DELIVERY_FAILED,
-                                               "private SC2 rooms are not in this build");
+                                               "private room is on the primary relay, which is not reachable");
         return;
     }
     int rc = sc2c_submit(s.c, kind, s.ob->provider_key, s.ob->body, strlen(s.ob->body), s.ob->id,
@@ -496,8 +534,8 @@ static void add_rooms(void)
      * too, or its posts keep arriving for the rest of the session. */
     for (size_t i = 0; i < SC2C_ROOMS_MAX; i++) {
         const sc2c_room_t *r = &s.c->rooms[i];
-        if (r->key[0] != '\0' && r->kind == SC2C_PUBLIC && !room_configured(r->key)) {
-            (void)sc2c_room_remove(s.c, r->key);
+        if (r->key[0] != '\0' && !room_configured(r->key) && strcmp(r->key, s.rq->creating) != 0) {
+            (void)sc2c_room_remove(s.c, r->key); /* a private room's local record goes with it */
         }
     }
     for (size_t i = 0; i < SOLAR_OS_SC2_RELAY_ROOM_CAPACITY; i++) {
@@ -508,8 +546,12 @@ static void add_rooms(void)
         if (strcmp(key, SC2_SYNC_DEFAULT_ROOM) == 0) {
             have_general = true;
         }
-        if (strncmp(key, SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX, strlen(SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX)) != 0) {
-            continue; /* private rooms: not in this build */
+        if (strncmp(key, SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX, strlen(SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX)) != 0 &&
+            s.rp.relay != 0) {
+            /* private room: hosted by the primary relay only */
+            (void)solar_os_messaging_join_update(s.id, key, SOLAR_OS_MESSAGING_JOIN_PENDING,
+                                                 "waits for the primary relay");
+            continue;
         }
         (void)sc2c_room_add(s.c, key, solar_os_messaging_provider_cursor_masked(s.id, key, SC2_SYNC_TAG_MASK,
                                                                                  SC2_SYNC_TAG(s.rp.relay)));
@@ -561,6 +603,9 @@ static bool build_client(void)
         .nick = s.nick,
         .admit = s.cfg->admit[0] != '\0' ? s.cfg->admit : NULL,
         .no_opks = s.rp.relay != 0,
+        /* the relay forwards only join requests with a valid invite proof */
+        .auto_admit = true,
+        .invite_url = s.cfg->url,
     };
     uint8_t key[SOLAR_OS_SC2_RELAY_KEY_LEN];
     if (solar_os_sc2_relay_key(s.cfg, s.rp.relay, key)) {
@@ -633,6 +678,274 @@ static void schedule_visit(uint64_t now)
     }
 }
 
+/* ---------------- private rooms ---------------- */
+
+static void rq_finish(esp_err_t err, const char *fmt, ...)
+{
+    sc2s_rq_t *q = s.rq;
+    if (q->state != RQ_WORKING && q->state != RQ_ABANDONED) {
+        return;
+    }
+    if (fmt != NULL) {
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(q->why, sizeof(q->why), fmt, ap);
+        va_end(ap);
+    } else {
+        q->why[0] = '\0';
+    }
+    q->err = err;
+    portENTER_CRITICAL(&rq_mux);
+    bool gone = q->state == RQ_ABANDONED;
+    q->state = gone ? RQ_IDLE : RQ_DONE;
+    portEXIT_CRITICAL(&rq_mux);
+    if (gone) {
+        sc2_memzero(q->out, sizeof(q->out));
+        sc2_memzero(q->arg, sizeof(q->arg));
+    }
+}
+
+static size_t rooms_free(void)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < SOLAR_OS_SC2_RELAY_ROOM_CAPACITY; i++) {
+        n += s.cfg->rooms[i][0] == '\0';
+    }
+    return n;
+}
+
+static bool is_private_key(const char *key)
+{
+    return key[0] != '\0' &&
+           strncmp(key, SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX, strlen(SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX)) != 0;
+}
+
+/* A configured private room: its key or a unique prefix (>= 6 hex). */
+static const char *private_room_find(const char *arg)
+{
+    const char *hit = NULL;
+    size_t len = strlen(arg);
+    if (len < 6u || len > SC2_DEVICE_ID_HEX_LEN) {
+        return NULL;
+    }
+    for (size_t i = 0; i < SOLAR_OS_SC2_RELAY_ROOM_CAPACITY; i++) {
+        const char *key = s.cfg->rooms[i];
+        if (is_private_key(key) && strncasecmp(key, arg, len) == 0) {
+            if (hit != NULL) {
+                return NULL;
+            }
+            hit = key;
+        }
+    }
+    return hit;
+}
+
+/* Our room is confirmed: keep it in the instance (also when the shell
+ * caller already gave up waiting). */
+static void rq_created(const sc2c_event_t *ev)
+{
+    sc2s_rq_t *q = s.rq;
+    if (q->creating[0] == '\0' || strcmp(ev->conv, q->creating) != 0) {
+        return;
+    }
+    q->creating[0] = '\0';
+    esp_err_t err = solar_os_messaging_join(s.id, ev->conv, NULL);
+    const sc2c_room_t *r = sc2c_room_get(s.c, ev->conv);
+    if (err == ESP_OK && r != NULL && r->state == SC2C_ROOM_JOINED) {
+        (void)solar_os_messaging_join_update(s.id, ev->conv, SOLAR_OS_MESSAGING_JOIN_JOINED, NULL);
+    }
+    SOLAR_OS_LOGI(TAG, "private room %s created%s", ev->conv, err == ESP_OK ? "" : " (not saved)");
+    if (q->state == RQ_WORKING) {
+        snprintf(q->out, sizeof(q->out), "%s", ev->text != NULL ? ev->text : "");
+    }
+    if (err != ESP_OK) {
+        rq_finish(err, "room created but not saved in the instance: %s", esp_err_to_name(err));
+    } else {
+        rq_finish(ESP_OK, NULL);
+    }
+}
+
+static const char *room_state_text(const sc2c_room_t *r)
+{
+    static const char *const names[] = {"idle",    "joining", "waiting for an admin", "waiting for the room key",
+                                        "joined",  "creating", "failed",              "left"};
+    return r->state < sizeof(names) / sizeof(names[0]) ? names[r->state] : "?";
+}
+
+static void rq_list(sc2s_rq_t *q)
+{
+    size_t at = 0;
+    q->out[0] = '\0';
+    char inv[SC2_INVITE_TEXT_MAX];
+    for (size_t i = 0; i < SOLAR_OS_SC2_RELAY_ROOM_CAPACITY && at < sizeof(q->out); i++) {
+        const char *key = s.cfg->rooms[i];
+        if (key[0] == '\0') {
+            continue;
+        }
+        const sc2c_room_t *r = sc2c_room_get(s.c, key);
+        bool priv = is_private_key(key);
+        bool admin = priv && sc2c_room_invite_text(s.c, key, inv, sizeof(inv)) == SC2_OK;
+        int n = snprintf(q->out + at, sizeof(q->out) - at, "%s  %s%s  %s\n", key, priv ? "private" : "public",
+                         admin ? ", admin" : "",
+                         r != NULL ? room_state_text(r) : priv && s.rp.relay != 0 ? "on the primary relay" : "-");
+        at = n < 0 ? sizeof(q->out) : at + (size_t)n;
+    }
+    sc2_memzero(inv, sizeof(inv));
+}
+
+static void rq_run(void)
+{
+    sc2s_rq_t *q = s.rq;
+    if (q == NULL || q->state != RQ_POSTED) {
+        return;
+    }
+    portENTER_CRITICAL(&rq_mux);
+    q->state = RQ_WORKING;
+    portEXIT_CRITICAL(&rq_mux);
+    q->room[0] = '\0';
+    q->out[0] = '\0';
+    if (s.id == 0 || !s.client_ok) {
+        rq_finish(ESP_ERR_INVALID_STATE, "no enabled sc2 instance");
+        return;
+    }
+    const bool home = s.ready && s.rp.relay == 0 && !s.rp.visiting;
+    switch (q->op) {
+    case SOLAR_OS_SC2_ROOM_LIST:
+        rq_list(q);
+        rq_finish(ESP_OK, NULL);
+        return;
+    case SOLAR_OS_SC2_ROOM_INVITE: {
+        const char *key = private_room_find(q->arg);
+        if (key == NULL) {
+            rq_finish(ESP_ERR_NOT_FOUND, "no such private room (give its key or a unique prefix)");
+            return;
+        }
+        snprintf(q->room, sizeof(q->room), "%s", key);
+        int rc = sc2c_room_invite_text(s.c, key, q->out, sizeof(q->out));
+        if (rc == SC2_OK) {
+            rq_finish(ESP_OK, NULL);
+        } else {
+            rq_finish(ESP_ERR_NOT_FOUND, "only the device that created the room can invite");
+        }
+        return;
+    }
+    case SOLAR_OS_SC2_ROOM_CREATE:
+    case SOLAR_OS_SC2_ROOM_JOIN: {
+        if (!home) {
+            rq_finish(ESP_ERR_INVALID_STATE, "needs a login on the primary relay (see `sc2 relay`)");
+            return;
+        }
+        if (rooms_free() == 0) {
+            rq_finish(ESP_ERR_NO_MEM, "room list is full (%u rooms); leave one first",
+                      (unsigned)SOLAR_OS_SC2_RELAY_ROOM_CAPACITY);
+            return;
+        }
+        if (q->op == SOLAR_OS_SC2_ROOM_CREATE) {
+            int rc = sc2c_room_create(s.c, q->room);
+            if (rc != SC2_OK) {
+                rq_finish(ESP_FAIL, "create failed: %s", rc == SC2C_AGAIN ? "not logged in" : sc2_strerror(rc));
+                return;
+            }
+            snprintf(q->creating, sizeof(q->creating), "%s", q->room); /* finished by rq_created */
+            return;
+        }
+        int rc = sc2c_room_join_invite(s.c, q->arg, q->room);
+        if (rc != SC2_OK) {
+            rq_finish(ESP_ERR_INVALID_ARG, "%s", rc == SC2_ERR_FORMAT || rc == SC2_ERR_ARG || rc == SC2_ERR_BOUNDS
+                                                     ? "not a valid invite"
+                                                     : sc2_strerror(rc));
+            return;
+        }
+        esp_err_t err = solar_os_messaging_join(s.id, q->room, NULL);
+        if (err != ESP_OK) {
+            (void)sc2c_room_remove(s.c, q->room);
+            rq_finish(err, "room not saved in the instance: %s", esp_err_to_name(err));
+            return;
+        }
+        rq_finish(ESP_OK, NULL);
+        return;
+    }
+    default:
+        rq_finish(ESP_ERR_INVALID_ARG, "unknown request");
+        return;
+    }
+}
+
+esp_err_t solar_os_sc2_sync_room(solar_os_sc2_room_op_t op, const char *arg, char *room, char *out, size_t cap,
+                                 char *why, size_t whycap, uint32_t timeout_ms)
+{
+    if (why != NULL && whycap > 0) {
+        why[0] = '\0';
+    }
+    sc2s_rq_t *q = s.rq;
+    if (!s.running || q == NULL || s.task == NULL) {
+        if (why != NULL) {
+            snprintf(why, whycap, "sc2-sync is not running");
+        }
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (arg != NULL && strlen(arg) >= sizeof(q->arg)) {
+        if (why != NULL) {
+            snprintf(why, whycap, "argument too long");
+        }
+        return ESP_ERR_INVALID_SIZE;
+    }
+    bool busy;
+    portENTER_CRITICAL(&rq_mux);
+    busy = q->state != RQ_IDLE;
+    if (!busy) {
+        q->state = RQ_CLAIMED; /* the worker only picks up RQ_POSTED: the fields are ours */
+    }
+    portEXIT_CRITICAL(&rq_mux);
+    if (busy) {
+        if (why != NULL) {
+            snprintf(why, whycap, "another room request is still running");
+        }
+        return ESP_ERR_INVALID_STATE;
+    }
+    q->op = (uint8_t)op;
+    snprintf(q->arg, sizeof(q->arg), "%s", arg != NULL ? arg : "");
+    portENTER_CRITICAL(&rq_mux);
+    q->state = RQ_POSTED;
+    portEXIT_CRITICAL(&rq_mux);
+    xTaskNotifyGive(s.task);
+    const uint64_t end = mono_ms() + timeout_ms;
+    while (q->state != RQ_DONE && mono_ms() < end) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    portENTER_CRITICAL(&rq_mux);
+    uint8_t st = q->state;
+    if (st == RQ_POSTED) {
+        q->state = RQ_IDLE;
+    } else if (st == RQ_WORKING) {
+        q->state = RQ_ABANDONED;
+    }
+    portEXIT_CRITICAL(&rq_mux);
+    if (st != RQ_DONE) {
+        if (why != NULL) {
+            snprintf(why, whycap, "%s", st == RQ_POSTED ? "sc2-sync did not take the request"
+                                                       : "no answer from the relay yet");
+        }
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = q->err;
+    if (room != NULL) {
+        snprintf(room, SC2_DEVICE_ID_HEX_LEN + 1u, "%s", q->room);
+    }
+    if (out != NULL && cap > 0) {
+        snprintf(out, cap, "%s", q->out);
+    }
+    if (why != NULL && err != ESP_OK) {
+        snprintf(why, whycap, "%s", q->why);
+    }
+    sc2_memzero(q->out, sizeof(q->out)); /* invite texts carry the room secret */
+    sc2_memzero(q->arg, sizeof(q->arg));
+    portENTER_CRITICAL(&rq_mux);
+    q->state = RQ_IDLE;
+    portEXIT_CRITICAL(&rq_mux);
+    return err;
+}
+
 static void worker(void *arg)
 {
     (void)arg;
@@ -649,6 +962,7 @@ static void worker(void *arg)
         if (s.id != 0 && s.rebuild && !s.connected) {
             (void)build_client();
         }
+        rq_run();
         if (s.id == 0 || !s.client_ok) {
             (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(SC2_SYNC_CHECK_MS));
             continue;
@@ -698,7 +1012,10 @@ static bool alloc_state(void)
     if (s.ob == NULL) {
         s.ob = solar_os_memory_calloc(1, sizeof(*s.ob), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED, "sc2.sync.ob");
     }
-    return s.c != NULL && s.cfg != NULL && s.next != NULL && s.ep != NULL && s.ob != NULL;
+    if (s.rq == NULL) {
+        s.rq = solar_os_memory_calloc(1, sizeof(*s.rq), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED, "sc2.sync.rq");
+    }
+    return s.c != NULL && s.cfg != NULL && s.next != NULL && s.ep != NULL && s.ob != NULL && s.rq != NULL;
 }
 
 esp_err_t solar_os_sc2_sync_start(void)
