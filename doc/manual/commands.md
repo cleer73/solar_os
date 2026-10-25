@@ -165,6 +165,7 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `messages` | `messages add meshcore <name> radio <radio> <profile>` | Save a MeshCore instance on a local radio. |
 | `messages` | `messages add meshcore <name> ble <address> <type> [pin]` | Save a MeshCore companion binding. |
 | `messages` | `messages add link <name> <transport>` | Bind an independent Chat projection to a named Link transport. |
+| `messages` | `messages add sc2 <name> chats://<host>:<port>[#pin=sha256/<b64>] [admit]` | Save an SC2 end-to-end relay instance; `messages configure <name> admit <code>\|off` or `pin <pin>\|off` change it. No relay transport yet in this build. See `man messaging`. |
 | `gateway` | `gateway connect [url] [token]` | Enable gateway synchronization, optionally updating settings. |
 | `gateway` | `gateway disconnect` | Disable gateway synchronization. |
 | `gateway` | `gateway rooms` | List known and joined gateway rooms. |

@@ -1349,3 +1349,29 @@ ifneq ($(SC2_MBEDTLS_DIR),)
 sc2-mbedtls-test: sc2-engine-mbedtls-test
 endif
 TARGETS += sc2_engine_test sc2_engine_mbedtls_test
+
+# SC2 Messaging provider class on the real Messaging registry (SC2 key store stubbed).
+sc2_provider_test: sc2_provider_test.c messaging_service_test.c $(SC2E_DIR)/solar_os_sc2_provider.c \
+        $(SC2E_DIR)/solar_os_sc2_provider.h $(ROOT)/src/services/solar_os_contacts.c \
+        $(ROOT)/src/services/solar_os_messaging.c $(ROOT)/src/services/solar_os_messaging_registry.inc \
+        $(ROOT)/src/services/solar_os_messaging_types.c $(ROOT)/src/services/solar_os_messaging.h \
+        $(ROOT)/src/services/solar_os_messaging_types.h messaging_stubs/freertos/semphr.h \
+        $(ROOT)/src/services/solar_os_storage.c $(ROOT)/src/services/solar_os_storage.h
+	$(CC) $(CFLAGS) -pthread -D_GNU_SOURCE -DpdTICKS_TO_MS\(ticks\)=\(ticks\) -include compat.h \
+		-ffunction-sections -fdata-sections \
+		-Imessaging_stubs -I. -I$(ROOT)/src -I$(ROOT)/src/services -I$(SC2_DIR)/include \
+		-I$(ROOT)/src/board -I$(ROOT)/src/drivers \
+		$< $(ROOT)/src/services/solar_os_messaging_types.c \
+		$(ROOT)/src/services/solar_os_storage.c -Wl,--gc-sections \
+		-Wl,--wrap=solar_os_storage_is_mounted,--wrap=solar_os_storage_sd_is_mounted \
+		-Wl,--wrap=solar_os_storage_default_path,--wrap=solar_os_storage_mkdir \
+		-Wl,--wrap=solar_os_storage_remove,--wrap=solar_os_storage_get_usage,--wrap=rename -o $@
+
+.PHONY: sc2-provider-test
+sc2-provider-test: sc2_provider_test
+	./sc2_provider_test
+
+all: sc2_provider_test
+sc2-test: sc2-provider-test
+test: sc2-provider-test
+TARGETS += sc2_provider_test

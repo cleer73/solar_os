@@ -38,6 +38,7 @@ MeshCore settings are `messages add meshcore NAME radio RADIO PROFILE` or
 | `irc` | `HOST PORT NICK` | `irc-sync` |
 | `meshcore` | `radio RADIO PROFILE` or `ble ADDRESS TYPE [PIN]` | `meshcore` or `meshcore-ble` |
 | `link` | `TRANSPORT` | Its `radio-link` or `espnow-link` transport with `chat=on` |
+| `sc2` | `chats://HOST:PORT[#pin=sha256/B64] [ADMIT]` or `chat://HOST:PORT [ADMIT]` | None yet (planned `sc2-sync`) |
 
 New instances start disabled. Use `messages connect NAME` and start the worker.
 `messages configure NAME SETTINGS...` changes connection settings; IRC also
@@ -112,6 +113,15 @@ expose as `security_flags`. A conversation also inherits the bits of its message
 | `0x20` | transport secured | The link to the server uses TLS |
 | `0x40` | public signed | Not encrypted; every message is signed by its sender and was verified |
 | `0x80` | legacy insecure | Legacy protocol without end-to-end protection or sender authentication |
+
+An `sc2` instance is one SC2 relay. All relays share the device identity in
+`/.sc2`. Its rooms are `pub:NAME` public rooms, marked `public signed`, and
+32-hex private rooms, marked `encrypted` and `shared key`. Direct
+conversations use the peer's 32-hex device ID and are marked `encrypted`; they
+also get `peer key known` once the peer's key bundle is stored. `messages
+configure NAME admit CODE|off` and `pin sha256/B64|off` change the admission
+code and the TLS pin. This build has no relay transport yet: messages stay
+queued and are marked failed after a restart.
 
 Gateway conversations use the v1 protocol. They are always marked `legacy
 insecure`, and also `transport secured` with `chats://` or `tls://`. The server

@@ -3249,7 +3249,7 @@ capabilities = ["gfx", "expansion_gpio"]
 [groups.sc2]
 label = "SC2 end-to-end chat security"
 category = "Messaging"
-members = ["service_sc2"]
+members = ["service_sc2", "service_sc2_provider"]
 
 [packages.service_sc2]
 label = "messaging.sc2"
@@ -3281,4 +3281,10 @@ sources = [
 # X25519 and ChaCha20-Poly1305 come from the WireGuard component, which is
 # linked once whether or not service_wireguard is selected.
 requires = ["mbedtls", "wireguard_lwip", "esp_timer"]
+capabilities = ["psram"]
+
+[packages.service_sc2_provider]
+label = "messaging.sc2-provider"
+depends = ["service_sc2", "service_messaging"]
+sources = ["services/solar_os_sc2_provider.c"]
 capabilities = ["psram"]
