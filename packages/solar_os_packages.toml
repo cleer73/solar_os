@@ -3267,6 +3267,7 @@ sources = [
   "../protocol/sc2/src/sc2_hash.c",
   "../protocol/sc2/src/sc2_identity.c",
   "../protocol/sc2/src/sc2_json.c",
+  "../protocol/sc2/src/sc2_minirelay.c",
   "../protocol/sc2/src/sc2_mod.c",
   "../protocol/sc2/src/sc2_ratchet.c",
   "../protocol/sc2/src/sc2_relaykey.c",

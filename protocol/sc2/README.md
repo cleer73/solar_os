@@ -26,6 +26,7 @@ covers the C API and the byte layouts that the code fixes.
 | `sc2_frame.h` | line assembler (16384-byte lines), `hello`/`welcome`/`auth`, `dm.send`/`dm.msg`, `room.send`/`room.msg`, public posts (`room.post`/`room.pub`) with signed bytes, private `room.create`, `room.commit` (both directions), `room.invite`, `room.join` with a proof, `room.mod` decode |
 | `sc2_commit.h` | private-room commits (130-byte record, sign/verify, commit ID), the roster (`sc2_roster_t`: make, check, apply, roster hash), invite key/proof and the invite code (binary and `sc2i:` text) |
 | `sc2_mod.h` | relay-signed moderation record (122 bytes: remove/ban/unban), encode/decode/sign/verify |
+| `sc2_minirelay.h` | sans-IO relay subset for small devices (`chatd`): hello/auth, keys publish/claim, DM mailbox, one public room, fixed caps in one allocation; the host does the sockets |
 | `sc2.h` | umbrella header |
 
 Every function returns `SC2_OK` (0) or a negative `SC2_ERR_*`. Secrets on the

@@ -206,6 +206,14 @@ queued. `sc2 relay` shows the relay in use. Trade-offs:
 - Queued messages are sent through whichever relay is in use, never during a
   visit.
 
+A device can also be the relay: `job start chatd` serves a small SC2
+mini-relay (login, DM mailbox, prekeys and the public room `pub:general`,
+with fixed caps) next to the v1 gateway on the same port. Add it with
+`messages add sc2 NAME chat://IP:7777 [TOKEN] key=B64`, using the key chatd
+logs at start. See the `chatd` job reference for its limits. `chat://` is
+plain TCP, so the relay sees your IP; message contents stay end-to-end
+encrypted.
+
 Gateway conversations use the v1 protocol. They are always marked `legacy
 insecure`, and also `transport secured` with `chats://` or `tls://`. The server
 can read and change these messages, and sender names are not signed by the

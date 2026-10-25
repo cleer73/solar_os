@@ -278,7 +278,7 @@ for small trusted local networks.
 Usage:
 
 ```text
-job start chatd [port] [token] [--history path]
+job start chatd [port] [token] [--history path] [--sc2 on|off] [--v1 on|off] [--sc2-id ID]
 job start chatd [port] [token] [path]
 job stop chatd
 job status chatd
@@ -305,6 +305,41 @@ job start chatd
 job start chatd 7777 secret
 job start chatd 7777 secret --history /.shell/chatd.log
 ```
+
+### SC2 mini-relay
+
+On builds with SC2 messaging, chatd is also a small SC2 relay on the same
+port, so a device can be a relay and a client at once. The first line a
+client sends decides: an SC2 `hello` goes to the mini-relay, a v1 `hello`
+to the v1 server. Legacy v1 stays on by default, as on the self-hosted
+relay; `--v1 off` refuses v1 clients (426) and `--sc2 off` turns the
+mini-relay off. The token, when set, is also the SC2 admission code for
+new devices. Rate limits are off, as on the self-hosted relay.
+
+The mini-relay is a fixed-size subset of the relay protocol:
+
+| Feature | Limit |
+| --- | --- |
+| Login and auth (signed `welcome`, pinned relay key) | 6 connections |
+| Registered devices | 16 (then `503 server_full`) |
+| Prekeys per device (bundle publish and claim) | 8 one-time prekeys |
+| Offline DM mailbox (store and forward) | 24 messages, 12 per device, 3200-byte envelopes |
+| Public room `pub:general` | last 24 posts |
+
+Private rooms and other public rooms are refused (`501`/`404`); use a full
+relay for those. All stores live in one PSRAM block (about 135 KiB), so the
+mailbox and history are lost when chatd stops. Without PSRAM the mini-relay
+stays off and v1 keeps working. The relay key is created once and kept in
+the SC2 store (`mr/relay`), so pinned clients keep trusting it across
+restarts. chatd logs it at start:
+
+```text
+chatd: SC2 relay chatd-1a2b3c4d key=B64 (134 KiB PSRAM), v1 too
+```
+
+Pin it on clients with `messages add sc2 NAME chat://IP:7777 [TOKEN] key=B64`.
+The device running chatd can use its own relay through
+`chat://127.0.0.1:7777`.
 
 The local chat app can connect with:
 
