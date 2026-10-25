@@ -66,6 +66,7 @@ typedef struct {
     esp_tls_t *tls;
     char host[SOLAR_OS_SC2_RELAY_URL_MAX];
     char tag[SC2C_TAG_MAX + 1];
+    char nick[SC2C_NICK_MAX + 1];
 } sc2s_t;
 
 static sc2s_t s;
@@ -431,7 +432,7 @@ static void add_rooms(void)
         /* #general by default: through Messaging so it shows in the chat UI
          * and is saved; the config change brings it back here. */
         s.auto_joined = true;
-        (void)solar_os_messaging_join(s.id, "general", NULL);
+        (void)solar_os_messaging_join(s.id, SC2_SYNC_DEFAULT_ROOM, NULL);
     }
 }
 
@@ -461,6 +462,7 @@ static void check_config(void)
         }
         if (solar_os_sc2_relay_get_config(st.id, s.next) == ESP_OK && s.next->enabled) {
             found = st.id;
+            snprintf(s.nick, sizeof(s.nick), "%s", st.name); /* public post name: the instance name */
             break;
         }
     }
@@ -491,7 +493,7 @@ static void check_config(void)
         sc2c_host_t host = {h_send, h_event, h_lock, h_unlock, h_alloc, h_release, h_mono, h_wall, NULL};
         sc2c_config_t cc = {
             .tag = s.tag,
-            .nick = NULL,
+            .nick = s.nick,
             .admit = s.cfg->admit[0] != '\0' ? s.cfg->admit : NULL,
         };
         int rc = sc2c_init(s.c, &host, &cc);
