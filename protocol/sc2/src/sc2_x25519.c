@@ -9,7 +9,7 @@
 
 #include <string.h>
 
-#include "x25519.h"
+#include "crypto/refc/x25519.h"
 
 int sc2_x25519_public(uint8_t pub[SC2_KEY_LEN], const uint8_t priv[SC2_KEY_LEN])
 {

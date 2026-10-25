@@ -7,7 +7,7 @@
  */
 #include "sc2_crypto.h"
 
-#include "chacha20poly1305.h"
+#include "crypto/refc/chacha20poly1305.h"
 
 /* The refc code pads lengths with 32-bit masks; keep inputs well inside. */
 #define SC2_AEAD_MAX_LEN 0x0FFFFFFFu

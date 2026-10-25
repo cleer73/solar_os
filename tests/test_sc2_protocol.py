@@ -61,7 +61,7 @@ class Sc2ProtocolTest(unittest.TestCase):
                             "-I" + str(LIB / "include"), str(src)], check=True)
 
     def test_no_sdk_or_core_includes(self):
-        allowed_vendor = {"chacha20poly1305.h", "ge.h", "sc.h", "sha512.h", "x25519.h", "crypto.h"}
+        allowed_vendor = {"crypto/refc/chacha20poly1305.h", "ge.h", "sc.h", "sha512.h", "crypto/refc/x25519.h", "crypto.h"}
         for path in list((LIB / "src").glob("*.c")) + list((LIB / "include").glob("*.h")):
             text = path.read_text()
             # mbedTLS headers only inside the opt-in backend block
