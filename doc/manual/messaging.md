@@ -96,6 +96,28 @@ label: its messages remain readable, but it cannot accept new sends. Outbound
 queues are held in memory; after a restart, retained `queued` or `sending`
 messages become `failed` and must be resent explicitly.
 
+## Security flags
+
+Conversations and messages carry a `security` bit set, which
+`messages conversations` and `messages list` print in hex, and which Python and Lua
+expose as `security_flags`. A conversation also inherits the bits of its messages.
+
+| Bit | Name | Meaning |
+| --- | --- | --- |
+| `0x01` | encrypted | Content is end-to-end encrypted |
+| `0x02` | peer key known | The peer's public key is known |
+| `0x04` | peer trusted | The user trusted this endpoint |
+| `0x08` | shared key | Encrypted with a key shared by a group |
+| `0x10` | sender unverified | The sender could not be verified |
+| `0x20` | transport secured | The link to the server uses TLS |
+| `0x40` | public signed | Not encrypted; every message is signed by its sender and was verified |
+| `0x80` | legacy insecure | Legacy protocol without end-to-end protection or sender authentication |
+
+Gateway conversations use the v1 protocol. They are always marked `legacy
+insecure`, and also `transport secured` with `chats://` or `tls://`. The server
+can read and change these messages, and sender names are not signed by the
+sender.
+
 ## Quick reference
 
 ```text
