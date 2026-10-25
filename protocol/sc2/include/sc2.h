@@ -15,6 +15,7 @@
 #include "sc2_room.h"
 #include "sc2_commit.h"
 #include "sc2_mod.h"
+#include "sc2_relaykey.h"
 #include "sc2_safety.h"
 #include "sc2_json.h"
 #include "sc2_frame.h"

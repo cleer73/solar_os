@@ -11,6 +11,7 @@
 #include <strings.h>
 
 #include "freertos/FreeRTOS.h"
+#include "sc2_codec.h"
 #include "freertos/semphr.h"
 #include "solar_os_memory.h"
 #include "solar_os_sc2.h"
@@ -280,6 +281,40 @@ static bool sc2p_fallbacks_valid(const solar_os_sc2_relay_config_t *config, sola
     return true;
 }
 
+bool solar_os_sc2_relay_key(const solar_os_sc2_relay_config_t *config, size_t i,
+                            uint8_t out[SOLAR_OS_SC2_RELAY_KEY_LEN])
+{
+    if (config == NULL || i > SOLAR_OS_SC2_RELAY_FALLBACK_MAX || (config->key_set & (1u << i)) == 0) {
+        return false;
+    }
+    if (out != NULL) {
+        memcpy(out, config->keys[i], SOLAR_OS_SC2_RELAY_KEY_LEN);
+    }
+    return true;
+}
+
+/* "key=<base64 of 32 bytes>" */
+static bool sc2p_key_arg(const char *arg, uint8_t out[SOLAR_OS_SC2_RELAY_KEY_LEN])
+{
+    size_t got = 0;
+    if (arg == NULL || strncmp(arg, "key=", 4) != 0) {
+        return false;
+    }
+    return sc2_b64_decode(out, SOLAR_OS_SC2_RELAY_KEY_LEN, &got, arg + 4, strlen(arg + 4)) == SC2_OK &&
+           got == SOLAR_OS_SC2_RELAY_KEY_LEN;
+}
+
+static void sc2p_key_put(solar_os_sc2_relay_config_t *config, size_t i, const uint8_t *key)
+{
+    if (key != NULL) {
+        memcpy(config->keys[i], key, SOLAR_OS_SC2_RELAY_KEY_LEN);
+        config->key_set = (uint8_t)(config->key_set | (1u << i));
+    } else {
+        memset(config->keys[i], 0, SOLAR_OS_SC2_RELAY_KEY_LEN);
+        config->key_set = (uint8_t)(config->key_set & ~(1u << i));
+    }
+}
+
 bool solar_os_sc2_relay_config_valid(const solar_os_sc2_relay_config_t *config)
 {
     if (config == NULL || config->version != SOLAR_OS_SC2_RELAY_CONFIG_VERSION ||
@@ -295,7 +330,8 @@ bool solar_os_sc2_relay_config_valid(const solar_os_sc2_relay_config_t *config)
     bool ok = solar_os_sc2_relay_parse_url(config->url, parsed) == ESP_OK && parsed->tls == config->tls &&
               parsed->port == config->port && parsed->pin[0] == '\0' &&
               (config->pin[0] == '\0' || (config->tls && sc2p_pin_valid(config->pin))) &&
-              sc2p_fallbacks_valid(config, parsed);
+              sc2p_fallbacks_valid(config, parsed) &&
+              (config->key_set >> solar_os_sc2_relay_endpoint(config, 0, NULL)) == 0;
     sc2p_config_free(parsed);
     for (size_t i = 0; ok && i < SOLAR_OS_SC2_RELAY_ROOM_CAPACITY; i++) {
         const char *room = config->rooms[i];
@@ -456,20 +492,30 @@ static esp_err_t sc2p_attach(solar_os_messaging_provider_id_t id, const solar_os
 static esp_err_t sc2p_profile_load(solar_os_messaging_provider_id_t id, solar_os_sc2_relay_config_t *config)
 {
     esp_err_t error = solar_os_messaging_profile_load(id, config, sizeof(*config));
-    if (error != ESP_OK && error != ESP_ERR_NO_MEM) {
-        /* Not a v2 profile (the size check, or a missing .bak reported
-         * after it): try v1, which ends where the fallback list starts. */
+    if (error == ESP_OK || error == ESP_ERR_NO_MEM) {
+        return error;
+    }
+    /* Older layout (the size check fails, or a missing .bak is reported
+     * after it): version 2 ends at key_set, version 1 at the fallback list. */
+    static const struct {
+        uint32_t version;
+        size_t size;
+    } older[] = {
+        {2u, offsetof(solar_os_sc2_relay_config_t, key_set)},
+        {1u, offsetof(solar_os_sc2_relay_config_t, fallback)},
+    };
+    for (size_t i = 0; i < sizeof(older) / sizeof(older[0]); i++) {
         memset(config, 0, sizeof(*config));
-        esp_err_t v1 = solar_os_messaging_profile_load(id, config, offsetof(solar_os_sc2_relay_config_t, fallback));
-        if (v1 == ESP_OK && config->version == 1u) {
+        esp_err_t old = solar_os_messaging_profile_load(id, config, older[i].size);
+        if (old == ESP_OK && config->version == older[i].version) {
             config->version = SOLAR_OS_SC2_RELAY_CONFIG_VERSION;
             return ESP_OK;
         }
-        sc2p_wipe(config, sizeof(*config));
-        if (v1 == ESP_OK) {
+        if (old == ESP_OK) {
             error = ESP_ERR_INVALID_ARG;
         }
     }
+    sc2p_wipe(config, sizeof(*config));
     return error;
 }
 
@@ -561,12 +607,46 @@ esp_err_t solar_os_sc2_relay_get_config(solar_os_messaging_provider_id_t id, sol
     return sc2p_profile_load(id, config);
 }
 
+esp_err_t solar_os_sc2_relay_set_key(solar_os_messaging_provider_id_t id, size_t i,
+                                     const uint8_t old_key[SOLAR_OS_SC2_RELAY_KEY_LEN],
+                                     const uint8_t new_key[SOLAR_OS_SC2_RELAY_KEY_LEN])
+{
+    if (old_key == NULL || new_key == NULL || i > SOLAR_OS_SC2_RELAY_FALLBACK_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t error = solar_os_sc2_provider_init();
+    if (error != ESP_OK) {
+        return error;
+    }
+    sc2p_relay_t *node = sc2p_find(id);
+    if (node == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    solar_os_sc2_relay_config_t *config = sc2p_config_alloc();
+    if (config == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    xSemaphoreTake(sc2p.edit_lock, portMAX_DELAY);
+    sc2p_snapshot(node, config);
+    /* only replaces the pin it was asked to replace */
+    uint8_t cur[SOLAR_OS_SC2_RELAY_KEY_LEN];
+    if (!solar_os_sc2_relay_key(config, i, cur) || memcmp(cur, old_key, sizeof(cur)) != 0) {
+        error = ESP_ERR_INVALID_STATE;
+    } else {
+        sc2p_key_put(config, i, new_key);
+        error = sc2p_save(node, config);
+    }
+    xSemaphoreGive(sc2p.edit_lock);
+    sc2p_config_free(config);
+    return error;
+}
+
 /* ---------------- class callbacks ---------------- */
 
 static esp_err_t sc2p_create(const char *name, int argc, const char *const *argv,
                              solar_os_messaging_provider_id_t *id)
 {
-    if (name == NULL || id == NULL || argc < 1 || argc > 2 || argv == NULL) {
+    if (name == NULL || id == NULL || argc < 1 || argc > 3 || argv == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     esp_err_t error = solar_os_sc2_provider_init();
@@ -580,9 +660,19 @@ static esp_err_t sc2p_create(const char *name, int argc, const char *const *argv
     config->version = SOLAR_OS_SC2_RELAY_CONFIG_VERSION;
     config->enabled = true; /* a new relay connects at once; `messages disconnect` turns it off */
     error = solar_os_sc2_relay_parse_url(argv[0], config);
-    if (error == ESP_OK && argc == 2 &&
-        !sc2p_copy(config->admit, sizeof(config->admit), argv[1], strlen(argv[1]))) {
-        error = ESP_ERR_INVALID_ARG;
+    /* URL [ADMIT] [key=B64]: the key pins the relay's long-term key */
+    for (int i = 1; error == ESP_OK && i < argc; i++) {
+        uint8_t key[SOLAR_OS_SC2_RELAY_KEY_LEN];
+        if (strncmp(argv[i], "key=", 4) == 0) {
+            if (!sc2p_key_arg(argv[i], key) || (config->key_set & 1u) != 0) {
+                error = ESP_ERR_INVALID_ARG;
+            } else {
+                sc2p_key_put(config, 0, key);
+            }
+        } else if (config->admit[0] != '\0' ||
+                   !sc2p_copy(config->admit, sizeof(config->admit), argv[i], strlen(argv[i]))) {
+            error = ESP_ERR_INVALID_ARG;
+        }
     }
     if (error == ESP_OK && !solar_os_sc2_relay_config_valid(config)) {
         error = ESP_ERR_INVALID_ARG;
@@ -599,8 +689,9 @@ static esp_err_t sc2p_create(const char *name, int argc, const char *const *argv
     return error;
 }
 
-/* Settings: "URL [ADMIT]", "admit CODE|off", "pin sha256/B64|off" or
- * "fallback URL [URL...]|off" (the whole fallback list at once). */
+/* Settings: "URL [ADMIT] [key=B64]", "admit CODE|off", "pin sha256/B64|off",
+ * "key B64|off" (the primary's pinned relay key) or
+ * "fallback URL [key=B64] [URL [key=B64]...]|off" (the whole list at once). */
 static esp_err_t sc2p_configure(void *context, int argc, const char *const *argv)
 {
     sc2p_relay_t *node = context;
@@ -626,31 +717,82 @@ static esp_err_t sc2p_configure(void *context, int argc, const char *const *argv
         if (sc2p_copy(config->pin, sizeof(config->pin), value, strlen(value))) {
             error = ESP_OK;
         }
-    } else if (argc >= 2 && argc <= 1 + (int)SOLAR_OS_SC2_RELAY_FALLBACK_MAX && strcmp(argv[0], "fallback") == 0) {
+    } else if (argc == 2 && strcmp(argv[0], "key") == 0) {
+        uint8_t key[SOLAR_OS_SC2_RELAY_KEY_LEN];
+        char arg[64];
+        if (strcmp(argv[1], "off") == 0) {
+            sc2p_key_put(config, 0, NULL);
+            error = ESP_OK;
+        } else if (snprintf(arg, sizeof(arg), "key=%s", argv[1]) < (int)sizeof(arg) && sc2p_key_arg(arg, key)) {
+            sc2p_key_put(config, 0, key);
+            error = ESP_OK;
+        }
+    } else if (argc >= 2 && argc <= 1 + 2 * (int)SOLAR_OS_SC2_RELAY_FALLBACK_MAX && strcmp(argv[0], "fallback") == 0) {
         memset(config->fallback, 0, sizeof(config->fallback));
+        for (size_t i = 1; i <= SOLAR_OS_SC2_RELAY_FALLBACK_MAX; i++) {
+            sc2p_key_put(config, i, NULL);
+        }
         error = ESP_OK;
         if (!(argc == 2 && strcmp(argv[1], "off") == 0)) {
             solar_os_sc2_relay_config_t *parsed = sc2p_config_alloc();
             error = parsed != NULL ? ESP_OK : ESP_ERR_NO_MEM;
+            size_t n = 0;
             for (int i = 1; error == ESP_OK && i < argc; i++) {
+                uint8_t key[SOLAR_OS_SC2_RELAY_KEY_LEN];
+                if (strncmp(argv[i], "key=", 4) == 0) {
+                    /* key=B64 belongs to the URL before it */
+                    if (n == 0 || (config->key_set & (1u << n)) != 0 || !sc2p_key_arg(argv[i], key)) {
+                        error = ESP_ERR_INVALID_ARG;
+                    } else {
+                        sc2p_key_put(config, n, key);
+                    }
+                    continue;
+                }
+                if (n >= SOLAR_OS_SC2_RELAY_FALLBACK_MAX) {
+                    error = ESP_ERR_INVALID_ARG;
+                    break;
+                }
                 error = solar_os_sc2_relay_parse_url(argv[i], parsed);
                 if (error == ESP_OK) {
-                    solar_os_sc2_relay_endpoint_t *ep = &config->fallback[i - 1];
+                    solar_os_sc2_relay_endpoint_t *ep = &config->fallback[n++];
                     ep->tls = parsed->tls;
                     ep->port = parsed->port;
                     memcpy(ep->url, parsed->url, sizeof(ep->url));
                     memcpy(ep->pin, parsed->pin, sizeof(ep->pin));
                 }
             }
-            sc2p_config_free(parsed);
-        }
-    } else if ((argc == 1 || argc == 2) && strstr(argv[0], "://") != NULL) {
-        error = solar_os_sc2_relay_parse_url(argv[0], config);
-        if (error == ESP_OK && argc == 2) {
-            sc2p_wipe(config->admit, sizeof(config->admit));
-            if (!sc2p_copy(config->admit, sizeof(config->admit), argv[1], strlen(argv[1]))) {
+            if (error == ESP_OK && n == 0) {
                 error = ESP_ERR_INVALID_ARG;
             }
+            sc2p_config_free(parsed);
+        }
+    } else if (argc >= 1 && argc <= 3 && strstr(argv[0], "://") != NULL) {
+        /* a new primary URL: its key pin goes unless key= comes with it */
+        char old_url[SOLAR_OS_SC2_RELAY_URL_MAX];
+        memcpy(old_url, config->url, sizeof(old_url));
+        error = solar_os_sc2_relay_parse_url(argv[0], config);
+        bool admit_given = false, key_given = false;
+        for (int i = 1; error == ESP_OK && i < argc; i++) {
+            uint8_t key[SOLAR_OS_SC2_RELAY_KEY_LEN];
+            if (strncmp(argv[i], "key=", 4) == 0) {
+                if (key_given || !sc2p_key_arg(argv[i], key)) {
+                    error = ESP_ERR_INVALID_ARG;
+                } else {
+                    sc2p_key_put(config, 0, key);
+                    key_given = true;
+                }
+            } else if (admit_given) {
+                error = ESP_ERR_INVALID_ARG;
+            } else {
+                sc2p_wipe(config->admit, sizeof(config->admit));
+                admit_given = true;
+                if (!sc2p_copy(config->admit, sizeof(config->admit), argv[i], strlen(argv[i]))) {
+                    error = ESP_ERR_INVALID_ARG;
+                }
+            }
+        }
+        if (error == ESP_OK && !key_given && strcmp(old_url, config->url) != 0) {
+            sc2p_key_put(config, 0, NULL);
         }
     }
     const bool flags_changed =

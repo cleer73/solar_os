@@ -11,6 +11,12 @@
 #if SOLAR_OS_PACKAGE_SERVICE_SC2_PROVIDER
 #include "solar_os_sc2.h"
 #endif
+#if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
+#include <stdio.h>
+
+#include "sc2_codec.h"
+#include "solar_os_sc2_discover.h"
+#endif
 
 static const char * const messages_commands[] = {
     "status", "conversations", "list", "send", "read", "delete",
@@ -46,6 +52,87 @@ static void messages_usage(solar_os_shell_io_t *io)
 }
 
 static bool messages_parse_u32(const char *text, uint32_t *value);
+
+#if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
+/* messages add sc2 NAME DOMAIN [ADMIT] [key=B64]: the relay settings come
+ * from its signed HTTPS descriptor; its key is pinned in the profile. */
+#define MESSAGES_KEYARG_MAX (4u + 44u + 1u)
+static void messages_sc2_add_domain(solar_os_shell_io_t *io, const char *name, int argc, char **argv)
+{
+    const char *admit = NULL;
+    uint8_t expect[SC2_KEY_LEN];
+    bool have_expect = false;
+    for (int i = 1; i < argc; i++) {
+        size_t got = 0;
+        if (strncmp(argv[i], "key=", 4) == 0 && !have_expect &&
+            sc2_b64_decode(expect, sizeof(expect), &got, argv[i] + 4, strlen(argv[i] + 4)) == SC2_OK &&
+            got == sizeof(expect)) {
+            have_expect = true;
+        } else if (strncmp(argv[i], "key=", 4) != 0 && admit == NULL) {
+            admit = argv[i];
+        } else {
+            solar_os_shell_io_writeln(io, "messages: usage: messages add sc2 <name> <domain> [admit] [key=<base64>]");
+            return;
+        }
+    }
+    sc2_desc_t *d = solar_os_memory_alloc(sizeof(*d), SOLAR_OS_MEMORY_EXTERNAL_PREFERRED, "messages.sc2.desc");
+    if (d == NULL) {
+        solar_os_shell_io_printf(io, "messages: %s\n", solar_os_shell_error_text(ESP_ERR_NO_MEM));
+        return;
+    }
+    char why[112] = "";
+    solar_os_shell_io_printf(io, "messages: fetching https://%s/.well-known/solaros-relay\n", argv[0]);
+    esp_err_t error = solar_os_sc2_discover(argv[0], have_expect ? expect : NULL, d, why, sizeof(why));
+    if (error != ESP_OK) {
+        solar_os_shell_io_printf(io, "messages: refused: %s\n", why);
+        solar_os_memory_free(d);
+        return;
+    }
+    char url[128 + 6 + 72];
+    char keyarg[MESSAGES_KEYARG_MAX];
+    size_t kn = 0;
+    int un = snprintf(url, sizeof(url), "chats://%s:%u%s%s", d->host[0] != '\0' ? d->host : argv[0],
+                      (unsigned)d->port, d->pin[0] != '\0' ? "#pin=" : "", d->pin);
+    memcpy(keyarg, "key=", 4);
+    (void)sc2_b64_encode(keyarg + 4, sizeof(keyarg) - 4, &kn, d->key, SC2_KEY_LEN);
+    const char *settings[3] = {url, admit != NULL ? admit : keyarg, keyarg};
+    solar_os_messaging_provider_id_t id = 0;
+    error = un > 0 && (size_t)un < sizeof(url) ?
+        solar_os_messaging_instance_add("sc2", name, admit != NULL ? 3 : 2, settings, &id) : ESP_ERR_INVALID_SIZE;
+    if (error != ESP_OK) {
+        solar_os_shell_io_printf(io, "messages: %s\n", solar_os_shell_error_text(error));
+        solar_os_memory_free(d);
+        return;
+    }
+    solar_os_shell_io_printf(io, "messages: saved instance %s (%" PRIu32 "): relay %s at %s, key %s pinned\n", name,
+                             id, d->relay_id, url, keyarg + 4);
+    if (d->fallback_count > 0) {
+        /* "fallback URL key=B64 ..." from the signed list */
+        char (*keys)[MESSAGES_KEYARG_MAX] = solar_os_memory_alloc(
+            SC2_DESC_FALLBACK_MAX * MESSAGES_KEYARG_MAX, SOLAR_OS_MEMORY_EXTERNAL_PREFERRED, "messages.sc2.fb");
+        const char *fb[1 + 2 * SC2_DESC_FALLBACK_MAX];
+        int n = 0;
+        fb[n++] = "fallback";
+        for (size_t i = 0; keys != NULL && i < d->fallback_count; i++) {
+            memcpy(keys[i], "key=", 4);
+            (void)sc2_b64_encode(keys[i] + 4, MESSAGES_KEYARG_MAX - 4, &kn, d->fallback[i].key, SC2_KEY_LEN);
+            fb[n++] = d->fallback[i].url;
+            fb[n++] = keys[i];
+        }
+        error = keys != NULL ? solar_os_messaging_instance_configure(id, n, fb) : ESP_ERR_NO_MEM;
+        if (error == ESP_OK) {
+            for (size_t i = 0; i < d->fallback_count; i++) {
+                solar_os_shell_io_printf(io, "messages:   fallback %u: %s (key pinned)\n", (unsigned)(i + 1),
+                                         d->fallback[i].url);
+            }
+        } else {
+            solar_os_shell_io_printf(io, "messages: fallback list not saved: %s\n", solar_os_shell_error_text(error));
+        }
+        solar_os_memory_free(keys);
+    }
+    solar_os_memory_free(d);
+}
+#endif
 
 static bool messages_parse_provider(
     const char *text,
@@ -347,6 +434,14 @@ void solar_os_shell_cmd_messages(solar_os_context_t *ctx,
         while (solar_os_messaging_provider_next(&cursor, &status))
             solar_os_shell_io_table_printf(io, "%" PRIu32 " %s %s: %s, %s\n", cursor, status.class_name,
                 status.name, status.connected ? "connected" : status.running ? "running" : "stopped", status.detail);
+        return;
+    }
+    if (argc >= 5 && strcmp(argv[1], "add") == 0 && strcmp(argv[2], "sc2") == 0 && strstr(argv[4], "://") == NULL) {
+#if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
+        messages_sc2_add_domain(io, argv[3], argc - 4, argv + 4);
+#else
+        solar_os_shell_io_writeln(io, "messages: adding an sc2 relay by domain needs sc2-sync in this build");
+#endif
         return;
     }
     if (argc >= 4 && strcmp(argv[1], "add") == 0) {

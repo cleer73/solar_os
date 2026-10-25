@@ -35,6 +35,7 @@
 
 #include "sc2_commit.h"
 #include "sc2_frame.h"
+#include "sc2_relaykey.h"
 #include "solar_os_sc2_engine.h"
 
 #ifdef __cplusplus
@@ -94,7 +95,11 @@ typedef enum {
     SC2C_EV_CREATED,   /* private room created: conv = room, text = invite (sc2i:...) */
     SC2C_EV_CURSOR,    /* room cursor advanced: conv, seq (persist it if wanted) */
     SC2C_EV_NOTICE,    /* informational: code (relay error code or 0), text */
+    SC2C_EV_RELAY_KEY, /* pinned relay key rotated (signed by the old key): persist c->relay_key */
 } sc2c_event_type_t;
+
+/* NOTICE code when the relay key does not match the pin (login refused). */
+#define SC2C_NOTICE_RELAY_KEY 4901
 
 typedef struct {
     sc2c_event_type_t type;
@@ -177,6 +182,9 @@ typedef struct {
     char nick[SC2C_NICK_MAX + 1];
     char admit[65];
     char expect_relay[SC2_RELAY_ID_MAX + 1]; /* empty: accept any */
+    bool has_relay_key;                      /* pinned: welcome must prove this key */
+    uint8_t relay_key[SC2_KEY_LEN];
+    uint8_t hello_nonce[SC2_HELLO_NONCE_LEN];
     char relay_id[SC2_RELAY_ID_MAX + 1];
     char invite_url[SC2_INVITE_URL_MAX + 1];
     char self_hex[SC2_DEVICE_ID_HEX_LEN + 1];
@@ -209,6 +217,7 @@ typedef struct {
     const char *invite_url;   /* relay URL written into invites, or NULL */
     bool auto_admit;
     bool no_opks;             /* publish the signed prekey only (fallback relays) */
+    const uint8_t *relay_key; /* pinned relay key (32 bytes) or NULL */
 } sc2c_config_t;
 
 /* Allocate buffers and load the persisted outbox index. */

@@ -61,6 +61,7 @@ typedef struct {
     bool client_ok;
     bool auto_joined;
     bool rebuild;     /* relay switch pending: rebuild the client */
+    const char *key_refused; /* login refused: relay key differs from the pin */
     sc2rp_t rp;       /* relay in use, home relay, visits */
     uint32_t attempt;
     uint64_t retry_at;
@@ -258,8 +259,26 @@ static void h_event(void *ctx, const sc2c_event_t *ev)
         break;
     }
     case SC2C_EV_NOTICE:
+        if (ev->code == SC2C_NOTICE_RELAY_KEY) {
+            s.key_refused = ev->text; /* a string literal in the client */
+            SOLAR_OS_LOGE(TAG, "relay %u: %s", (unsigned)s.rp.relay, ev->text);
+            break;
+        }
         SOLAR_OS_LOGI(TAG, "relay notice %d: %s", ev->code, ev->text != NULL ? ev->text : "");
         break;
+    case SC2C_EV_RELAY_KEY: {
+        /* signed by the pinned key and proven by the relay: keep the new pin */
+        const size_t i = s.rp.relay;
+        uint8_t old[SOLAR_OS_SC2_RELAY_KEY_LEN];
+        if (solar_os_sc2_relay_key(s.cfg, i, old)) {
+            esp_err_t err = solar_os_sc2_relay_set_key(s.id, i, old, s.c->relay_key);
+            if (err == ESP_OK) {
+                memcpy(s.cfg->keys[i], s.c->relay_key, SOLAR_OS_SC2_RELAY_KEY_LEN); /* no reconnect for it */
+            }
+            SOLAR_OS_LOGW(TAG, "relay %u: %s%s", (unsigned)i, ev->text, err == ESP_OK ? "; pin updated" : "; saving failed");
+        }
+        break;
+    }
     default:
         break;
     }
@@ -402,7 +421,14 @@ static void pump_input(uint32_t wait_ms)
         }
         int rc = sc2c_feed(s.c, buf, (size_t)n);
         if (rc != SC2_OK) {
-            drop(ESP_FAIL, rc == SC2_ERR_AUTH ? "relay refused login" : "protocol error");
+            const char *why = rc == SC2_ERR_AUTH ? "relay refused login" : "protocol error";
+            esp_err_t err = ESP_FAIL;
+            if (rc == SC2_ERR_AUTH && s.key_refused != NULL) {
+                why = s.key_refused; /* hard fail; the pin stays as it is */
+                err = ESP_ERR_INVALID_RESPONSE;
+            }
+            s.key_refused = NULL;
+            drop(err, why);
             return;
         }
         if (esp_tls_get_bytes_avail(s.tls) <= 0) {
@@ -509,7 +535,8 @@ static bool same_link(const solar_os_sc2_relay_config_t *a, const solar_os_sc2_r
 {
     return a->enabled == b->enabled && a->tls == b->tls && a->port == b->port && strcmp(a->url, b->url) == 0 &&
            strcmp(a->pin, b->pin) == 0 && strcmp(a->admit, b->admit) == 0 &&
-           memcmp(a->fallback, b->fallback, sizeof(a->fallback)) == 0;
+           memcmp(a->fallback, b->fallback, sizeof(a->fallback)) == 0 && a->key_set == b->key_set &&
+           memcmp(a->keys, b->keys, sizeof(a->keys)) == 0;
 }
 
 /* (Re)build the client for relay s.rp.relay. Same store tag on every relay: the
@@ -535,6 +562,10 @@ static bool build_client(void)
         .admit = s.cfg->admit[0] != '\0' ? s.cfg->admit : NULL,
         .no_opks = s.rp.relay != 0,
     };
+    uint8_t key[SOLAR_OS_SC2_RELAY_KEY_LEN];
+    if (solar_os_sc2_relay_key(s.cfg, s.rp.relay, key)) {
+        cc.relay_key = key; /* the relay must prove this key at login */
+    }
     int rc = sc2c_init(s.c, &host, &cc);
     s.rebuild = false;
     if (rc != SC2_OK) {

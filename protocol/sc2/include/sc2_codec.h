@@ -16,7 +16,9 @@ extern "C" {
 
 /* Writes the encoding plus a NUL terminator; cap must be >= encoded + 1. */
 int sc2_b64_encode(char *out, size_t cap, size_t *out_len, const uint8_t *in, size_t len);
-/* Strict decode: padding required, no whitespace, unused bits must be zero. */
+/* Strict decode: padding required, no whitespace, unused bits must be zero.
+ * Decodes front to back, so out may alias in or start before it (in-place
+ * decoding into the same buffer is allowed). */
 int sc2_b64_decode(uint8_t *out, size_t cap, size_t *out_len, const char *in, size_t len);
 
 /* Lowercase hex with NUL terminator; cap must be >= 2 * len + 1. */

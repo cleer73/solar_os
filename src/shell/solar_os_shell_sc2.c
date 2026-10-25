@@ -22,7 +22,8 @@ static void sc2_usage(solar_os_shell_io_t *io)
 #if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
     solar_os_shell_io_writeln(io, "sc2 relay             relay connection (sc2-sync) status");
     solar_os_shell_io_writeln(io, "relay setup: messages add sc2 <name> chat://HOST:7777 | chats://HOST:7778[#pin=sha256/B64]");
-    solar_os_shell_io_writeln(io, "fallbacks:   messages configure <name> fallback <url> [<url> <url>] | fallback off");
+    solar_os_shell_io_writeln(io, "add:         messages add sc2 <name> <domain> [admit] [key=<b64>] (signed HTTPS descriptor)");
+    solar_os_shell_io_writeln(io, "fallbacks:   messages configure <name> fallback <url> [key=<b64>] [<url> ...] | fallback off");
     solar_os_shell_io_writeln(io, "peer: messages query <name> <peer>, then messages send <conv> <text>");
 #endif
 }

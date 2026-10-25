@@ -1281,7 +1281,7 @@ SC2_VENDOR_SRCS := $(addprefix $(SC2_ED_DIR)/,fe.c ge.c sc.c sha512.c) \
 	$(addprefix $(SC2_WG_DIR)/crypto/refc/,x25519.c chacha20.c chacha20poly1305.c poly1305-donna.c) \
 	$(SC2_WG_DIR)/crypto.c
 SC2_VENDOR_OBJS := $(addprefix sc2_vendor_,$(notdir $(SC2_VENDOR_SRCS:.c=.o)))
-SC2_TARGETS := sc2_crypto_test sc2_session_test sc2_frame_test
+SC2_TARGETS := sc2_crypto_test sc2_session_test sc2_frame_test sc2_relaykey_test
 # Optional: the same crypto/session tests on the mbedTLS hash backend
 # (SC2_USE_MBEDTLS=1), built against an mbedTLS 3.x source tree. Defaults to
 # the ESP-IDF copy that PlatformIO installs; set SC2_MBEDTLS_DIR= to skip.
@@ -1308,6 +1308,7 @@ sc2-test: $(SC2_TARGETS)
 	./sc2_crypto_test
 	./sc2_session_test
 	./sc2_frame_test
+	./sc2_relaykey_test
 
 sc2-mbedtls-test: $(SC2_MBEDTLS_TARGETS)
 	./sc2_crypto_mbedtls_test
@@ -1361,7 +1362,7 @@ sc2_provider_test: sc2_provider_test.c messaging_service_test.c $(SC2E_DIR)/sola
 		-ffunction-sections -fdata-sections \
 		-Imessaging_stubs -I. -I$(ROOT)/src -I$(ROOT)/src/services -I$(SC2_DIR)/include \
 		-I$(ROOT)/src/board -I$(ROOT)/src/drivers \
-		$< $(ROOT)/src/services/solar_os_messaging_types.c \
+		$< $(ROOT)/src/services/solar_os_messaging_types.c $(SC2_DIR)/src/sc2_codec.c \
 		$(ROOT)/src/services/solar_os_storage.c -Wl,--gc-sections \
 		-Wl,--wrap=solar_os_storage_is_mounted,--wrap=solar_os_storage_sd_is_mounted \
 		-Wl,--wrap=solar_os_storage_default_path,--wrap=solar_os_storage_mkdir \

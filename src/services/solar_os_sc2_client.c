@@ -1227,6 +1227,37 @@ static void on_login(sc2c_t *c)
     send_sync(c, -1);
 }
 
+/* Pinned relay key: the welcome must be signed over our nonce by the key it
+ * presents, and that key must be the pin, or a rotation from the pin signed
+ * by it. A mismatch never changes the pin. */
+static int check_relay_key(sc2c_t *c, const sc2_welcome_t *w)
+{
+    if (!w->has_relay_key || !w->has_relay_sig) {
+        notice(c, SC2C_NOTICE_RELAY_KEY, "relay key pinned but the relay did not prove it (relay too old?)");
+        return SC2_ERR_AUTH;
+    }
+    if (sc2_welcome_verify(w->relay_sig, w->relay_key, w->relay_id, c->hello_nonce, w->challenge) != SC2_OK) {
+        notice(c, SC2C_NOTICE_RELAY_KEY, "relay key proof does not verify");
+        return SC2_ERR_AUTH;
+    }
+    if (sc2_ct_eq(w->relay_key, c->relay_key, SC2_KEY_LEN)) {
+        return SC2_OK;
+    }
+    if (w->has_rotation && sc2_ct_eq(w->rotation_from, c->relay_key, SC2_KEY_LEN) &&
+        sc2_rotation_verify(w->rotation_sig, c->relay_key, w->relay_id, w->relay_key) == SC2_OK) {
+        memcpy(c->relay_key, w->relay_key, SC2_KEY_LEN);
+        sc2c_event_t ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = SC2C_EV_RELAY_KEY;
+        ev.text = "relay key rotated, signed by the pinned key";
+        emit(c, &ev);
+        return SC2_OK;
+    }
+    notice(c, SC2C_NOTICE_RELAY_KEY,
+           "relay key differs from the pinned key; refusing (the pin is not changed: re-add the relay to accept it)");
+    return SC2_ERR_AUTH;
+}
+
 static int on_welcome(sc2c_t *c, const char *line, size_t len)
 {
     sc2_welcome_t w;
@@ -1239,6 +1270,12 @@ static int on_welcome(sc2c_t *c, const char *line, size_t len)
     if (c->expect_relay[0] != '\0' && strcmp(c->expect_relay, w.relay_id) != 0) {
         notice(c, 0, "relay id differs from the configured one");
         return SC2_ERR_AUTH;
+    }
+    if (c->has_relay_key) {
+        rc = check_relay_key(c, &w);
+        if (rc != SC2_OK) {
+            return rc;
+        }
     }
     memcpy(c->relay_id, w.relay_id, sizeof(c->relay_id));
     sc2e_t *e = lock(c);
@@ -1362,6 +1399,10 @@ int sc2c_init(sc2c_t *c, const sc2c_host_t *host, const sc2c_config_t *cfg)
     }
     c->auto_admit = cfg->auto_admit;
     c->no_opks = cfg->no_opks;
+    if (cfg->relay_key != NULL) {
+        memcpy(c->relay_key, cfg->relay_key, SC2_KEY_LEN);
+        c->has_relay_key = true;
+    }
     c->pub_max = 1024;
     c->rx = host->alloc(host->ctx, sizeof(sc2_lines_t));
     c->tx = host->alloc(host->ctx, SC2C_TX_MAX);
@@ -1425,7 +1466,14 @@ int sc2c_on_connected(sc2c_t *c)
     sc2_lines_init(c->rx);
     c->state = SC2C_HELLO; /* set directly: send_frame refuses OFFLINE */
     c->last_rx_ms = now_ms(c);
-    int rc = sc2_frame_hello(c->tx, SC2C_TX_MAX, &n, "solaros-sc2-sync/1", c->admit[0] != '\0' ? c->admit : NULL);
+    /* A fresh nonce on every connection: the relay signs it with its key. */
+    sc2e_t *e = lock(c);
+    int rc = sc2_random(&e->pf.rng, c->hello_nonce, sizeof(c->hello_nonce));
+    unlock(c);
+    if (rc == SC2_OK) {
+        rc = sc2_frame_hello(c->tx, SC2C_TX_MAX, &n, "solaros-sc2-sync/1", c->admit[0] != '\0' ? c->admit : NULL,
+                             c->hello_nonce);
+    }
     if (rc == SC2_OK) {
         rc = send_frame(c, c->tx, n);
     }

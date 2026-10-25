@@ -38,7 +38,7 @@ MeshCore settings are `messages add meshcore NAME radio RADIO PROFILE` or
 | `irc` | `HOST PORT NICK` | `irc-sync` |
 | `meshcore` | `radio RADIO PROFILE` or `ble ADDRESS TYPE [PIN]` | `meshcore` or `meshcore-ble` |
 | `link` | `TRANSPORT` | Its `radio-link` or `espnow-link` transport with `chat=on` |
-| `sc2` | `chats://HOST:PORT[#pin=sha256/B64] [ADMIT]` or `chat://HOST:PORT [ADMIT]` | `sc2-sync` (started automatically) |
+| `sc2` | `DOMAIN [ADMIT] [key=B64]`, or `chats://HOST:PORT[#pin=sha256/B64] [ADMIT] [key=B64]` or `chat://HOST:PORT [ADMIT] [key=B64]` | `sc2-sync` (started automatically) |
 
 New instances start disabled. Use `messages connect NAME` and start the worker.
 `sc2` instances are the exception: they are created enabled, and enabling one
@@ -140,6 +140,26 @@ The device ID is a hash of the peer's identity key, so a peer cannot change its
 key under a verified ID. Public sc2 rooms are labelled `(public)`; the first
 time one is opened in Chat (or joined with `messages join`) a notice explains
 that posts are signed and non-deniable. It is shown once per room.
+
+Adding a relay by domain: `messages add sc2 NAME DOMAIN [ADMIT] [key=B64]`
+fetches `https://DOMAIN/.well-known/solaros-relay`. The connection must
+verify against the CA bundle and the host name; there is no plain-HTTP,
+unverified or pin-on-first-use fallback, and a failure stops with
+`messages: refused: ...`. The relay's signed descriptor gives the
+`chats://` endpoint (port, optional pin) and up to three fallback relays,
+each with its key. The descriptor must verify against the relay key it
+names. With `key=B64` (the `relay_key` from the operator) that key must
+match as well. The relay key and the fallback keys are pinned in the
+instance. At every login the relay must sign a fresh nonce with its pinned
+key. A different key is a hard failure: `sc2 relay` shows "relay key
+differs from the pinned key", and the pin is never changed by itself. The
+one exception is a rotation signed by the pinned key, which the relay
+announces at login (one step). To accept a new relay key otherwise, remove
+the instance and add it again. `messages configure NAME key B64|off` sets
+or clears the primary's pin, `URL key=B64` sets it together with a new URL
+(a new URL without `key=` drops the pin), and fallback keys go after each
+fallback URL: `fallback URL key=B64 URL key=B64`. The fetch uses one
+1.6 KiB buffer while it runs.
 
 Fallback relays: `messages configure NAME fallback URL [URL URL]` gives an
 `sc2` instance up to three fallback relays (same URL forms as the primary,

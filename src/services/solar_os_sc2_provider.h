@@ -17,8 +17,10 @@
 #include "esp_err.h"
 #include "solar_os_messaging.h"
 
-/* 2: fallback relays appended (version 1 profiles load with none). */
-#define SOLAR_OS_SC2_RELAY_CONFIG_VERSION 2U
+/* 2: fallback relays appended; 3: pinned relay keys appended. Older
+ * profiles load with no fallbacks / no pinned keys. */
+#define SOLAR_OS_SC2_RELAY_CONFIG_VERSION 3U
+#define SOLAR_OS_SC2_RELAY_KEY_LEN 32U
 #define SOLAR_OS_SC2_RELAY_URL_MAX 128U
 #define SOLAR_OS_SC2_RELAY_PIN_MAX 72U      /* "sha256/" + base64 of 32 bytes */
 #define SOLAR_OS_SC2_RELAY_ADMIT_MAX 64U
@@ -47,7 +49,22 @@ typedef struct {
     /* Version 2. Same identity, admission code and rooms on every relay;
      * sc2-sync uses one relay at a time (see doc/manual/messaging.md). */
     solar_os_sc2_relay_endpoint_t fallback[SOLAR_OS_SC2_RELAY_FALLBACK_MAX];
+    /* Version 3. Relay i's long-term key is pinned when bit i of key_set is
+     * set (0 the primary, 1.. the fallbacks): the relay must prove it at
+     * every login, and only a rotation signed by the pinned key replaces it. */
+    uint8_t key_set;
+    uint8_t keys[1U + SOLAR_OS_SC2_RELAY_FALLBACK_MAX][SOLAR_OS_SC2_RELAY_KEY_LEN];
 } solar_os_sc2_relay_config_t;
+
+/* Pinned key of relay i (0 primary, 1.. fallbacks); false when none. */
+bool solar_os_sc2_relay_key(const solar_os_sc2_relay_config_t *config, size_t i,
+                            uint8_t out[SOLAR_OS_SC2_RELAY_KEY_LEN]);
+
+/* Replace the pinned key of relay i after a rotation the relay proved
+ * (signed by the old pin). Saves the profile. */
+esp_err_t solar_os_sc2_relay_set_key(solar_os_messaging_provider_id_t id, size_t i,
+                                     const uint8_t old_key[SOLAR_OS_SC2_RELAY_KEY_LEN],
+                                     const uint8_t new_key[SOLAR_OS_SC2_RELAY_KEY_LEN]);
 
 /* Relay i of a config: 0 the primary, 1.. the set fallbacks. Returns the
  * relay count (>= 1 for a valid config); out may be NULL. */

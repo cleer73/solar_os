@@ -250,7 +250,7 @@ static void expect_line(const char *got, size_t n, const char *want, const char 
 static void test_handshake(void)
 {
     size_t n;
-    CHECK_RC(sc2_frame_hello(g_out, sizeof(g_out), &n, "solaros/1.x", "code-42"), SC2_OK);
+    CHECK_RC(sc2_frame_hello(g_out, sizeof(g_out), &n, "solaros/1.x", "code-42", NULL), SC2_OK);
     expect_line(g_out, n, SC2V_FRAME_HELLO, "hello");
     uint8_t ik[32], sig[64], ch[32], rk[32];
     sc2t_hexn(ik, 32, SC2V_ID_IK_PUB);

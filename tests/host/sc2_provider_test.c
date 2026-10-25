@@ -279,6 +279,77 @@ static void test_fallbacks(void)
     assert(solar_os_messaging_instance_remove(id) == ESP_OK);
 }
 
+/* Pinned relay keys (profile v3): key= on add, configure key, fallback
+ * keys, URL change drops the pin, set_key only replaces the expected pin,
+ * version 2 profiles load without pins. */
+#define KEY_A "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+#define KEY_B "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA="
+static void test_relay_keys(void)
+{
+    solar_os_messaging_provider_id_t id = 0;
+    uint8_t k[32], a[32], b[32];
+    memset(a, 0, sizeof(a));
+    size_t got = 0;
+    assert(sc2_b64_decode(b, 32, &got, KEY_B, strlen(KEY_B)) == SC2_OK && got == 32);
+    const char *bad_key[] = {"chats://k.example:7778", "key=short"};
+    assert(solar_os_messaging_instance_add("sc2", "keyed", 2, bad_key, &id) != ESP_OK);
+    const char *two_keys[] = {"chats://k.example:7778", "key=" KEY_A, "key=" KEY_B};
+    assert(solar_os_messaging_instance_add("sc2", "keyed", 3, two_keys, &id) != ESP_OK);
+    const char *add[] = {"chats://k.example:7778", "code-1", "key=" KEY_A};
+    assert(solar_os_messaging_instance_add("sc2", "keyed", 3, add, &id) == ESP_OK);
+    solar_os_sc2_relay_config_t config;
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
+    assert(!strcmp(config.admit, "code-1") && solar_os_sc2_relay_key(&config, 0, k) && !memcmp(k, a, 32));
+    assert(!solar_os_sc2_relay_key(&config, 1, k));
+
+    const char *fb[] = {"fallback", "chats://f1.example:1", "key=" KEY_B, "chats://f2.example:2"};
+    assert(solar_os_messaging_instance_configure(id, 4, fb) == ESP_OK);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
+    assert(solar_os_sc2_relay_key(&config, 1, k) && !memcmp(k, b, 32) && !solar_os_sc2_relay_key(&config, 2, k));
+    const char *fb_bad[] = {"fallback", "key=" KEY_B, "chats://f1.example:1"};
+    assert(solar_os_messaging_instance_configure(id, 3, fb_bad) != ESP_OK);
+    const char *fb_twice[] = {"fallback", "chats://f1.example:1", "key=" KEY_B, "key=" KEY_A};
+    assert(solar_os_messaging_instance_configure(id, 4, fb_twice) != ESP_OK);
+
+    /* rotation: only from the pin it replaces */
+    assert(solar_os_sc2_relay_set_key(id, 0, b, b) == ESP_ERR_INVALID_STATE);
+    assert(solar_os_sc2_relay_set_key(id, 2, a, b) == ESP_ERR_INVALID_STATE); /* no pin there */
+    assert(solar_os_sc2_relay_set_key(id, 0, a, b) == ESP_OK);
+    restart_provider();
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
+    assert(solar_os_sc2_relay_key(&config, 0, k) && !memcmp(k, b, 32));
+
+    const char *off[] = {"key", "off"};
+    assert(solar_os_messaging_instance_configure(id, 2, off) == ESP_OK);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && !solar_os_sc2_relay_key(&config, 0, NULL));
+    const char *on[] = {"key", KEY_A};
+    assert(solar_os_messaging_instance_configure(id, 2, on) == ESP_OK);
+    /* same URL again keeps the pin; a new URL drops it unless key= comes along */
+    const char *same[] = {"chats://k.example:7778"};
+    assert(solar_os_messaging_instance_configure(id, 1, same) == ESP_OK);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && solar_os_sc2_relay_key(&config, 0, NULL));
+    const char *moved[] = {"chats://moved.example:7778"};
+    assert(solar_os_messaging_instance_configure(id, 1, moved) == ESP_OK);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && !solar_os_sc2_relay_key(&config, 0, NULL));
+    const char *moved_key[] = {"chats://k.example:7778", "key=" KEY_B};
+    assert(solar_os_messaging_instance_configure(id, 2, moved_key) == ESP_OK);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && solar_os_sc2_relay_key(&config, 0, k) &&
+           !memcmp(k, b, 32) && !strcmp(config.admit, "code-1"));
+    const char *fb_off[] = {"fallback", "off"};
+    assert(solar_os_messaging_instance_configure(id, 2, fb_off) == ESP_OK);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && config.key_set == 1u);
+
+    /* a version 2 profile (no pins) loads as version 3 without pins */
+    config.version = 2;
+    assert(solar_os_messaging_profile_save(id, &config, offsetof(solar_os_sc2_relay_config_t, key_set)) == ESP_OK);
+    restart_provider();
+    memset(&config, 0xff, sizeof(config));
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
+    assert(config.version == SOLAR_OS_SC2_RELAY_CONFIG_VERSION && config.key_set == 0 &&
+           !strcmp(config.url, "chats://k.example:7778"));
+    assert(solar_os_messaging_instance_remove(id) == ESP_OK);
+}
+
 static int remove_entry(const char *path, const struct stat *sb, int flag, struct FTW *ftw)
 {
     (void)sb; (void)flag; (void)ftw;
@@ -291,7 +362,8 @@ int main(void)
     test_parsing();
     test_registry();
     test_fallbacks();
+    test_relay_keys();
     assert(nftw(test_root, remove_entry, 16, FTW_DEPTH | FTW_PHYS) == 0);
-    puts("sc2_provider_test: parsing, registry, flags, fallbacks, persistence and removal OK");
+    puts("sc2_provider_test: parsing, registry, flags, fallbacks, relay keys, persistence and removal OK");
     return 0;
 }

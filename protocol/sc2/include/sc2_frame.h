@@ -51,7 +51,10 @@ int sc2_frame_peek(const char *line, size_t len, sc2_json_val_t *root, char type
                    char rid[SC2_RID_MAX + 1]);
 
 /* ---- Handshake ---- */
-int sc2_frame_hello(char *out, size_t cap, size_t *out_len, const char *client, const char *admit);
+/* nonce (16 bytes, may be NULL) asks the relay to sign the welcome with its
+ * key (sc2_relaykey.h). */
+int sc2_frame_hello(char *out, size_t cap, size_t *out_len, const char *client, const char *admit,
+                    const uint8_t *nonce);
 
 typedef struct {
     uint32_t suite;
@@ -62,6 +65,11 @@ typedef struct {
     bool legacy_v1;
     uint32_t limit_line;
     uint32_t limit_msg;
+    bool has_relay_sig;                 /* "relay_sig": answer to the hello nonce */
+    uint8_t relay_sig[SC2_SIG_LEN];
+    bool has_rotation;                  /* "rotation": {"from", "sig"} */
+    uint8_t rotation_from[SC2_KEY_LEN];
+    uint8_t rotation_sig[SC2_SIG_LEN];
 } sc2_welcome_t;
 
 int sc2_frame_welcome_decode(const char *line, size_t len, sc2_welcome_t *out);

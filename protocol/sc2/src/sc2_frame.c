@@ -188,7 +188,8 @@ int sc2_frame_peek(const char *line, size_t len, sc2_json_val_t *root, char type
 
 /* ---------------- handshake ---------------- */
 
-int sc2_frame_hello(char *out, size_t cap, size_t *out_len, const char *client, const char *admit)
+int sc2_frame_hello(char *out, size_t cap, size_t *out_len, const char *client, const char *admit,
+                    const uint8_t *nonce)
 {
     sc2_jw_t w;
     sc2_jw_init(&w, out, cap);
@@ -210,6 +211,10 @@ int sc2_frame_hello(char *out, size_t cap, size_t *out_len, const char *client, 
     if (admit) {
         sc2_jw_key(&w, "admit");
         sc2_jw_cstring(&w, admit);
+    }
+    if (nonce) {
+        sc2_jw_key(&w, "nonce");
+        sc2_jw_b64(&w, nonce, 16u);
     }
     sc2_jw_object_end(&w);
     return sc2_jw_finish(&w, out_len);
@@ -273,6 +278,26 @@ int sc2_frame_welcome_decode(const char *line, size_t len, sc2_welcome_t *out)
         if (rc != SC2_OK) {
             return rc;
         }
+    } else if (rc != SC2_ERR_NOT_FOUND) {
+        return rc;
+    }
+    rc = sc2_json_get_b64_exact(&root, "relay_sig", out->relay_sig, SC2_SIG_LEN);
+    if (rc == SC2_OK) {
+        out->has_relay_sig = true;
+    } else if (rc != SC2_ERR_NOT_FOUND) {
+        return rc;
+    }
+    sc2_json_val_t rot;
+    rc = get_obj(&root, "rotation", &rot);
+    if (rc == SC2_OK) {
+        rc = req(sc2_json_get_b64_exact(&rot, "from", out->rotation_from, SC2_KEY_LEN));
+        if (rc == SC2_OK) {
+            rc = req(sc2_json_get_b64_exact(&rot, "sig", out->rotation_sig, SC2_SIG_LEN));
+        }
+        if (rc != SC2_OK) {
+            return rc;
+        }
+        out->has_rotation = true;
     } else if (rc != SC2_ERR_NOT_FOUND) {
         return rc;
     }
