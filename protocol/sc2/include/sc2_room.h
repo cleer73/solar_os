@@ -48,7 +48,7 @@ int sc2_room_seal(uint8_t *ct, size_t ct_cap, size_t *ct_len, uint8_t sig[SC2_SI
                   const uint8_t hdr[SC2_ROOM_HDR_LEN], const uint8_t *pt, size_t pt_len,
                   const uint8_t ik_seed[SC2_KEY_LEN]);
 
-/* Verify the signature first, then open and unpad. */
+/* Verify the signature first, then open and unpad. pt may equal ct. */
 int sc2_room_open(uint8_t *pt, size_t pt_cap, size_t *pt_len, const uint8_t mk[SC2_KEY_LEN],
                   const uint8_t nonce[SC2_NONCE_LEN], const uint8_t hdr[SC2_ROOM_HDR_LEN], const uint8_t *ct,
                   size_t ct_len, const uint8_t sig[SC2_SIG_LEN], const uint8_t ik_pub[SC2_KEY_LEN]);

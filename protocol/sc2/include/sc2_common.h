@@ -24,6 +24,14 @@ extern "C" {
 #define SC2_ROOM_ID_LEN 16u
 #define SC2_MSG_ID_LEN 8u
 
+/* Memory profile. SC2_LOW_RAM=1 trades a few local limits for less RAM on
+ * devices without PSRAM; it never changes the wire format.
+ * The core includes no SDK headers, so the build decides: the SolarOS
+ * firmware (src/CMakeLists.txt) sets it when CONFIG_SPIRAM is off. Default 0. */
+#ifndef SC2_LOW_RAM
+#define SC2_LOW_RAM 0
+#endif
+
 /* Error codes. Every function that can fail returns SC2_OK or one of these. */
 enum {
     SC2_OK = 0,

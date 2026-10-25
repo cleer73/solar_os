@@ -425,6 +425,10 @@ fail:
     return rc;
 }
 
+#if SC2_RATCHET_MAX_STORED < 1u || SC2_RATCHET_MAX_STORED > 255u
+#error "SC2_RATCHET_MAX_STORED must be 1..255"
+#endif
+
 #define BLOB_BASE (4u + 1u + 1u + SC2_AD_LEN + 2u * SC2_DEVICE_ID_LEN + 6u * SC2_KEY_LEN + 12u + SC2_KEY_LEN + 8u + 1u)
 #define BLOB_ENTRY (SC2_KEY_LEN + 4u + SC2_KEY_LEN + 8u)
 
@@ -497,7 +501,7 @@ int sc2_ratchet_deserialize(sc2_ratchet_t *st, const uint8_t *in, size_t len)
         return SC2_ERR_FORMAT;
     }
     size_t count = in[BLOB_BASE - 1u];
-    if (count > SC2_RATCHET_MAX_STORED || len != BLOB_BASE + count * BLOB_ENTRY + 4u) {
+    if (len != BLOB_BASE + count * BLOB_ENTRY + 4u) {
         return SC2_ERR_FORMAT;
     }
     if (sc2_crc32(0, in, len - 4u) != sc2_load_be32(in + len - 4u)) {
@@ -537,7 +541,11 @@ int sc2_ratchet_deserialize(sc2_ratchet_t *st, const uint8_t *in, size_t len)
     GET32(s->x3dh.spk_id);
     GET32(s->x3dh.opk_id);
     o++; /* count */
-    for (size_t i = 0; i < count; i++) {
+    /* Entries are stored oldest first; keep the newest that fit (a build
+     * with a smaller SC2_RATCHET_MAX_STORED reading an older blob). */
+    size_t drop = count > SC2_RATCHET_MAX_STORED ? count - SC2_RATCHET_MAX_STORED : 0u;
+    o += drop * BLOB_ENTRY;
+    for (size_t i = 0; i < count - drop; i++) {
         sc2_skipped_key_t *e = &s->skipped[i];
         GET(e->dh, SC2_KEY_LEN);
         GET32(e->n);

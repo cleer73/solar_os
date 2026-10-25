@@ -24,7 +24,16 @@ extern "C" {
 #endif
 
 #define SC2_RATCHET_MAX_SKIP 32u
+/* Stored skipped keys per session: 80 bytes each in RAM. A local limit
+ * (oldest evicted first), not part of the wire format; a blob written with
+ * more entries loads with the oldest ones dropped. At most 255. */
+#ifndef SC2_RATCHET_MAX_STORED
+#if SC2_LOW_RAM
+#define SC2_RATCHET_MAX_STORED 8u
+#else
 #define SC2_RATCHET_MAX_STORED 32u
+#endif
+#endif
 #define SC2_RATCHET_SKIP_TTL (7u * 24u * 3600u)
 #define SC2_DM_HDR_BASE_LEN 78u
 #define SC2_DM_HDR_MAX_LEN (SC2_DM_HDR_BASE_LEN + 40u)
@@ -96,8 +105,10 @@ int sc2_ratchet_encrypt(sc2_ratchet_t *st, sc2_dm_header_t *hdr, uint8_t nonce[S
 
 /* Opens a message. work is caller-provided scratch of the same type (the
  * update is computed there and copied into st only on success). pt needs
- * ct_len - 16 bytes; *pt_len is the unpadded length. RNG order (only on a
- * DH ratchet step): new ratchet key (32). */
+ * ct_len - 16 bytes; *pt_len is the unpadded length. pt may equal ct (in
+ * place): the tag is checked before anything is written, so ct is intact
+ * after an SC2_ERR_AUTH and can be retried with another state. RNG order
+ * (only on a DH ratchet step): new ratchet key (32). */
 int sc2_ratchet_decrypt(sc2_ratchet_t *st, sc2_ratchet_t *work, const sc2_dm_header_t *hdr,
                         const uint8_t nonce[SC2_NONCE_LEN], const uint8_t *ct, size_t ct_len, uint8_t *pt,
                         size_t pt_cap, size_t *pt_len, uint64_t now, const sc2_rng_t *rng);

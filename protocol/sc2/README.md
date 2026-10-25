@@ -23,7 +23,9 @@ covers the C API and the byte layouts that the code fixes.
 | `sc2_room.h` | sender-key room chains, room header, seal/open/verify |
 | `sc2_safety.h` | safety numbers: 6×4 digits, 8 BIP-39 words, 60-digit full form, own fingerprint |
 | `sc2_json.h` | bounded JSON reader (depth 8, strict UTF-8, duplicate keys rejected on lookup) and writer (byte-identical to Python `json.dumps(separators=(",", ":"), ensure_ascii=False)`) |
-| `sc2_frame.h` | line assembler (16384-byte lines), `hello`/`welcome`/`auth`, `dm.send`/`dm.msg`, `room.send`/`room.msg`, public posts (`room.post`/`room.pub`) with signed bytes |
+| `sc2_frame.h` | line assembler (16384-byte lines), `hello`/`welcome`/`auth`, `dm.send`/`dm.msg`, `room.send`/`room.msg`, public posts (`room.post`/`room.pub`) with signed bytes, private `room.create`, `room.commit` (both directions), `room.invite`, `room.join` with a proof, `room.mod` decode |
+| `sc2_commit.h` | private-room commits (130-byte record, sign/verify, commit ID), the roster (`sc2_roster_t`: make, check, apply, roster hash), invite key/proof and the invite code (binary and `sc2i:` text) |
+| `sc2_mod.h` | relay-signed moderation record (122 bytes: remove/ban/unban), encode/decode/sign/verify |
 | `sc2.h` | umbrella header |
 
 Every function returns `SC2_OK` (0) or a negative `SC2_ERR_*`. Secrets on the
@@ -59,6 +61,9 @@ stack are wiped with `sc2_memzero`.
 | room header H | `"SC2R" ‖ u8 suite ‖ room[16] ‖ u32 epoch ‖ from[16] ‖ u32 n` (45 bytes) |
 | room message | ct = XChaCha(mk, nonce, pad(pt), AAD = H); sig = Ed25519(IK, `"SC2-ROOM\x01" ‖ H ‖ nonce ‖ ct`) |
 | public post | Ed25519(IK, `"SC2-PUB\x01" ‖ u8 suite ‖ u8 len ‖ relay_id ‖ u8 len ‖ room ‖ ik[32] ‖ id[8] ‖ u64 ts ‖ u8 t (1 text, 2 del) ‖ u8 len ‖ name ‖ u16 len ‖ body ‖ ref[8]`), ref all-zero when absent |
+| commit | `"SC2-COMMIT\x01" ‖ u8 suite ‖ room[16] ‖ u32 epoch ‖ prev[32] ‖ by[16] ‖ u8 op ‖ target[16] ‖ u8 count ‖ roster_hash[32]` (130 bytes); op 1 create, 2 add, 3 remove, 4 promote, 5 demote, 6 rotate; commit ID = SHA-256(record); sig = Ed25519(IK_by, record); roster_hash = SHA-256 over sorted `device[16] ‖ u8 role` (1 admin) |
+| moderation | `"SC2-MOD\x01" ‖ u8 suite ‖ u8 action (1 remove, 2 ban, 3 unban) ‖ room[64] (UTF-8, zero padded) ‖ u64 seq ‖ u64 ts ‖ ref[8] ‖ device[16] ‖ u64 until` (122 bytes), signed by the relay key |
+| invite | key = HMAC(secret[16], `"SC2-INVITE\x01" ‖ room[16]`); proof = HMAC(key, `"SC2-JOIN\x01" ‖ joiner[16]`); code = `"SC2I" ‖ u8 1 ‖ room[16] ‖ secret[16] ‖ admin_id[16] ‖ admin_ik[32] ‖ u8 url_len ‖ url` (86..286 bytes), text `sc2i:` + base64 |
 | safety | h = SHA-256(`"SC2-SAFETY\x01"` ‖ min(IK_A, IK_B) ‖ max(IK_A, IK_B)); short = six groups of (u40 from h[5i..5i+4]) mod 10⁴; words = first 88 bits as eight 11-bit BIP-39 indices; full = HKDF-Expand(h, `"SC2-SAFETY-FULL\x01"`, 60) as twelve groups of u40 mod 10⁵; own fingerprint = short form of SHA-256(IK) |
 
 ### Ratchet state blob (version 1)
@@ -79,16 +84,48 @@ or in protected storage (the firmware keeps it under `/.sc2/`).
   until its first successful decrypt.
 - At most 32 skipped keys per gap (`SC2_ERR_SKIP` above that) and 32 stored
   in total (oldest evicted first). Stored keys expire after 7 days of `now`.
-- `sc2_ratchet_decrypt` works on a caller-supplied `work` state (about 2.9 KB;
-  keep it static or in PSRAM, not on a small task stack) and commits only on
-  success. A failed decrypt changes nothing. A replay gives `SC2_ERR_REPLAY`.
+- `sc2_ratchet_decrypt` works on a caller-supplied `work` state (about 2.9 KB,
+  1 KB in the low-RAM profile; keep it static or in PSRAM, not on a small task
+  stack) and commits only on success. A failed decrypt changes nothing. A
+  replay gives `SC2_ERR_REPLAY`. Decrypt may run in place (`pt == ct`): the
+  tag is checked before anything is decrypted.
 - RNG draws, in order: identity 64 (IK seed, DK), SPK 32, OPK 32, X3DH EK 32,
   initiator ratchet key 32, each encrypt 24 (nonce), each DH step on decrypt 32.
+
+## Commit rules (`sc2_roster_check` / `sc2_roster_apply`)
+
+One change per commit. A commit applies only if the room matches, `epoch` is
+the roster's epoch + 1 and `prev` its head, `by` is an admin (for create: the
+creator, on an empty roster), the op fits the roster (add a non-member;
+remove, promote or demote a member; promote a non-admin, demote an admin;
+never remove or demote the last admin) and `count`/`roster_hash` match the
+result. Verify the signature first (`sc2_commit_verify` with the IK whose
+device ID is `by`). On any error the roster is left untouched.
+`sc2_roster_t` is about 600 bytes (32 entries); every function works on
+fixed buffers with stack frames of at most 336 bytes (xtensa, `-O2`).
+
+## Low-RAM profile (no PSRAM)
+
+`SC2_LOW_RAM=1` (default 0) is set by the SolarOS firmware build when
+`CONFIG_SPIRAM` is off (`src/CMakeLists.txt`); the core itself includes no SDK
+headers. Other builds pass `-DSC2_LOW_RAM=1`.
+It only changes local limits, never the wire:
+
+| | default | low-RAM |
+| --- | ---: | ---: |
+| stored skipped keys per session (`SC2_RATCHET_MAX_STORED`) | 32 | 8 |
+| `sc2_ratchet_t` | 2,904 B | 984 B |
+| engine work memory, worst operation (`SC2E_WORK_BUDGET`) | 20.5 KiB | 16.5 KiB |
+
+A state blob saved with more stored keys than the build allows loads and
+keeps the newest ones.
 
 ## Build and test
 
 Host tests live in `tests/host` (`sc2_crypto_test`, `sc2_session_test`,
-`sc2_frame_test`) and use the vectors in `vectors/sc2_vectors.inc`:
+`sc2_frame_test`, `sc2_admin_test`, plus `sc2_engine_test` and its
+`sc2_engine_lowram_test` build) and use the vectors in
+`vectors/sc2_vectors.inc`:
 
 ```sh
 make -C tests/host sc2-test          # also part of `make -C tests/host test`

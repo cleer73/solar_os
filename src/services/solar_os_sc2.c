@@ -194,22 +194,52 @@ static void slot_path(char *out, size_t cap, const char *name, char slot)
     snprintf(out, cap, "%s/%s.%c", s_sc2.base, name, slot);
 }
 
-/* Read one slot; returns its generation (0 when missing or invalid). */
-static uint64_t slot_read(const char *name, char slot, uint8_t *file, size_t *len)
+/* Generation of one slot from its 12-byte header (0 when missing or
+ * invalid). Only the header is read. */
+static uint64_t slot_gen(const char *name, char slot)
 {
     char path[SC2_PATH_MAX];
+    uint8_t hdr[SC2_SLOT_HEADER];
     size_t n = 0;
     slot_path(path, sizeof(path), name, slot);
-    if (solar_os_storage_read_file(path, file, SC2_FILE_MAX, &n) != ESP_OK || n <= SC2_SLOT_HEADER ||
-        n >= SC2_FILE_MAX) {
+    if (solar_os_storage_read_file(path, hdr, sizeof(hdr), &n) != ESP_OK || n != sizeof(hdr)) {
         return 0;
     }
-    uint64_t gen = sc2_load_be64(file);
-    if (sc2_crc32(0, file, 8) != sc2_load_be32(file + 8)) {
+    if (sc2_crc32(0, hdr, 8) != sc2_load_be32(hdr + 8)) {
         return 0;
     }
-    *len = n;
-    return gen;
+    return sc2_load_be64(hdr);
+}
+
+/* Read the record of one slot (everything after the header) straight into
+ * buf, so loading needs no buffer of its own. SC2_ERR_BOUNDS when it does
+ * not fit in cap, SC2_ERR_FORMAT when the slot is short or unreadable. */
+static int slot_payload(const char *name, char slot, uint64_t gen, uint8_t *buf, size_t cap, size_t *len)
+{
+    char path[SC2_PATH_MAX];
+    uint8_t hdr[SC2_SLOT_HEADER];
+    slot_path(path, sizeof(path), name, slot);
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) {
+        return SC2_ERR_FORMAT;
+    }
+    int rc = SC2_OK;
+    size_t n = 0;
+    if (fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr) || sc2_load_be64(hdr) != gen) {
+        rc = SC2_ERR_FORMAT;
+    } else {
+        n = fread(buf, 1, cap, f);
+        if (ferror(f)) {
+            rc = SC2_ERR_FORMAT;
+        } else if (n == cap && fgetc(f) != EOF) {
+            rc = SC2_ERR_BOUNDS;
+        } else if (n == 0) {
+            rc = SC2_ERR_FORMAT;
+        }
+    }
+    fclose(f);
+    *len = rc == SC2_OK ? n : 0;
+    return rc;
 }
 
 static int pf_load(void *ctx, const char *name, uint8_t *buf, size_t cap, size_t *len)
@@ -218,50 +248,42 @@ static int pf_load(void *ctx, const char *name, uint8_t *buf, size_t cap, size_t
     if (!name_ok(name)) {
         return SC2_ERR_ARG;
     }
-    uint8_t *a = solar_os_sc2_buffer_alloc(SC2_FILE_MAX);
-    uint8_t *b = solar_os_sc2_buffer_alloc(SC2_FILE_MAX);
-    int rc = SC2_ERR_NOT_FOUND;
-    if (a == NULL || b == NULL) {
-        rc = SC2_ERR_BOUNDS;
-    } else {
-        size_t la = 0, lb = 0;
-        uint64_t ga = slot_read(name, 'a', a, &la);
-        uint64_t gb = slot_read(name, 'b', b, &lb);
-        /* Prefer the newest slot whose record also unwraps; fall back to the
-         * other one if the newest is damaged. */
-        const uint8_t *order[2] = {ga >= gb ? a : b, ga >= gb ? b : a};
-        size_t lens[2] = {ga >= gb ? la : lb, ga >= gb ? lb : la};
-        uint64_t gens[2] = {ga >= gb ? ga : gb, ga >= gb ? gb : ga};
-        bool any = ga != 0 || gb != 0;
-        for (int i = 0; i < 2 && rc != SC2_OK; i++) {
-            if (gens[i] == 0) {
-                continue;
-            }
-            const uint8_t *rec = order[i] + SC2_SLOT_HEADER;
-            size_t rec_len = lens[i] - SC2_SLOT_HEADER;
-            const uint8_t *payload;
-            size_t payload_len;
-            if (rec_len < SC2E_RECORD_OVERHEAD || rec[0] != 'S' ||
-                sc2e_record_unwrap(rec, rec_len, rec[4], rec[5], &payload, &payload_len) != SC2_OK) {
-                continue;
-            }
-            if (rec_len > cap) {
-                rc = SC2_ERR_BOUNDS;
-                break;
-            }
-            memcpy(buf, rec, rec_len);
-            *len = rec_len;
-            rc = SC2_OK;
-            if (i == 1) {
-                ESP_LOGW(TAG, "%s: newest copy damaged, using previous", name);
-            }
-        }
-        if (rc == SC2_ERR_NOT_FOUND && any) {
-            rc = SC2_ERR_FORMAT;
-        }
+    uint64_t ga = slot_gen(name, 'a');
+    uint64_t gb = slot_gen(name, 'b');
+    if (ga == 0 && gb == 0) {
+        return SC2_ERR_NOT_FOUND;
     }
-    solar_os_sc2_buffer_free(a, SC2_FILE_MAX);
-    solar_os_sc2_buffer_free(b, SC2_FILE_MAX);
+    /* Prefer the newest slot whose record also unwraps; fall back to the
+     * other one if the newest is damaged. */
+    const char order[2] = {ga >= gb ? 'a' : 'b', ga >= gb ? 'b' : 'a'};
+    const uint64_t gens[2] = {ga >= gb ? ga : gb, ga >= gb ? gb : ga};
+    int rc = SC2_ERR_FORMAT;
+    for (int i = 0; i < 2; i++) {
+        if (gens[i] == 0) {
+            continue;
+        }
+        size_t rec_len = 0;
+        int src = slot_payload(name, order[i], gens[i], buf, cap, &rec_len);
+        if (src == SC2_ERR_BOUNDS) {
+            rc = SC2_ERR_BOUNDS;
+            break;
+        }
+        const uint8_t *payload;
+        size_t payload_len;
+        if (src != SC2_OK || rec_len < SC2E_RECORD_OVERHEAD || buf[0] != 'S' ||
+            sc2e_record_unwrap(buf, rec_len, buf[4], buf[5], &payload, &payload_len) != SC2_OK) {
+            continue;
+        }
+        *len = rec_len;
+        rc = SC2_OK;
+        if (i == 1) {
+            ESP_LOGW(TAG, "%s: newest copy damaged, using previous", name);
+        }
+        break;
+    }
+    if (rc != SC2_OK) {
+        sc2_memzero(buf, cap);
+    }
     return rc;
 }
 
@@ -288,26 +310,24 @@ static int pf_save(void *ctx, const char *name, const uint8_t *buf, size_t len)
     if (len + SC2_SLOT_HEADER >= SC2_FILE_MAX) {
         return SC2_ERR_BOUNDS;
     }
-    uint8_t *file = solar_os_sc2_buffer_alloc(SC2_FILE_MAX);
-    if (file == NULL) {
-        return SC2_ERR_BOUNDS;
-    }
-    size_t la = 0, lb = 0;
-    uint64_t ga = slot_read(name, 'a', file, &la);
-    uint64_t gb = slot_read(name, 'b', file, &lb);
+    uint64_t ga = slot_gen(name, 'a');
+    uint64_t gb = slot_gen(name, 'b');
     char slot = ga > gb ? 'b' : 'a';
     uint64_t gen = (ga > gb ? ga : gb) + 1u;
-    sc2_store_be64(file, gen);
-    sc2_store_be32(file + 8, sc2_crc32(0, file, 8));
-    memcpy(file + SC2_SLOT_HEADER, buf, len);
+    uint8_t hdr[SC2_SLOT_HEADER];
+    sc2_store_be64(hdr, gen);
+    sc2_store_be32(hdr + 8, sc2_crc32(0, hdr, 8));
     char path[SC2_PATH_MAX];
     slot_path(path, sizeof(path), name, slot);
     int rc = ensure_parent(name);
-    if (rc == SC2_OK && solar_os_storage_write_file(path, file, len + SC2_SLOT_HEADER, false) != ESP_OK) {
+    /* Header, then the record appended: no staging buffer. A write torn in
+     * between leaves a slot that does not unwrap, so loads fall back to the
+     * other (previous) slot exactly as for any other torn write. */
+    if (rc == SC2_OK && (solar_os_storage_write_file(path, hdr, sizeof(hdr), false) != ESP_OK ||
+                         solar_os_storage_write_file(path, buf, len, true) != ESP_OK)) {
         ESP_LOGE(TAG, "write %s failed", path);
         rc = SC2_ERR_STATE;
     }
-    solar_os_sc2_buffer_free(file, SC2_FILE_MAX);
     return rc;
 }
 

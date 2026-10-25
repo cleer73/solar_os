@@ -3260,12 +3260,14 @@ sources = [
   "shell/solar_os_shell_sc2.c",
   "../protocol/sc2/src/sc2_aead.c",
   "../protocol/sc2/src/sc2_codec.c",
+  "../protocol/sc2/src/sc2_commit.c",
   "../protocol/sc2/src/sc2_common.c",
   "../protocol/sc2/src/sc2_ed25519.c",
   "../protocol/sc2/src/sc2_frame.c",
   "../protocol/sc2/src/sc2_hash.c",
   "../protocol/sc2/src/sc2_identity.c",
   "../protocol/sc2/src/sc2_json.c",
+  "../protocol/sc2/src/sc2_mod.c",
   "../protocol/sc2/src/sc2_ratchet.c",
   "../protocol/sc2/src/sc2_room.c",
   "../protocol/sc2/src/sc2_safety.c",
@@ -3280,8 +3282,11 @@ sources = [
 ]
 # X25519 and ChaCha20-Poly1305 come from the WireGuard component, which is
 # linked once whether or not service_wireguard is selected.
+# No PSRAM requirement: work memory prefers PSRAM and falls back to internal
+# RAM, and builds without CONFIG_SPIRAM use the SC2_LOW_RAM profile (peak
+# work memory about 16 KiB, see protocol/sc2/README.md). The Messaging
+# provider below still needs PSRAM because service_messaging does.
 requires = ["mbedtls", "wireguard_lwip", "esp_timer"]
-capabilities = ["psram"]
 
 [packages.service_sc2_provider]
 label = "messaging.sc2-provider"

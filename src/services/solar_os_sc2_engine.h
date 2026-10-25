@@ -38,6 +38,18 @@ extern "C" {
 #define SC2E_INNER_MAX SC2_DM_MAX_PLAINTEXT
 #define SC2E_RECORD_OVERHEAD 16u
 
+/* Peak engine work memory (pf.alloc) for any single call, measured by the
+ * host test sc2_engine_test (see the RAM budget in protocol/sc2/README.md). The platform's own
+ * buffers come on top: the SolarOS store reads and writes slot files with
+ * no extra heap. Work memory prefers PSRAM and falls back to internal RAM. */
+#ifndef SC2E_WORK_BUDGET
+#if SC2_LOW_RAM
+#define SC2E_WORK_BUDGET (16u * 1024u + 512u)
+#else
+#define SC2E_WORK_BUDGET (20u * 1024u + 512u)
+#endif
+#endif
+
 /* Record types (byte 4 of every stored record). */
 enum {
     SC2E_REC_IDENTITY = 1,

@@ -14,6 +14,10 @@
 #define PEER_REC_MAX 512u
 #define DM_REC_MAX 3072u
 #define IDENTITY_REC_MAX 128u
+#define ROOM_SHARE_INNER_MAX 256u
+
+/* dm_decrypt lends its record buffer to prekeys_save_into. */
+_Static_assert(DM_REC_MAX >= PREKEYS_REC_MAX, "dm record buffer doubles as the prekeys buffer");
 
 /* ---------------------------------------------------------------------- */
 /* Small helpers                                                           */
@@ -271,12 +275,10 @@ static int identity_load(sc2e_t *e)
     return rc;
 }
 
-static int prekeys_save(const sc2e_t *e)
+/* Serialise and save the prekeys using buf (PREKEYS_REC_MAX bytes) as the
+ * record buffer, so callers that already hold a work area can lend it. */
+static int prekeys_save_into(const sc2e_t *e, uint8_t *buf)
 {
-    uint8_t *buf = ws_alloc(e, PREKEYS_REC_MAX);
-    if (buf == NULL) {
-        return SC2_ERR_BOUNDS;
-    }
     bw_t w = {buf + 12, PREKEYS_REC_MAX - SC2E_RECORD_OVERHEAD, 0, 0};
     const sc2e_prekeys_t *pk = &e->pre;
     bw_u32(&w, pk->next_spk_id);
@@ -297,6 +299,17 @@ static int prekeys_save(const sc2e_t *e)
         bw_put(&w, pk->opk[i].pub, SC2_KEY_LEN);
     }
     int rc = w.err ? w.err : rec_save_inplace(e, "prekeys", SC2E_REC_PREKEYS, buf, PREKEYS_REC_MAX, w.len);
+    sc2_memzero(buf, PREKEYS_REC_MAX);
+    return rc;
+}
+
+static int prekeys_save(const sc2e_t *e)
+{
+    uint8_t *buf = ws_alloc(e, PREKEYS_REC_MAX);
+    if (buf == NULL) {
+        return SC2_ERR_BOUNDS;
+    }
+    int rc = prekeys_save_into(e, buf);
     ws_release(e, buf, PREKEYS_REC_MAX);
     return rc;
 }
@@ -842,8 +855,9 @@ typedef struct {
     sc2_ratchet_t fresh;
     sc2_ratchet_t work;
     uint8_t rec[DM_REC_MAX];
+    /* ciphertext in, plaintext out: decryption runs in place (the tag is
+     * checked before anything is written, so a failed try leaves ct intact) */
     uint8_t ct[SC2_DM_MAX_CIPHERTEXT];
-    uint8_t pt[SC2_DM_MAX_PLAINTEXT + 2];
     uint8_t seen_ek[DM_SEEN_EK][SC2_KEY_LEN];
     uint8_t seen_count;
     sc2_bundle_t bundle;
@@ -1063,8 +1077,8 @@ int sc2e_dm_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *r
     }
     int drc = SC2_ERR_STATE;
     if (rc == SC2_OK && have) {
-        drc = sc2_ratchet_decrypt(&ws->st, &ws->work, &env.hdr, env.nonce, env.ct, env.ct_len, ws->pt,
-                                  sizeof(ws->pt) - 1u, &n, now, &e->pf.rng);
+        drc = sc2_ratchet_decrypt(&ws->st, &ws->work, &env.hdr, env.nonce, env.ct, env.ct_len, ws->ct,
+                                  sizeof(ws->ct) - 1u, &n, now, &e->pf.rng);
     }
     if (rc == SC2_OK && drc != SC2_OK) {
         bool try_fresh = env.hdr.has_x3dh && (!have || drc == SC2_ERR_AUTH || drc == SC2_ERR_STATE);
@@ -1095,8 +1109,8 @@ int sc2e_dm_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *r
                 rc = sc2_ratchet_init_responder(&ws->fresh, sk, ad, e->self_id, env.from, spk);
             }
             if (rc == SC2_OK) {
-                rc = sc2_ratchet_decrypt(&ws->fresh, &ws->work, &env.hdr, env.nonce, env.ct, env.ct_len, ws->pt,
-                                         sizeof(ws->pt) - 1u, &n, now, &e->pf.rng);
+                rc = sc2_ratchet_decrypt(&ws->fresh, &ws->work, &env.hdr, env.nonce, env.ct, env.ct_len, ws->ct,
+                                         sizeof(ws->ct) - 1u, &n, now, &e->pf.rng);
             }
             if (rc == SC2_OK) {
                 ws->st = ws->fresh;
@@ -1120,28 +1134,45 @@ int sc2e_dm_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *r
                 (pk->opk_count - (uint32_t)opk_index - 1u) * sizeof(pk->opk[0]));
         pk->opk_count--;
         sc2_memzero(&pk->opk[pk->opk_count], sizeof(pk->opk[0]));
-        rc = prekeys_save(e);
+        rc = prekeys_save_into(e, ws->rec); /* dm_save is done with ws->rec */
     }
+    /* Key-carrying control messages are applied after the DM work area is
+     * released, from a copy sized to the message, so a DM work area and a
+     * room work area are never held at the same time. */
+    char *ctl = NULL;
+    int ctl_kind = 0; /* 1 epoch_key, 2 history */
     if (rc == SC2_OK) {
         sc2_json_val_t root;
         char t[24];
-        ws->pt[n] = '\0';
-        int trc = inner_type((const char *)ws->pt, n, &root, t, sizeof(t));
+        ws->ct[n] = '\0';
+        int trc = inner_type((const char *)ws->ct, n, &root, t, sizeof(t));
         if (trc == SC2_OK && strcmp(t, "epoch_key") == 0) {
-            rc = room_accept_key(e, env.from, (const char *)ws->pt, n, res);
+            ctl_kind = 1;
         } else if (trc == SC2_OK && strcmp(t, "history") == 0) {
-            rc = room_accept_history(e, env.from, (const char *)ws->pt, n, res);
+            ctl_kind = 2;
+        }
+        if (ctl_kind != 0) {
+            ctl = ws_alloc(e, n + 1u);
+            if (ctl == NULL) {
+                rc = SC2_ERR_BOUNDS;
+            } else {
+                memcpy(ctl, ws->ct, n + 1u);
+            }
         } else if (n + 1u > pt_cap) {
             rc = SC2_ERR_BOUNDS;
         } else {
             res->kind = SC2E_DM_MESSAGE;
-            memcpy(pt, ws->pt, n + 1u);
+            memcpy(pt, ws->ct, n + 1u);
             *pt_len = n;
         }
     }
     sc2_memzero(sk, sizeof(sk));
     sc2_memzero(ad, sizeof(ad));
     ws_release(e, ws, sizeof(*ws));
+    if (ctl != NULL) {
+        rc = ctl_kind == 1 ? room_accept_key(e, env.from, ctl, n, res) : room_accept_history(e, env.from, ctl, n, res);
+        ws_release(e, ctl, n + 1u);
+    }
     return rc;
 }
 
@@ -1168,9 +1199,7 @@ typedef struct {
     uint8_t admin[SC2_DEVICE_ID_LEN];
     room_slot_t slot[SC2E_ROOM_EPOCH_SLOTS];
     uint8_t rec[ROOM_REC_MAX];
-    uint8_t ct[SC2_DM_MAX_CIPHERTEXT];
-    uint8_t pt[SC2_DM_MAX_PLAINTEXT + 2];
-    char inner[256];
+    uint8_t ct[SC2_DM_MAX_CIPHERTEXT]; /* opened in place, like dm_ws_t */
     sc2_bundle_t bundle;
 } room_ws_t;
 
@@ -1271,14 +1300,14 @@ int sc2e_room_create(sc2e_t *e, const char *room_hex, char room_out[SC2_DEVICE_I
         rc = sc2_random(&e->pf.rng, ws->room, SC2_ROOM_ID_LEN);
     }
     if (rc == SC2_OK) {
-        room_ws_t *probe = ws_alloc(e, sizeof(*probe));
-        if (probe == NULL) {
-            rc = SC2_ERR_BOUNDS;
-        } else {
-            int lrc = room_load(e, ws->room, probe);
-            rc = lrc == SC2_ERR_NOT_FOUND ? SC2_OK : (lrc == SC2_OK ? SC2_ERR_STATE : lrc);
-            ws_release(e, probe, sizeof(*probe));
-        }
+        /* Refuse an existing room. The probe loads into ws itself (no second
+         * work area), which is then wiped back to just the new room ID. */
+        uint8_t id[SC2_ROOM_ID_LEN];
+        memcpy(id, ws->room, sizeof(id));
+        int lrc = room_load(e, id, ws);
+        rc = lrc == SC2_ERR_NOT_FOUND ? SC2_OK : (lrc == SC2_OK ? SC2_ERR_STATE : lrc);
+        sc2_memzero(ws, sizeof(*ws));
+        memcpy(ws->room, id, sizeof(id));
     }
     if (rc == SC2_OK) {
         memcpy(ws->admin, e->self_id, SC2_DEVICE_ID_LEN);
@@ -1360,8 +1389,12 @@ int sc2e_room_share(sc2e_t *e, const char *room_hex, const char *peer_hex, const
     if (rc != SC2_OK) {
         return rc;
     }
-    room_ws_t *ws = ws_alloc(e, sizeof(*ws));
+    /* The inner message gets its own small buffer so the room work area can
+     * be released before dm_seal takes the DM one (never both at once). */
+    char *inner = ws_alloc(e, ROOM_SHARE_INNER_MAX);
+    room_ws_t *ws = inner ? ws_alloc(e, sizeof(*ws)) : NULL;
     if (ws == NULL) {
+        ws_release(e, inner, ROOM_SHARE_INNER_MAX);
         return SC2_ERR_BOUNDS;
     }
     rc = room_load(e, room, ws);
@@ -1369,7 +1402,7 @@ int sc2e_room_share(sc2e_t *e, const char *room_hex, const char *peer_hex, const
         rc = SC2_ERR_STATE;
     }
     if (rc == SC2_OK) {
-        sc2_jw_init(&w, ws->inner, sizeof(ws->inner));
+        sc2_jw_init(&w, inner, ROOM_SHARE_INNER_MAX);
         sc2_jw_object_begin(&w);
         sc2_jw_key(&w, "t");
         sc2_jw_cstring(&w, "epoch_key");
@@ -1382,10 +1415,11 @@ int sc2e_room_share(sc2e_t *e, const char *room_hex, const char *peer_hex, const
         sc2_jw_object_end(&w);
         rc = sc2_jw_finish(&w, &inner_len);
     }
-    if (rc == SC2_OK) {
-        rc = dm_seal(e, peer, rid, (const uint8_t *)ws->inner, inner_len, out, cap, out_len);
-    }
     ws_release(e, ws, sizeof(*ws));
+    if (rc == SC2_OK) {
+        rc = dm_seal(e, peer, rid, (const uint8_t *)inner, inner_len, out, cap, out_len);
+    }
+    ws_release(e, inner, ROOM_SHARE_INNER_MAX);
     return rc;
 }
 
@@ -1658,7 +1692,7 @@ int sc2e_room_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_room_result_
         rc = sc2_room_header(hdr, room, env.epoch, env.from, env.n);
     }
     if (rc == SC2_OK) {
-        rc = sc2_room_open(ws->pt, sizeof(ws->pt) - 1u, &n, mk, env.nonce, hdr, env.ct, env.ct_len, env.sig, ik);
+        rc = sc2_room_open(ws->ct, sizeof(ws->ct) - 1u, &n, mk, env.nonce, hdr, env.ct, env.ct_len, env.sig, ik);
     }
     if (rc == SC2_OK && !self) {
         if (rv == NULL) {
@@ -1672,8 +1706,8 @@ int sc2e_room_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_room_result_
         if (n + 1u > pt_cap) {
             rc = SC2_ERR_BOUNDS;
         } else {
-            ws->pt[n] = '\0';
-            memcpy(pt, ws->pt, n + 1u);
+            ws->ct[n] = '\0';
+            memcpy(pt, ws->ct, n + 1u);
             *pt_len = n;
         }
     }

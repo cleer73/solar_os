@@ -586,4 +586,8 @@ endif()
 if(SOLAR_OS_PACKAGE_SERVICE_SC2)
     # SC2 SHA-256/HMAC on the mbedTLS backend (see protocol/sc2/README.md).
     target_compile_definitions(${COMPONENT_LIB} PRIVATE SC2_USE_MBEDTLS=1)
+    # No PSRAM: SC2's low-RAM profile (protocol/sc2/README.md).
+    if(NOT CONFIG_SPIRAM)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE SC2_LOW_RAM=1)
+    endif()
 endif()

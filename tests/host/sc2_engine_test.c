@@ -329,6 +329,135 @@ static void test_open_errors(void)
     sc2e_memstore_destroy(store);
 }
 
+/* ---------------------------------------------------------------------- */
+/* RAM budget: peak engine work memory (pf.alloc) per operation.           */
+/* The platform's own load buffer (one SC2 slot file) comes on top.        */
+/* ---------------------------------------------------------------------- */
+
+static size_t w_live, w_peak;
+
+static void *w_alloc(void *ctx, size_t len)
+{
+    (void)ctx;
+    void *p = calloc(1, len + sizeof(size_t));
+    if (p == NULL) {
+        return NULL;
+    }
+    memcpy(p, &len, sizeof(len));
+    w_live += len;
+    if (w_live > w_peak) {
+        w_peak = w_live;
+    }
+    return (uint8_t *)p + sizeof(size_t);
+}
+
+static void w_release(void *ctx, void *ptr, size_t len)
+{
+    (void)ctx;
+    if (ptr != NULL) {
+        uint8_t *base = (uint8_t *)ptr - sizeof(size_t);
+        size_t got;
+        memcpy(&got, base, sizeof(got));
+        CHECK(got == len);
+        sc2_memzero(base, len + sizeof(size_t));
+        free(base);
+        w_live -= len;
+    }
+}
+
+static void dev_open_tracked(dev_t *d, const sc2e_test_host_t *h)
+{
+    sc2e_platform_t pf;
+    CHECK_RC(sc2e_memstore_create(&d->store, h), SC2_OK);
+    sc2e_memstore_platform(d->store, &pf);
+    pf.alloc = w_alloc;
+    pf.release = w_release;
+    CHECK_RC(sc2e_open(&d->e, &pf), SC2_OK);
+    CHECK_RC(sc2e_identity(&d->e, &d->info), SC2_OK);
+}
+
+#define RAM_BUDGET_OPS 10
+static const char *const RAM_OPS[RAM_BUDGET_OPS] = {
+    "keys.publish", "add_bundle", "dm_encrypt (X3DH)", "dm_decrypt (new session)", "dm_decrypt (8 KiB)",
+    "room_create", "room_share", "dm_decrypt (epoch key)", "room_encrypt", "room_decrypt",
+};
+
+static void test_ram_budget(void)
+{
+    sc2e_test_host_t h = host();
+    dev_t a, b;
+    size_t peak[RAM_BUDGET_OPS] = {0};
+    size_t n = 0, m = 0, pl = 0;
+    sc2e_dm_result_t res;
+    sc2e_room_result_t rr;
+    char dev[SC2_DEVICE_ID_HEX_LEN + 1];
+    char room[SC2_DEVICE_ID_HEX_LEN + 1];
+    static char big[SC2E_INNER_MAX + 1];
+    dev_open_tracked(&a, &h);
+    dev_open_tracked(&b, &h);
+#define MEASURE(i, expr)        \
+    do {                        \
+        w_peak = w_live;        \
+        expr;                   \
+        peak[i] = w_peak - w_live; \
+    } while (0)
+    MEASURE(0, CHECK_RC(sc2e_keys_publish(&b.e, "k", 4, f1, sizeof(f1), &n), SC2_OK));
+    CHECK_RC(sc2e_relay_bundle(f1, n, &b.info, f2, sizeof(f2), &m), SC2_OK);
+    MEASURE(1, CHECK_RC(sc2e_add_bundle(&a.e, f2, m, dev), SC2_OK));
+    CHECK_RC(sc2e_keys_publish(&a.e, "k", 0, f1, sizeof(f1), &n), SC2_OK);
+    CHECK_RC(sc2e_relay_bundle(f1, n, &a.info, f2, sizeof(f2), &m), SC2_OK);
+    CHECK_RC(sc2e_add_bundle(&b.e, f2, m, dev), SC2_OK);
+    MEASURE(2, CHECK_RC(sc2e_dm_encrypt(&a.e, b.info.device_id, NULL, "{\"t\":\"text\"}", 12, f1, sizeof(f1), &n),
+                        SC2_OK));
+    CHECK_RC(sc2e_relay_dm(f1, n, ++seq, f2, sizeof(f2), &m), SC2_OK);
+    MEASURE(3, CHECK_RC(sc2e_dm_decrypt(&b.e, f2, m, &res, pt, sizeof(pt), &pl), SC2_OK));
+    CHECK(res.new_session);
+    /* The largest DM the protocol allows, decrypted in place. */
+    const char *head = "{\"t\":\"text\",\"body\":\"";
+    size_t hl = strlen(head);
+    memcpy(big, head, hl);
+    memset(big + hl, 'x', SC2E_INNER_MAX - hl - 2u);
+    memcpy(big + SC2E_INNER_MAX - 2u, "\"}", 3);
+    CHECK_RC(sc2e_dm_encrypt(&a.e, b.info.device_id, NULL, big, SC2E_INNER_MAX, f1, sizeof(f1), &n), SC2_OK);
+    CHECK_RC(sc2e_relay_dm(f1, n, ++seq, f2, sizeof(f2), &m), SC2_OK);
+    MEASURE(4, CHECK_RC(sc2e_dm_decrypt(&b.e, f2, m, &res, pt, sizeof(pt), &pl), SC2_OK));
+    CHECK(pl == SC2E_INNER_MAX && memcmp(pt, big, SC2E_INNER_MAX) == 0);
+    /* Alice loses her session and starts over with X3DH: Bob's stored
+     * session fails first (in place, leaving the ciphertext intact) and the
+     * fresh session then opens the same buffer. */
+    CHECK_RC(sc2e_forget_peer(&a.e, b.info.device_id), SC2_OK);
+    CHECK_RC(sc2e_keys_publish(&b.e, "k", 4, f1, sizeof(f1), &n), SC2_OK);
+    CHECK_RC(sc2e_relay_bundle(f1, n, &b.info, f2, sizeof(f2), &m), SC2_OK);
+    CHECK_RC(sc2e_add_bundle(&a.e, f2, m, dev), SC2_OK);
+    CHECK_RC(sc2e_dm_encrypt(&a.e, b.info.device_id, NULL, big, SC2E_INNER_MAX, f1, sizeof(f1), &n), SC2_OK);
+    CHECK_RC(sc2e_relay_dm(f1, n, ++seq, f2, sizeof(f2), &m), SC2_OK);
+    memset(pt, 0, sizeof(pt));
+    CHECK_RC(sc2e_dm_decrypt(&b.e, f2, m, &res, pt, sizeof(pt), &pl), SC2_OK);
+    CHECK(res.new_session && pl == SC2E_INNER_MAX && memcmp(pt, big, SC2E_INNER_MAX) == 0);
+    MEASURE(5, CHECK_RC(sc2e_room_create(&a.e, NULL, room, NULL), SC2_OK));
+    MEASURE(6, CHECK_RC(sc2e_room_share(&a.e, room, b.info.device_id, NULL, f1, sizeof(f1), &n), SC2_OK));
+    CHECK_RC(sc2e_relay_dm(f1, n, ++seq, f2, sizeof(f2), &m), SC2_OK);
+    MEASURE(7, CHECK_RC(sc2e_dm_decrypt(&b.e, f2, m, &res, pt, sizeof(pt), &pl), SC2_OK));
+    CHECK(res.kind == SC2E_DM_EPOCH_KEY);
+    MEASURE(8, CHECK_RC(sc2e_room_encrypt(&a.e, room, NULL, "{\"t\":\"text\"}", 12, f1, sizeof(f1), &n), SC2_OK));
+    CHECK_RC(sc2e_relay_room(f1, n, ++seq, f2, sizeof(f2), &m), SC2_OK);
+    MEASURE(9, CHECK_RC(sc2e_room_decrypt(&b.e, f2, m, &rr, pt, sizeof(pt), &pl), SC2_OK));
+#undef MEASURE
+    size_t worst = 0;
+    printf("ram budget (SC2_LOW_RAM=%d): sizeof(sc2e_t)=%zu sizeof(sc2_ratchet_t)=%zu\n", SC2_LOW_RAM,
+           sizeof(sc2e_t), sizeof(sc2_ratchet_t));
+    for (size_t i = 0; i < RAM_BUDGET_OPS; i++) {
+        printf("  %-26s %6zu bytes peak work memory\n", RAM_OPS[i], peak[i]);
+        worst = peak[i] > worst ? peak[i] : worst;
+    }
+    printf("  %-26s %6zu bytes\n", "worst case", worst);
+    CHECK(worst <= SC2E_WORK_BUDGET);
+    CHECK(w_live == 0);
+    dev_close(&a);
+    dev_close(&b);
+    CHECK(w_live == 0);
+}
+
 int main(void)
 {
     test_selftest_and_bench();
@@ -336,6 +465,7 @@ int main(void)
     test_dm_policies();
     test_post_rules();
     test_open_errors();
+    test_ram_budget();
     CHECK(live_allocs == 0);
     return sc2t_report("sc2_engine_test");
 }

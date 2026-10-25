@@ -1375,3 +1375,45 @@ all: sc2_provider_test
 sc2-test: sc2-provider-test
 test: sc2-provider-test
 TARGETS += sc2_provider_test
+
+# SC2 membership commits, relay-signed room.mod events and invites.
+SC2A_TARGETS := sc2_admin_test
+SC2A_MBEDTLS_TARGETS := sc2_admin_mbedtls_test
+
+$(SC2A_TARGETS): %: %.c $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) $(SC2_INC) $< $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+$(SC2A_MBEDTLS_TARGETS): sc2_%_mbedtls_test: sc2_%_test.c sc2_mbedtls_config.h $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	@test -n "$(SC2_MBEDTLS_DIR)" || { echo "set SC2_MBEDTLS_DIR to an mbedTLS 3.x source tree"; exit 1; }
+	$(CC) $(CFLAGS) -DSC2_USE_MBEDTLS=1 '-DMBEDTLS_CONFIG_FILE="sc2_mbedtls_config.h"' -I. \
+		-I$(SC2_MBEDTLS_DIR)/include $(SC2_INC) $< $(SC2_SRCS) $(SC2_VENDOR_OBJS) $(SC2_MBEDTLS_SRCS) -o $@
+
+.PHONY: sc2-admin-test sc2-admin-mbedtls-test
+sc2-admin-test: $(SC2A_TARGETS)
+	./sc2_admin_test
+
+sc2-admin-mbedtls-test: $(SC2A_MBEDTLS_TARGETS)
+	./sc2_admin_mbedtls_test
+
+all: $(SC2A_TARGETS)
+sc2-test: sc2-admin-test
+test: sc2-admin-test
+ifneq ($(SC2_MBEDTLS_DIR),)
+sc2-mbedtls-test: sc2-admin-mbedtls-test
+endif
+TARGETS += $(SC2A_TARGETS) $(SC2A_MBEDTLS_TARGETS)
+
+# The device engine again in the SC2_LOW_RAM profile (builds without PSRAM):
+# same flows, smaller local limits, peak work memory checked against
+# SC2E_WORK_BUDGET.
+sc2_engine_lowram_test: sc2_engine_test.c $(SC2E_SRCS) $(SC2E_HDRS) $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) -DSC2_LOW_RAM=1 $(SC2_INC) -I$(SC2E_DIR) $< $(SC2E_SRCS) $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+.PHONY: sc2-engine-lowram-test
+sc2-engine-lowram-test: sc2_engine_lowram_test
+	./sc2_engine_lowram_test
+
+all: sc2_engine_lowram_test
+sc2-test: sc2-engine-lowram-test
+test: sc2-engine-lowram-test
+TARGETS += sc2_engine_lowram_test

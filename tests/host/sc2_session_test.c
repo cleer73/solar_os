@@ -347,6 +347,30 @@ static void test_ratchet_transcript(void)
         sc2_store_be32(mod + wl - 4u, crc);
         CHECK_RC(sc2_ratchet_deserialize(&copy, mod, wl), SC2_ERR_FORMAT);
         free(mod);
+        /* a blob with more skipped keys than this build stores (written by
+         * a build with a larger SC2_RATCHET_MAX_STORED) loads with the
+         * oldest entries dropped */
+        {
+            const size_t base = 347u, entry = 76u, extra = 3u;
+            const size_t count = SC2_RATCHET_MAX_STORED + extra;
+            size_t bigl = base + count * entry + 4u;
+            uint8_t *big = (uint8_t *)calloc(1, bigl);
+            memcpy(big, wb, base);
+            big[base - 1u] = (uint8_t)count;
+            for (size_t i = 0; i < count; i++) {
+                uint8_t *en = big + base + i * entry;
+                memset(en, 0x40 + (int)(i & 0x3f), 32);
+                sc2_store_be32(en + 32, (uint32_t)(1000u + i));
+                memset(en + 36, 0x11, 32);
+                sc2_store_be64(en + 68, 1700000000u);
+            }
+            sc2_store_be32(big + bigl - 4u, sc2_crc32(0, big, bigl - 4u));
+            CHECK_RC(sc2_ratchet_deserialize(&copy, big, bigl), SC2_OK);
+            CHECK(sc2_ratchet_skipped_count(&copy) == SC2_RATCHET_MAX_STORED);
+            CHECK(copy.skipped[0].n == 1000u + extra);
+            CHECK(copy.skipped[SC2_RATCHET_MAX_STORED - 1u].n == 1000u + count - 1u);
+            free(big);
+        }
         free(wb);
     }
 
