@@ -879,14 +879,17 @@ static int h_room_post(sc2_mr_t *mr, unsigned s, const sc2_json_val_t *root, con
     if (memcmp(post.from, mr->dev[ss->dev].id, SC2_DEVICE_ID_LEN) != 0) {
         return send_err(mr, s, rid, 403, "forbidden", "post must be signed by this device", false);
     }
+    /* Post IDs are chosen by the client and unique per author only, so a
+     * post is (author, id) in the one room: a resend gets the same seq, and
+     * a delete can only name one of the sender's own posts. */
     ob_t o;
-    const mr_post_t *ref = NULL;
+    bool ref_found = false;
     for (unsigned i = 0; i < SC2_MR_PUB_HISTORY; i++) {
         const mr_post_t *p = &mr->posts[i];
-        if (p->seq == 0) {
+        if (p->seq == 0 || memcmp(p->from, post.from, SC2_DEVICE_ID_LEN) != 0) {
             continue;
         }
-        if (memcmp(p->from, post.from, SC2_DEVICE_ID_LEN) == 0 && memcmp(p->id, post.id, SC2_MSG_ID_LEN) == 0) {
+        if (memcmp(p->id, post.id, SC2_MSG_ID_LEN) == 0) {
             ob_head(&o, mr, "ack", rid);
             ob_s(&o, ",\"seq\":");
             ob_seq(&o, p->seq);
@@ -895,16 +898,11 @@ static int h_room_post(sc2_mr_t *mr, unsigned s, const sc2_json_val_t *root, con
             return SC2_MR_OK;
         }
         if (post.has_ref && memcmp(p->id, post.ref, SC2_MSG_ID_LEN) == 0) {
-            ref = p;
+            ref_found = true;
         }
     }
-    if (post.t == SC2_POST_T_DEL) {
-        if (ref == NULL) {
-            return send_err(mr, s, rid, 400, "bad_request", "unknown ref", false);
-        }
-        if (memcmp(ref->from, post.from, SC2_DEVICE_ID_LEN) != 0) {
-            return send_err(mr, s, rid, 403, "forbidden", "only the author can delete a post", false);
-        }
+    if (post.t == SC2_POST_T_DEL && !ref_found) {
+        return send_err(mr, s, rid, 400, "bad_request", "unknown ref", false);
     }
     mr_post_t *p = &mr->posts[mr->pub_head];
     mr->pub_head = (mr->pub_head + 1u) % SC2_MR_PUB_HISTORY; /* history cap: the oldest goes */

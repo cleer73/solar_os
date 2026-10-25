@@ -109,6 +109,57 @@ static int dm(unsigned s, const char *from, const char *to, unsigned msg_n)
                 "\"pn\":0,\"n\":%u,\"nonce\":\"%s\",\"ct\":\"%s\"}}", to, from, rkb, msg_n, nb, cb);
 }
 
+/* Public post (t, id byte, ref byte or 0) signed by id, on session s. */
+static int post(unsigned s, const sc2_identity_t *id, uint8_t t, uint8_t idb, uint8_t refb)
+{
+    sc2_post_t p;
+    memset(&p, 0, sizeof(p));
+    p.suite = 1;
+    p.t = t;
+    memset(p.id, idb, sizeof(p.id));
+    p.ts = g_now;
+    snprintf(p.name, sizeof(p.name), "n");
+    p.name_len = 1;
+    p.body = t == SC2_POST_T_DEL ? "" : "hi";
+    p.body_len = strlen(p.body);
+    if (refb != 0) {
+        p.has_ref = true;
+        memset(p.ref, refb, sizeof(p.ref));
+    }
+    CHECK_RC(sc2_post_sign(&p, "mr.test", "pub:general", id->ik_seed), SC2_OK);
+    size_t n = 0;
+    CHECK_RC(sc2_frame_room_post(buf, sizeof(buf), &n, "p", "pub:general", &p), SC2_OK);
+    return sc2_mr_line(mr, s, buf, n);
+}
+
+/* Post IDs are unique per author: deletes resolve (author, id). */
+static void post_ids(const sc2_identity_t *a, const sc2_identity_t *b)
+{
+    L(0, "{\"type\":\"room.join\",\"rid\":\"j\",\"room\":\"pub:general\"}");
+    CHECK(has(0, "\"type\":\"room.state\""));
+    L(1, "{\"type\":\"room.join\",\"rid\":\"j\",\"room\":\"pub:general\"}");
+    /* b posts id 0x11 first, a uses the same id later: two posts */
+    CHECK_RC(post(1, b, SC2_POST_T_TEXT, 0x11, 0), SC2_MR_OK);
+    CHECK(has(1, "\"type\":\"ack\"") && has(1, "\"seq\":\"1\""));
+    CHECK_RC(post(0, a, SC2_POST_T_TEXT, 0x11, 0), SC2_MR_OK);
+    CHECK(has(0, "\"type\":\"ack\"") && has(0, "\"seq\":\"2\""));
+    CHECK_RC(post(1, b, SC2_POST_T_TEXT, 0x22, 0), SC2_MR_OK);
+    CHECK(has(1, "\"seq\":\"3\""));
+    /* a resend of a's post gets its own seq back, not b's */
+    CHECK_RC(post(0, a, SC2_POST_T_TEXT, 0x11, 0), SC2_MR_OK);
+    CHECK(has(0, "\"seq\":\"2\""));
+    /* b deletes its own 0x11 although a's 0x11 is newer */
+    CHECK_RC(post(1, b, SC2_POST_T_DEL, 0x33, 0x11), SC2_MR_OK);
+    CHECK(has(1, "\"type\":\"ack\"") && has(1, "\"seq\":\"4\""));
+    /* a cannot name b's 0x22: there is no post 0x22 by a */
+    CHECK_RC(post(0, a, SC2_POST_T_DEL, 0x44, 0x22), SC2_MR_OK);
+    CHECK(has(0, "\"code\":400") && has(0, "unknown ref"));
+    CHECK_RC(post(0, a, SC2_POST_T_DEL, 0x45, 0x11), SC2_MR_OK);
+    CHECK(has(0, "\"type\":\"ack\"") && has(0, "\"seq\":\"5\""));
+    L(0, "{\"type\":\"room.leave\",\"rid\":\"l\",\"room\":\"pub:general\"}");
+    L(1, "{\"type\":\"room.leave\",\"rid\":\"l\",\"room\":\"pub:general\"}");
+}
+
 /* Connection slots: one session per device, idle and login timeouts (pings
  * are not activity), eviction of the longest-idle session when full.
  * On entry sessions 0 (a) and 1 (b) are logged in; 2 and 3 are free. */
@@ -291,8 +342,9 @@ int main(void)
     L(0, "{\"type\":\"room.post\",\"rid\":\"p\",\"room\":\"pub:general\",\"post\":{}}");
     CHECK(has(0, "not_member"));
 
+    post_ids(&a, &b);
     slots(&a, &b);
 
     sc2_mr_free(mr);
-    return sc2t_report("sc2_minirelay_test: handshake, admission, keys, mailbox caps, connection slots");
+    return sc2t_report("sc2_minirelay_test: handshake, admission, keys, mailbox caps, post ids, connection slots");
 }
