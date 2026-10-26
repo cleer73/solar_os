@@ -467,12 +467,16 @@ the selected profile, effective profile, and suspend state.
 Without `short` or `long`, an action changes the short press for compatibility.
 
 `deepsleep` is a standalone command. It turns off the ESP32 radios and enters
-ESP32 deep sleep after configuring the same KEY, compatible RTC interrupt, and
+ESP32 deep sleep after configuring the same board wake input, compatible RTC interrupt, and
 next scheduled timer wake sources used by explicit light sleep. KEY, an armed
 RTC or scheduled timer, and RESET start a normal fresh boot; running jobs,
 sessions, and RAM state are not restored. BLE and Wi-Fi are off and cannot wake
 the device. This is not a hardware power-off: the board remains powered, and a
 separate board power control must still be used to remove its supply.
+
+On Pi0cket CL-32, the built-in keyboard resumes suspend and wakes light or
+deep sleep through the companion controller's shared interrupt. USB-power and
+charging changes can also wake the board. Release held keys before sleeping.
 
 `suspend` shows the SolarOS splash with **Suspended**; `sleep` and `deepsleep`
 show **Sleeping**. The splash replaces the current contents on every attached

@@ -191,6 +191,10 @@ the configured brightness, including while the light is toggled off.
 Shift and Fn stay active only while held. Release them to return to normal
 typing.
 
+The built-in keyboard resumes `suspend` and wakes `sleep` or `deepsleep`.
+Wake from `deepsleep` starts a fresh boot. Keyboard, USB-power, and charging
+notifications share the wake interrupt, so power changes can also wake sleep.
+
 ## ODROID-GO
 
 | Control | Action |
