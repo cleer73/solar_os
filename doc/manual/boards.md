@@ -154,9 +154,35 @@ The workflow is MCU-first:
 2. Select a compatible neutral base board.
 3. Enter the board identity.
 4. Select the permanently wired expansion drivers.
-5. Select existing buses or create new buses, then enter addresses, pins, chip
+5. For a display with panel profiles, select the panel and rotation. Each rotation
+   shows the resulting display size.
+6. Select existing buses or create new buses, then enter addresses, pins, chip
    selects, ports, and optional driver parameters.
-6. Confirm the generated profile.
+7. Confirm the generated profile.
+
+Display profiles select supported glass and its driver parameters together.
+For example, ST7305 offers SolarTerm's 300x400 panel and CL-32's 168x384 panel;
+their default rotations give 400x300 and 384x168 displays. SSD1683 offers its
+400x300 panels and the 792x272 dual-controller panel. The tool writes the matching
+`panel` and `rotation` bindings and derives the board's logical width and height.
+SSD1685, SSD1677, UC8179, and UC8279 also derive geometry from their panel profile
+and rotation. Runtime expansion commands continue to use numeric `panel` and
+`rotation` bindings.
+
+Catalog display profiles declare native `width` and `height`, a named `label`,
+the panel selector `bindings`, and the default `rotation`. Exactly one profile
+per driver has `default = true`. All profiles for a driver use the same selector
+keys, with distinct supported values. For example:
+
+```toml
+[[drivers.st7305.display_profiles]]
+name = "168x384"
+label = "CL-32 2.9-inch RLCD"
+width = 168
+height = 384
+bindings = { panel = 1 }
+rotation = 3
+```
 
 The tool rejects unsupported MCU/driver combinations, duplicate device names,
 invalid addresses and parameters, unavailable chip-select pins, and GPIO
@@ -184,7 +210,8 @@ python3 scripts/board_config.py --expansion-manifest my-hardware.toml
 The snapshot names its original board manifest. The configurator uses that as
 the inherited base, promotes exported buses and devices to board-owned entries,
 fixes their GPIOs, and removes their peripheral controllers from the runtime
-pool. If the base has no primary display, storage, audio, pointer, battery, or
+pool. Display dimensions follow the exported panel and rotation bindings.
+If the base has no primary display, storage, audio, pointer, battery, or
 RTC provider and exactly one imported driver supplies that role, its board
 capabilities, driver fragment, and required defines are promoted too. Existing
 primary roles remain primary; ambiguous new primary roles are rejected instead
