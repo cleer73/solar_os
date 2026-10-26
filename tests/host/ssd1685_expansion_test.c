@@ -110,6 +110,14 @@ static esp_err_t primary_present(void *context, const solar_os_display_raster_t 
     return display->ops->present_frame(display, frame);
 }
 
+static void *relax_driver;
+esp_err_t epd_ssd1685_relax(epd_ssd1685_t *d, solar_os_display_relax_phase_t phase)
+{
+    assert(phase == SOLAR_OS_DISPLAY_RELAX_BEGIN || phase == SOLAR_OS_DISPLAY_RELAX_END);
+    relax_driver = d;
+    return ESP_OK;
+}
+
 int main(void)
 {
     solar_os_expansion_binding_t bindings[] = {
@@ -139,6 +147,8 @@ int main(void)
     test_raster_forwarding(target.frame_context, target.present_frame);
     assert(raster_driver == target.frame_context);
     assert(solar_os_ssd1685_attach("epd0", bindings, 6) == ESP_ERR_INVALID_ARG);
+    assert(target.relax(target.relax_context, SOLAR_OS_DISPLAY_RELAX_BEGIN) == ESP_OK);
+    assert(relax_driver == target.relax_context);
     unregister_error = ESP_FAIL;
     assert(solar_os_ssd1685_detach("epd0") == ESP_FAIL && deinited == 2);
     unregister_error = ESP_OK;
@@ -155,6 +165,9 @@ int main(void)
     assert(primary_display->ops->present_mono_xbm(primary_display, &mono, 1, 1, 2, 1, 1, 1, false) == ESP_OK);
     assert(received.data == &mono && received.x == 1 && received.y == 2 && !received.palette_inverted);
     assert(primary_display->ops->present_frame(NULL, NULL) == ESP_ERR_INVALID_STATE);
+    assert(target.relax && target.relax_context);
+    assert(primary_display->ops->relax(primary_display, SOLAR_OS_DISPLAY_RELAX_BEGIN) == ESP_OK);
+    assert(relax_driver == primary_display->driver);
     assert(solar_os_ssd1685_detach("display0") == ESP_OK);
     puts("ssd1685_expansion_test: PASS"); return 0;
 }

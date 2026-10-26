@@ -10,6 +10,7 @@
 #include "u8g2.h"
 #include "epd_pixel_budget.h"
 #include "epd_scan_worker.h"
+#include "epd_relax.h"
 
 /* Panel profiles include glass wiring and OTP waveform assumptions. */
 #define EPD_SSD1685_PANEL_GDEY029T71H 1U
@@ -45,6 +46,7 @@ typedef struct {
     epd_pulse_tuning_t pulse_tuning;
     epd_pixel_budget_t pixel_budget;
     epd_scan_worker_t scan_worker;
+    epd_relax_t relax;
     uint8_t *pulse_planes;
     size_t pulse_mask_pending;
     uint32_t pulse_updates, scan_submit_ready;
@@ -63,6 +65,7 @@ esp_err_t epd_ssd1685_init(epd_ssd1685_t *display, const epd_ssd1685_config_t *c
 esp_err_t epd_ssd1685_refresh(epd_ssd1685_t *display);
 esp_err_t epd_ssd1685_resume(epd_ssd1685_t *display);
 void epd_ssd1685_deinit(epd_ssd1685_t *display);
+esp_err_t epd_ssd1685_relax(epd_ssd1685_t *display, solar_os_display_relax_phase_t phase);
 /* Compose a full frame with a background border. MONO1 rows are byte-padded,
  * LSB-first, with set bits representing black; coordinates follow rotation.
  * Pulse mode submits an immutable snapshot to the existing scan worker.

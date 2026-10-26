@@ -258,6 +258,16 @@ static esp_err_t present_frame(solar_os_board_display_t *display,
     return display != NULL ? target_present_frame(display->driver, frame) : ESP_ERR_INVALID_STATE;
 }
 
+static esp_err_t target_relax(void *context, solar_os_display_relax_phase_t phase)
+{
+    return epd_ssd1685_relax(context, phase);
+}
+
+static esp_err_t display_relax(solar_os_board_display_t *display, solar_os_display_relax_phase_t phase)
+{
+    return display && display->driver ? target_relax(display->driver, phase) : ESP_ERR_INVALID_STATE;
+}
+
 static const solar_os_board_display_ops_t display_ops = {
     .runtime_ready = display_runtime_ready,
     .resume = display_resume,
@@ -266,6 +276,7 @@ static const solar_os_board_display_ops_t display_ops = {
     .controller_mode = display_controller_mode,
     .controller_mode_values = display_controller_mode_values,
     .set_controller_mode = display_set_controller_mode,
+    .relax = display_relax,
     .present_mono_xbm = present_mono,
     .present_frame = present_frame,
 };
@@ -301,6 +312,8 @@ static esp_err_t register_auxiliary(solar_os_ssd1685_device_t *device)
     target.controller_mode = target_controller_mode;
     target.controller_mode_values = target_controller_mode_values;
     target.set_controller_mode = target_set_controller_mode;
+    target.relax = target_relax;
+    target.relax_context = &device->driver;
     target.frame_formats = SOLAR_OS_DISPLAY_FORMAT_MONO1_BIT;
     target.preferred_stream_fps = 10U;
     target.present_frame = target_present_frame;

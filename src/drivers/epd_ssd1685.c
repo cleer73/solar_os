@@ -21,7 +21,7 @@ static esp_err_t scan_process(void *context, const uint8_t *source,
 static void scan_accepting(epd_ssd1685_t *d)
 {
     const bool enabled = d->refresh_mode == EPD_SSD1685_REFRESH_PULSE &&
-        d->scan_async && !d->suspended && d->powered && d->controller_ready;
+        d->scan_async && !d->suspended && !d->relax.storage && d->powered && d->controller_ready;
     epd_scan_worker_enable(&d->scan_worker, enabled);
     __atomic_store_n(&d->scan_submit_ready, enabled, __ATOMIC_RELEASE);
 }
@@ -394,6 +394,10 @@ esp_err_t epd_ssd1685_refresh(epd_ssd1685_t *d)
         if (d->lock) xSemaphoreGive(d->lock);
         return ESP_ERR_INVALID_STATE;
     }
+    if (d->relax.storage) {
+        if (d->lock) xSemaphoreGive(d->lock);
+        return ESP_OK;
+    }
     esp_err_t err = refresh_frame(d);
     if (err != ESP_OK) {
         if (d->refresh_mode == EPD_SSD1685_REFRESH_PULSE) pulse_failed(d);
@@ -418,7 +422,7 @@ esp_err_t epd_ssd1685_present_mono_xbm(epd_ssd1685_t *d,
     const u8g2_cb_t *rotation = d->u8g2.cb;
     if (rotation != U8G2_R0 && rotation != U8G2_R1 &&
         rotation != U8G2_R2 && rotation != U8G2_R3) return ESP_ERR_NOT_SUPPORTED;
-    if (!d->powered || d->suspended || !d->spi || !d->line_buffer)
+    if (!d->powered || d->suspended || d->relax.storage || !d->spi || !d->line_buffer)
         return ESP_ERR_INVALID_STATE;
     /* Like ordinary u8g2 drawing, compose before submitting the snapshot.
      * The worker reads its own copy, never this buffer. Async submission must
@@ -605,6 +609,7 @@ void epd_ssd1685_deinit(epd_ssd1685_t *d)
     if (d->spi) (void)spi_bus_remove_device(d->spi);
     heap_caps_free(d->line_buffer); heap_caps_free(d->buffer); heap_caps_free(d->shadow);
     free_budget(d);
+    epd_relax_dispose(&d->relax);
     if (d->pins_configured) {
         (void)gpio_reset_pin(d->dc_pin); (void)gpio_reset_pin(d->reset_pin);
         (void)gpio_reset_pin(d->busy_pin);
@@ -657,6 +662,45 @@ const char *epd_ssd1685_controller_mode_values(const epd_ssd1685_t *d)
            "pulse-ramp=<normal,fast> pulse-spi-khz=<100..10000> invert=<false,true>";
 }
 
+static esp_err_t relax_native(void *context, solar_os_display_relax_phase_t phase,
+                               const uint8_t *image)
+{
+    epd_ssd1685_t *d = context;
+    if (phase == SOLAR_OS_DISPLAY_RELAX_BEGIN) {
+        scan_disable(d);
+        esp_err_t err = pulse_powerdown(d);
+        if (err == ESP_OK) err = controller_init(d);
+        if (err != ESP_OK) d->controller_ready = d->shadow_valid = false;
+        return err;
+    }
+    const esp_err_t err = !d->powered || d->suspended ? ESP_ERR_INVALID_STATE : native_frame(d, image, false);
+    if (err != ESP_OK) d->controller_ready = d->shadow_valid = false;
+    if (phase == SOLAR_OS_DISPLAY_RELAX_END) {
+        if (err == ESP_OK && d->pixel_budget.pixels) {
+            epd_pixel_budget_reset(&d->pixel_budget);
+            for (size_t p = 0; p < d->pixel_budget.count; ++p)
+                epd_pixel_budget_seed(&d->pixel_budget, p, pixel_white(image, p));
+        }
+        d->pulse_updates = 0;
+        d->pulse_needs_cleanup = err != ESP_OK;
+        d->pulse_mask_dirty = true;
+        d->pulse_last_frame_start = 0;
+    }
+    return err;
+}
+
+esp_err_t epd_ssd1685_relax(epd_ssd1685_t *d, solar_os_display_relax_phase_t phase)
+{
+    if (!d || !d->buffer || (unsigned)phase > SOLAR_OS_DISPLAY_RELAX_END) return ESP_ERR_INVALID_ARG;
+    if (d->lock) xSemaphoreTake(d->lock, portMAX_DELAY);
+    esp_err_t err = phase == SOLAR_OS_DISPLAY_RELAX_BEGIN && (!d->powered || d->suspended) ? ESP_ERR_INVALID_STATE :
+        epd_relax_apply(&d->relax, d->buffer, EPD_SSD1685_BUFFER_BYTES, phase, relax_native, d);
+    d->last_error = err;
+    scan_accepting(d);
+    if (d->lock) xSemaphoreGive(d->lock);
+    return err;
+}
+
 static bool parse_tuning(const char *text, unsigned maximum, unsigned *value)
 {
     if (*text < '0' || *text > '9') return false;
@@ -669,6 +713,7 @@ static bool parse_tuning(const char *text, unsigned maximum, unsigned *value)
 
 static esp_err_t set_controller_mode(epd_ssd1685_t *d, const char *mode)
 {
+    if (d->relax.storage) return ESP_ERR_INVALID_STATE;
     const epd_ssd1685_refresh_mode_t before = d->refresh_mode;
     bool restart = false;
     if (strcmp(mode, "refresh=auto") == 0 || strcmp(mode, "waveform=otp") == 0)

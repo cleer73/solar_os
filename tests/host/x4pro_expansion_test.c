@@ -87,9 +87,16 @@ static void reboot(void)
     registered=NULL; latch_on=false; probes=writes=commits=initializes=0;
     probe_error=init_error=commit_error=register_error=ESP_OK;
 }
+static bool relaxed_ssd;
+esp_err_t epd_ssd1677_relax(epd_ssd1677_t *d, solar_os_display_relax_phase_t phase)
+{ assert(d && phase == SOLAR_OS_DISPLAY_RELAX_BEGIN); relaxed_ssd = true; return ESP_OK; }
+esp_err_t epd_ultrachip_relax(epd_ultrachip_t *d, solar_os_display_relax_phase_t phase)
+{ assert(d && phase == SOLAR_OS_DISPLAY_RELAX_BEGIN); relaxed_ssd = false; return ESP_OK; }
 int main(void)
 {
     assert(attach()==ESP_OK && probes==1 && commits==1 && cached_id==EPD_XTEINK_UC8179);
+    assert(registered->ops->relax(registered, SOLAR_OS_DISPLAY_RELAX_BEGIN) == ESP_OK);
+    assert(!relaxed_ssd);
     assert(registered->ops->brightness_supported(registered));
     assert(registered->ops->set_brightness(registered, 42)==ESP_OK);
     uint8_t brightness=0;
@@ -105,6 +112,8 @@ int main(void)
     assert(attach()==ESP_OK && commits==1 && cached_id==EPD_XTEINK_UC8279);
     reboot(); cached=false; detected=EPD_XTEINK_SSD1677;
     assert(attach()==ESP_OK && commits==1 && !strcmp(registered->controller,"SSD1677"));
+    assert(registered->ops->relax(registered, SOLAR_OS_DISPLAY_RELAX_BEGIN) == ESP_OK);
+    assert(relaxed_ssd);
     reboot(); cached=false; probe_error=ESP_ERR_NOT_SUPPORTED;
     assert(attach()==ESP_ERR_NOT_SUPPORTED && !commits && !device);
     reboot(); cached=false; init_error=ESP_ERR_TIMEOUT;

@@ -512,6 +512,24 @@ static void test_raster_async_snapshot(void)
     assert(!count && worker_tick(&d.scan_worker) == ESP_OK && !has(0x32));
     expect(0x22, (uint8_t[]){0xf7}, 1);
     watched_panel_lock = NULL;
+    const epd_pulse_tuning_t tuning = d.pulse_tuning;
+    memcpy(snapshot, d.buffer, sizeof(snapshot));
+    assert(epd_ssd1685_relax(&d, SOLAR_OS_DISPLAY_RELAX_BEGIN) == ESP_OK);
+    assert(!d.scan_worker.enabled && !d.scan_submit_ready && d.relax.storage);
+    count = 0;
+    assert(worker_tick(&d.scan_worker) == ESP_OK && !count);
+    assert(epd_ssd1685_set_controller_mode(&d, "cleanup-every=1") == ESP_ERR_INVALID_STATE);
+    assert(epd_ssd1685_relax(&d, SOLAR_OS_DISPLAY_RELAX_BLACK) == ESP_OK);
+    expect(0x22, (uint8_t[]){0xf7}, 1);
+    count = 0;
+    assert(epd_ssd1685_relax(&d, SOLAR_OS_DISPLAY_RELAX_WHITE) == ESP_OK);
+    count = 0;
+    assert(epd_ssd1685_relax(&d, SOLAR_OS_DISPLAY_RELAX_END) == ESP_OK);
+    assert(d.scan_submit_ready && d.scan_worker.enabled && !d.relax.storage);
+    assert(!d.pixel_budget.pending && !d.pixel_budget.peak_drive_cycles && !d.pulse_updates);
+    assert(!d.pulse_needs_cleanup && d.refresh_mode == EPD_SSD1685_REFRESH_PULSE);
+    assert(memcmp(&d.pulse_tuning, &tuning, sizeof(tuning)) == 0);
+    assert(memcmp(d.buffer, snapshot, sizeof(snapshot)) == 0 && d.shadow_valid);
     epd_ssd1685_deinit(&d);
     assert(!d.spi && !d.buffer && !d.scan_worker.task && !d.pixel_budget.pixels);
 }
@@ -602,11 +620,21 @@ static void test_init_rotation_and_cleanup(void)
     worker_init_fail = false;
 }
 
+#define RELAX_TYPE epd_ssd1685_t
+#define RELAX_REFRESH epd_ssd1685_refresh
+#define RELAX_APPLY epd_ssd1685_relax
+#define RELAX_MODE epd_ssd1685_set_controller_mode
+#define RELAX_PARTIAL EPD_SSD1685_REFRESH_PARTIAL
+#define RELAX_COUNT count
+#define RELAX_WIRE find(0x24, 0)->data
+#include "epd_relax_contract.h"
+
 int main(void)
 {
     test_full_and_partial(); test_fastwave_lut(); test_pulse_sync_and_cleanup();
     test_native_cleanup_tuning(); test_pulse_async_retarget_and_recovery();
     test_pulse_busy_failure(); test_pulse_selection_failure();
     test_failures_and_sleep(); test_raster_async_snapshot(); test_init_rotation_and_cleanup();
+    test_relax_transaction();
     puts("epd_ssd1685_test: PASS"); return 0;
 }

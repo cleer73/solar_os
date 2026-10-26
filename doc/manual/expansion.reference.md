@@ -645,6 +645,12 @@ converts indexed app frames to monochrome, including Game Boy's four-shade
 video. Pulse mode submits raster frames to the same asynchronous scan worker
 used for graphics drawing.
 
+All supported EPD drivers provide `display relax <target> [seconds]`, including
+SSD1683, SSD1685, SSD1677, UC8179, UC8279, and the X4 display wrapper. Recovery
+uses native full black/white refreshes, then restores the saved image and
+refresh settings. For example, `display relax display0 60` runs for about a
+minute; cancel between refreshes with Escape or Ctrl+C.
+
 In `refresh=auto`, the factory waveform starts with a full refresh, skips
 unchanged frames, and performs 64 partial updates before the next full cleanup
 by default.

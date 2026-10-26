@@ -288,7 +288,7 @@ epd_uc8279_test: epd_uc8279_test.c $(ROOT)/src/drivers/epd_ultrachip.c $(ROOT)/s
         $(EPD_U8G2_TEST_SOURCES) \
         $(wildcard epd_stubs/*.h epd_stubs/driver/*.h epd_stubs/freertos/*.h)
 	$(CC) $(CFLAGS) -Wno-unused-parameter -ffunction-sections -fdata-sections \
-		-Iepd_stubs -I. -I$(ROOT)/components/u8g2/src/clib \
+		-Iepd_stubs -I. -I$(ROOT)/components/u8g2/src/clib -I$(ROOT)/src/services \
 		epd_uc8279_test.c $(EPD_U8G2_TEST_SOURCES) -Wl,--gc-sections -o $@
 
 ssd1685_expansion_test: ssd1685_expansion_test.c $(ROOT)/src/services/solar_os_ssd1685.c \
@@ -298,13 +298,16 @@ ssd1685_expansion_test: ssd1685_expansion_test.c $(ROOT)/src/services/solar_os_s
 		-I$(ROOT)/src/services -I$(ROOT)/src/drivers -I$(ROOT)/src/board \
 		-I$(ROOT)/components/u8g2/src/clib ssd1685_expansion_test.c -o $@
 
+epd_ssd1685_test epd_ssd1677_test epd_uc8179_test epd_uc8279_test ssd1685_expansion_test uc8179_expansion_test uc8279_expansion_test x4pro_expansion_test: $(ROOT)/src/drivers/epd_relax.h $(ROOT)/src/services/solar_os_display_maintenance.h
+epd_ssd1685_test epd_ssd1677_test epd_uc8179_test epd_uc8279_test: epd_relax_contract.h
+
 epd_ssd1685_test: epd_ssd1685_test.c $(ROOT)/src/drivers/epd_ssd1685.c $(ROOT)/src/drivers/epd_ssd1685.h \
         $(ROOT)/src/drivers/epd_ssd1685_waveform.c $(ROOT)/src/drivers/epd_ssd1685_waveform.h \
         $(ROOT)/src/drivers/epd_pixel_budget.c $(ROOT)/src/drivers/epd_pixel_budget.h $(ROOT)/src/drivers/epd_scan_worker.h \
         $(EPD_U8G2_TEST_SOURCES) \
         $(wildcard epd_stubs/*.h epd_stubs/driver/*.h epd_stubs/freertos/*.h)
 	$(CC) $(CFLAGS) -Wno-unused-parameter -ffunction-sections -fdata-sections \
-		-Iepd_stubs -I. -I$(ROOT)/components/u8g2/src/clib \
+		-Iepd_stubs -I. -I$(ROOT)/components/u8g2/src/clib -I$(ROOT)/src/services \
 		epd_ssd1685_test.c $(ROOT)/src/drivers/epd_ssd1685_waveform.c $(ROOT)/src/drivers/epd_pixel_budget.c $(EPD_U8G2_TEST_SOURCES) -Wl,--gc-sections -o $@
 
 uc8179_expansion_test: uc8179_expansion_test.c $(ROOT)/src/services/solar_os_uc8179.c \
@@ -316,15 +319,16 @@ uc8179_expansion_test: uc8179_expansion_test.c $(ROOT)/src/services/solar_os_uc8
 
 epd_uc8179_test: epd_uc8179_test.c $(ROOT)/src/drivers/epd_ultrachip.c $(ROOT)/src/drivers/epd_ultrachip.h \
         $(ROOT)/src/drivers/epd_uc8179.c $(ROOT)/src/drivers/epd_uc8179.h \
+        $(EPD_U8G2_TEST_SOURCES) \
         $(wildcard epd_stubs/*.h epd_stubs/driver/*.h epd_stubs/freertos/*.h)
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections \
-		-Iepd_stubs -I. -I$(ROOT)/components/u8g2/src/clib \
-		epd_uc8179_test.c -Wl,--gc-sections -o $@
+		-Iepd_stubs -I. -I$(ROOT)/components/u8g2/src/clib -I$(ROOT)/src/services \
+		epd_uc8179_test.c $(EPD_U8G2_TEST_SOURCES) -Wl,--gc-sections -o $@
 
 epd_ssd1677_test: epd_ssd1677_test.c $(ROOT)/src/drivers/epd_ssd1677.c $(ROOT)/src/drivers/epd_ssd1677.h \
 	$(wildcard epd_stubs/*.h epd_stubs/driver/*.h epd_stubs/freertos/*.h)
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections \
-		-Iepd_stubs -I. -I$(ROOT)/components/u8g2/src/clib \
+		-Iepd_stubs -I. -I$(ROOT)/components/u8g2/src/clib -I$(ROOT)/src/services \
 		epd_ssd1677_test.c -Wl,--gc-sections -o $@
 
 irc_protocol_test: irc_protocol_test.c $(ROOT)/src/services/solar_os_irc_protocol.c

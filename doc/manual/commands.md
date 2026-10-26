@@ -1438,9 +1438,10 @@ or Escape stops it between refreshes. The command returns to the shell after
 restoring the saved image and previous refresh mode, including pulse tuning.
 Sleep and shutdown interrupt recovery before the power transition.
 
-Recovery is supported on the CrowPanel 5.79-inch/SolarWriter dual-SSD1683,
-Waveshare 4.2-inch V2, and Elecrow 4.2-inch green-sticker profiles. Other display
-profiles return unsupported. It claims the whole physical target; close apps
+Recovery is available on all built-in EPD drivers: every SSD1683 profile,
+SSD1685, SSD1677, UC8179, and UC8279, including the X4 display wrapper and
+runtime-attached panels. LCD, RLCD, and other display types return unsupported.
+It claims the whole physical target; close apps
 or remove layouts that own it first. A display-shell session can recover its
 own target without closing that session. Ordinary presentation and pulse scans
 are suspended during recovery. Completion reports black/white cycles, not a
