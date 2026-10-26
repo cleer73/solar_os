@@ -387,6 +387,8 @@ def load_board_manifest(path: Path, manifest_dir: Path | None = None) -> dict[st
                 raise ManifestError(f"{current}: extends must be a board ID")
             parent_path = manifest_dir / f"{parent}.toml"
             if not parent_path.is_file():
+                parent_path = manifest_dir / "common" / f"{parent}.toml"
+            if not parent_path.is_file():
                 raise ManifestError(f"{current}: parent board does not exist: {parent_path}")
             resolved = merge_board_overlay(load(parent_path), raw)
         seen.remove(current)

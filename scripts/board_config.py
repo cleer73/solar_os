@@ -92,7 +92,7 @@ def available_base_profiles(manifest_dir: Path = MANIFEST_DIR) -> dict[str, list
     for path in sorted(manifest_dir.glob("*.toml")):
         with path.open("rb") as file:
             raw = tomllib.load(file)
-        if "extends" in raw:
+        if "extends" in raw and (manifest_dir / f"{raw['extends']}.toml").is_file():
             continue
         board = load_board_manifest(path, manifest_dir)
         mcu = board.get("target", {}).get("mcu")

@@ -41,6 +41,7 @@ if(EXISTS "${SOLAR_OS_BOARD_MANIFEST}")
         "${SOLAR_OS_GENERATED_DIR}/solar_os_board_generated.h")
     file(GLOB SOLAR_OS_BOARD_MANIFEST_INPUTS
         "${SOLAR_OS_BOARD_MANIFEST_DIR}/*.toml"
+        "${SOLAR_OS_BOARD_MANIFEST_DIR}/common/*.toml"
     )
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
         "${SOLAR_OS_BOARD_GENERATOR}"
