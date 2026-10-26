@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "driver/spi_master.h"
 #include "esp_err.h"
@@ -62,6 +63,14 @@ esp_err_t epd_ssd1685_init(epd_ssd1685_t *display, const epd_ssd1685_config_t *c
 esp_err_t epd_ssd1685_refresh(epd_ssd1685_t *display);
 esp_err_t epd_ssd1685_resume(epd_ssd1685_t *display);
 void epd_ssd1685_deinit(epd_ssd1685_t *display);
+/* Compose a full frame with a background border. MONO1 rows are byte-padded,
+ * LSB-first, with set bits representing black; coordinates follow rotation.
+ * Pulse mode submits an immutable snapshot to the existing scan worker.
+ */
+esp_err_t epd_ssd1685_present_mono_xbm(epd_ssd1685_t *display,
+                                       const uint8_t *bitmap, size_t bitmap_size,
+                                       uint16_t x, uint16_t y, uint16_t width,
+                                       uint16_t height, uint16_t stride, bool inverted);
 u8g2_t *epd_ssd1685_get_u8g2(epd_ssd1685_t *display);
 const char *epd_ssd1685_controller_mode(const epd_ssd1685_t *display);
 const char *epd_ssd1685_controller_mode_values(const epd_ssd1685_t *display);

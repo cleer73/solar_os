@@ -234,6 +234,30 @@ static esp_err_t display_set_controller_mode(solar_os_board_display_t *display,
         ESP_ERR_INVALID_STATE;
 }
 
+static esp_err_t present_mono(solar_os_board_display_t *display,
+                               const uint8_t *bitmap, size_t bitmap_size,
+                               uint16_t x, uint16_t y, uint16_t width,
+                               uint16_t height, uint16_t stride, bool inverted)
+{
+    return display != NULL ? epd_ssd1685_present_mono_xbm(display->driver,
+        bitmap, bitmap_size, x, y, width, height, stride, inverted) : ESP_ERR_INVALID_STATE;
+}
+
+static esp_err_t target_present_frame(void *context, const solar_os_display_raster_t *frame)
+{
+    if (!frame || frame->format != SOLAR_OS_DISPLAY_FORMAT_MONO1 ||
+        frame->source_width != frame->width || frame->source_height != frame->height)
+        return ESP_ERR_INVALID_ARG;
+    return epd_ssd1685_present_mono_xbm(context, frame->data, frame->data_size,
+        frame->x, frame->y, frame->width, frame->height, frame->source_stride, frame->palette_inverted);
+}
+
+static esp_err_t present_frame(solar_os_board_display_t *display,
+                                const solar_os_display_raster_t *frame)
+{
+    return display != NULL ? target_present_frame(display->driver, frame) : ESP_ERR_INVALID_STATE;
+}
+
 static const solar_os_board_display_ops_t display_ops = {
     .runtime_ready = display_runtime_ready,
     .resume = display_resume,
@@ -242,6 +266,8 @@ static const solar_os_board_display_ops_t display_ops = {
     .controller_mode = display_controller_mode,
     .controller_mode_values = display_controller_mode_values,
     .set_controller_mode = display_set_controller_mode,
+    .present_mono_xbm = present_mono,
+    .present_frame = present_frame,
 };
 
 static const char *target_controller_mode(const void *context)
@@ -275,6 +301,10 @@ static esp_err_t register_auxiliary(solar_os_ssd1685_device_t *device)
     target.controller_mode = target_controller_mode;
     target.controller_mode_values = target_controller_mode_values;
     target.set_controller_mode = target_set_controller_mode;
+    target.frame_formats = SOLAR_OS_DISPLAY_FORMAT_MONO1_BIT;
+    target.preferred_stream_fps = 10U;
+    target.present_frame = target_present_frame;
+    target.frame_context = &device->driver;
     return solar_os_display_register_target(&target);
 }
 
@@ -329,6 +359,8 @@ esp_err_t solar_os_ssd1685_attach(const char *name,
         .controller = "SSD1685",
         .width = u8g2_GetDisplayWidth(u8g2),
         .height = u8g2_GetDisplayHeight(u8g2),
+        .frame_formats = SOLAR_OS_DISPLAY_FORMAT_MONO1_BIT,
+        .preferred_stream_fps = 10U,
         .ready = true,
     };
     ret = device->primary ?

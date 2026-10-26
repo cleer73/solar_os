@@ -639,6 +639,12 @@ expansion detach epd0
 ```
 
 The native framebuffer is 168x384. Rotations 1 and 3 expose a 384x168 target.
+Primary and runtime SSD1685 displays accept MONO1 raster frames, including
+rotation, palette inversion, and background borders. The shared frame presenter
+converts indexed app frames to monochrome, including Game Boy's four-shade
+video. Pulse mode submits raster frames to the same asynchronous scan worker
+used for graphics drawing.
+
 Auto mode starts with a full refresh, skips unchanged frames, and performs
 five partial updates before the next full cleanup by default.
 `cleanup-every=1..128` changes this OTP cleanup interval. `refresh=partial`

@@ -2,7 +2,18 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <freertos/FreeRTOS.h>
+#include "freertos/semphr.h"
+static SemaphoreHandle_t watched_panel_lock;
+static unsigned panel_lock_takes;
+static int tracked_take(SemaphoreHandle_t lock, unsigned timeout)
+{
+    if (lock == watched_panel_lock) ++panel_lock_takes;
+    return xSemaphoreTake(lock, timeout);
+}
+#define xSemaphoreTake tracked_take
 #include "../../src/drivers/epd_ssd1685.c"
+#undef xSemaphoreTake
 
 typedef struct {
     uint8_t command;
@@ -457,6 +468,51 @@ static void test_failures_and_sleep(void)
     expect(0x22, (uint8_t[]){0xf7}, 1);
 }
 
+static void test_raster_async_snapshot(void)
+{
+    epd_ssd1685_t d = make_display();
+    d.lock = xSemaphoreCreateMutexStatic(&d.lock_storage);
+    watched_panel_lock = d.lock;
+    u8g2_SetupDisplay(&d.u8g2, display_cb, u8x8_dummy_cb, u8x8_dummy_cb, u8x8_dummy_cb);
+    u8g2_SetupBuffer(&d.u8g2, d.buffer, EPD_SSD1685_HEIGHT / 8U,
+                     u8g2_ll_hvline_vertical_top_lsb, U8G2_R3);
+    u8g2_InitDisplay(&d.u8g2);
+    assert(d.last_error == ESP_OK);
+    assert(epd_ssd1685_set_controller_mode(&d, "pulse-scan=async") == ESP_OK);
+    assert(epd_ssd1685_set_controller_mode(&d, "refresh=pulse") == ESP_OK);
+    uint8_t bitmap[160 / 8 * 144] = {1}; /* Game Boy-sized MONO1 frame */
+    uint8_t snapshot[EPD_SSD1685_BUFFER_BYTES];
+    count = 0;
+    const unsigned takes = panel_lock_takes;
+    assert(epd_ssd1685_present_mono_xbm(&d, bitmap, sizeof(bitmap), 112, 12, 160, 144, 20, false) == ESP_OK);
+    assert(!count && d.scan_worker.has_target && panel_lock_takes == takes);
+    memcpy(snapshot, d.buffer, sizeof(snapshot));
+    /* Composition and enqueue copy the source. Later drawing cannot change
+     * the image the background worker is about to present. */
+    memset(d.buffer, 0, EPD_SSD1685_BUFFER_BYTES);
+    bitmap[0] = 0;
+    assert(worker_tick(&d.scan_worker) == ESP_OK && !worker_pending);
+    assert(memcmp(d.shadow, snapshot, sizeof(snapshot)) == 0);
+    count = 0;
+    assert(epd_ssd1685_present_mono_xbm(&d, bitmap, sizeof(bitmap), 112, 12, 160, 144, 20, false) == ESP_OK);
+    assert(!count);
+    assert(worker_tick(&d.scan_worker) == ESP_OK && worker_pending);
+    assert(d.pixel_budget.pending == 1);
+    assert(epd_pixel_budget_drive(&d.pixel_budget, 271U * 168U + 12U) == EPD_PIXEL_DRIVE_WHITE);
+    assert(sleep_panel(&d) == ESP_OK);
+    memcpy(snapshot, d.buffer, sizeof(snapshot));
+    count = 0;
+    assert(epd_ssd1685_present_mono_xbm(&d, bitmap, sizeof(bitmap), 112, 12, 160, 144, 20, false) == ESP_ERR_INVALID_STATE);
+    assert(!count && memcmp(d.buffer, snapshot, sizeof(snapshot)) == 0);
+    assert(epd_ssd1685_resume(&d) == ESP_OK);
+    count = 0;
+    assert(epd_ssd1685_present_mono_xbm(&d, bitmap, sizeof(bitmap), 112, 12, 160, 144, 20, false) == ESP_OK);
+    assert(!count && worker_tick(&d.scan_worker) == ESP_OK && !has(0x32));
+    expect(0x22, (uint8_t[]){0xf7}, 1);
+    release_pulse(&d);
+    watched_panel_lock = NULL;
+}
+
 static void test_init_rotation_and_cleanup(void)
 {
     const u8g2_cb_t *rotations[] = {U8G2_R0, U8G2_R1, U8G2_R2, U8G2_R3};
@@ -476,7 +532,48 @@ static void test_init_rotation_and_cleanup(void)
         unsigned ink = 0;
         for (unsigned i = 0; i < 8064; ++i) ink += __builtin_popcount((unsigned)(uint8_t)~d.buffer[i]);
         assert(ink == 2);
+        /* Compare raster packing against u8g2's independent rotation code.
+         * Non-byte-aligned width and extra row bytes must ignore padding.
+         */
+        const uint8_t bitmap[4] = {0xf5, 0xee, 0xea, 0xdd};
+        uint8_t reference_buffer[EPD_SSD1685_BUFFER_BYTES];
+        u8g2_t reference = d.u8g2;
+        u8g2_SetupBuffer(&reference, reference_buffer, EPD_SSD1685_HEIGHT / 8U,
+                         u8g2_ll_hvline_vertical_top_lsb, rotations[r]);
+        for (unsigned inverted = 0; inverted < 2; ++inverted) {
+            const unsigned x = inverted ? u8g2_GetDisplayWidth(&d.u8g2) - 5 : 3;
+            const unsigned y = inverted ? u8g2_GetDisplayHeight(&d.u8g2) - 2 : 9;
+            memset(reference_buffer, inverted ? 0 : 0xff, sizeof(reference_buffer));
+            for (unsigned row = 0; row < 2; ++row)
+                for (unsigned column = 0; column < 5; ++column) {
+                    bool black = (bitmap[row * 2] & (1U << column)) != 0;
+                    u8g2_SetDrawColor(&reference, black == (bool)inverted);
+                    u8g2_DrawPixel(&reference, x + column, y + row);
+                }
+            count = 0;
+            assert(epd_ssd1685_present_mono_xbm(&d, bitmap, 4, x, y, 5, 2, 2, inverted) == ESP_OK);
+            assert(memcmp(d.buffer, reference_buffer, sizeof(reference_buffer)) == 0);
+            assert(memcmp(d.shadow, reference_buffer, sizeof(reference_buffer)) == 0);
+            count = 0;
+            assert(epd_ssd1685_present_mono_xbm(&d, bitmap, 4, x, y, 5, 2, 2, inverted) == ESP_OK && !count);
+        }
+        memcpy(reference_buffer, d.buffer, sizeof(reference_buffer));
+        assert(epd_ssd1685_present_mono_xbm(&d, bitmap, 3, 0, 0, 5, 2, 2, false) == ESP_ERR_INVALID_ARG);
+        assert(epd_ssd1685_present_mono_xbm(&d, bitmap, 4, 0, 0, 9, 2, 1, false) == ESP_ERR_INVALID_ARG);
+        assert(epd_ssd1685_present_mono_xbm(&d, bitmap, 4, 0, 0, 5, 2, 0, false) == ESP_ERR_INVALID_ARG);
+        assert(epd_ssd1685_present_mono_xbm(&d, bitmap, 4, 0, 0, 0, 2, 2, false) == ESP_ERR_INVALID_ARG);
+        assert(epd_ssd1685_present_mono_xbm(&d, bitmap, 4, UINT16_MAX, 0, 5, 2, 2, false) == ESP_ERR_INVALID_ARG);
+        assert(epd_ssd1685_present_mono_xbm(&d, bitmap, 4, 0, UINT16_MAX, 5, 2, 2, false) == ESP_ERR_INVALID_ARG);
+        assert(epd_ssd1685_present_mono_xbm(&d, NULL, 4, 0, 0, 5, 2, 2, false) == ESP_ERR_INVALID_ARG);
+        const u8g2_cb_t unsupported = *U8G2_R0;
+        d.u8g2.cb = &unsupported;
+        assert(epd_ssd1685_present_mono_xbm(&d, bitmap, 4, 0, 0, 5, 2, 2, false) == ESP_ERR_NOT_SUPPORTED);
+        d.u8g2.cb = rotations[r];
+        assert(!count && memcmp(d.buffer, reference_buffer, sizeof(reference_buffer)) == 0);
         assert(display_cb(&d.u8g2.u8x8, U8X8_MSG_DISPLAY_SET_POWER_SAVE, 1, NULL));
+        count = 0;
+        assert(epd_ssd1685_present_mono_xbm(&d, bitmap, 4, 0, 0, 5, 2, 2, false) == ESP_ERR_INVALID_STATE);
+        assert(!count && memcmp(d.buffer, reference_buffer, sizeof(reference_buffer)) == 0);
         assert(!d.controller_ready && !d.shadow_valid && !d.powered);
         assert(epd_ssd1685_resume(&d) == ESP_OK && d.controller_ready && !d.shadow_valid);
         epd_ssd1685_deinit(&d);
@@ -502,6 +599,6 @@ int main(void)
     test_full_and_partial(); test_fastwave_lut(); test_pulse_sync_and_cleanup();
     test_native_cleanup_tuning(); test_pulse_async_retarget_and_recovery();
     test_pulse_busy_failure(); test_pulse_selection_failure();
-    test_failures_and_sleep(); test_init_rotation_and_cleanup();
+    test_failures_and_sleep(); test_raster_async_snapshot(); test_init_rotation_and_cleanup();
     puts("epd_ssd1685_test: PASS"); return 0;
 }

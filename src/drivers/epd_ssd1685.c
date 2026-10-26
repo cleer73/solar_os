@@ -405,6 +405,45 @@ esp_err_t epd_ssd1685_refresh(epd_ssd1685_t *d)
     return err;
 }
 
+esp_err_t epd_ssd1685_present_mono_xbm(epd_ssd1685_t *d,
+                                       const uint8_t *bitmap, size_t bitmap_size,
+                                       uint16_t x, uint16_t y, uint16_t width,
+                                       uint16_t height, uint16_t stride, bool inverted)
+{
+    if (!d || !d->buffer || !bitmap || !width || !height ||
+        stride < ((size_t)width + 7U) / 8U || height > SIZE_MAX / stride ||
+        bitmap_size < (size_t)height * stride ||
+        (uint32_t)x + width > u8g2_GetDisplayWidth(&d->u8g2) ||
+        (uint32_t)y + height > u8g2_GetDisplayHeight(&d->u8g2)) return ESP_ERR_INVALID_ARG;
+    const u8g2_cb_t *rotation = d->u8g2.cb;
+    if (rotation != U8G2_R0 && rotation != U8G2_R1 &&
+        rotation != U8G2_R2 && rotation != U8G2_R3) return ESP_ERR_NOT_SUPPORTED;
+    if (!d->powered || d->suspended || !d->spi || !d->line_buffer)
+        return ESP_ERR_INVALID_STATE;
+    /* Like ordinary u8g2 drawing, compose before submitting the snapshot.
+     * The worker reads its own copy, never this buffer. Async submission must
+     * not wait on the panel lock held during an earlier physical drive.
+     */
+    memset(d->buffer, inverted ? 0 : 0xff, EPD_SSD1685_BUFFER_BYTES);
+    for (unsigned row = 0; row < height; ++row) {
+        const uint8_t *source = bitmap + (size_t)row * stride;
+        for (unsigned column = 0; column < width; ++column) {
+            const unsigned lx = x + column, ly = y + row;
+            unsigned nx = lx, ny = ly;
+            if (rotation == U8G2_R1) { nx = EPD_SSD1685_WIDTH - 1U - ly; ny = lx; }
+            else if (rotation == U8G2_R2) {
+                nx = EPD_SSD1685_WIDTH - 1U - lx; ny = EPD_SSD1685_HEIGHT - 1U - ly;
+            } else if (rotation == U8G2_R3) { nx = ly; ny = EPD_SSD1685_HEIGHT - 1U - lx; }
+            uint8_t *destination = d->buffer + (ny / 8U) * EPD_SSD1685_WIDTH + nx;
+            const uint8_t mask = (uint8_t)(1U << (ny & 7U));
+            const bool black = (source[column / 8U] & (1U << (column & 7U))) != 0;
+            if (black == inverted) *destination |= mask;
+            else *destination &= (uint8_t)~mask;
+        }
+    }
+    return epd_ssd1685_refresh(d);
+}
+
 static esp_err_t sleep_panel(epd_ssd1685_t *d)
 {
     d->suspended = true;

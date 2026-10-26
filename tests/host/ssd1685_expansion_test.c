@@ -10,6 +10,10 @@ static esp_err_t init_error, register_error, unregister_error;
 static bool primary;
 static solar_os_display_target_t target;
 static solar_os_board_display_t *primary_display;
+static unsigned raster_calls;
+static epd_ssd1685_t *raster_driver;
+static solar_os_display_raster_t received;
+static esp_err_t raster_error;
 const u8g2_cb_t u8g2_cb_r0 = {0}, u8g2_cb_r1 = {0}, u8g2_cb_r2 = {0}, u8g2_cb_r3 = {0};
 
 size_t strlcpy(char *dst, const char *src, size_t size)
@@ -64,6 +68,48 @@ const char *epd_ssd1685_controller_mode_values(const epd_ssd1685_t *display)
 esp_err_t epd_ssd1685_set_controller_mode(epd_ssd1685_t *display, const char *mode)
 { (void)display; (void)mode; return ESP_OK; }
 
+esp_err_t epd_ssd1685_present_mono_xbm(epd_ssd1685_t *display,
+    const uint8_t *bitmap, size_t bitmap_size, uint16_t x, uint16_t y,
+    uint16_t width, uint16_t height, uint16_t stride, bool inverted)
+{
+    ++raster_calls; raster_driver = display;
+    received = (solar_os_display_raster_t){.data = bitmap, .data_size = bitmap_size,
+        .x = x, .y = y, .width = width, .height = height, .source_stride = stride,
+        .palette_inverted = inverted};
+    return raster_error;
+}
+
+static void test_raster_forwarding(void *context,
+    esp_err_t (*present)(void *, const solar_os_display_raster_t *))
+{
+    const uint8_t bitmap[4] = {0x15, 0xee, 0x0a, 0xff};
+    solar_os_display_raster_t frame = {.format = SOLAR_OS_DISPLAY_FORMAT_MONO1,
+        .data = bitmap, .data_size = sizeof(bitmap), .source_width = 5, .source_height = 2,
+        .source_stride = 2, .x = 3, .y = 4, .width = 5, .height = 2, .palette_inverted = true};
+    assert(present(context, &frame) == ESP_OK);
+    assert(received.data == bitmap && received.data_size == sizeof(bitmap));
+    assert(received.x == 3 && received.y == 4 && received.width == 5 && received.height == 2);
+    assert(received.source_stride == 2 && received.palette_inverted);
+    unsigned calls = raster_calls;
+    frame.format = SOLAR_OS_DISPLAY_FORMAT_INDEX2;
+    assert(present(context, &frame) == ESP_ERR_INVALID_ARG && raster_calls == calls);
+    frame.format = SOLAR_OS_DISPLAY_FORMAT_MONO1;
+    frame.source_width = 4;
+    assert(present(context, &frame) == ESP_ERR_INVALID_ARG && raster_calls == calls);
+    frame.source_width = 5; frame.source_height = 1;
+    assert(present(context, &frame) == ESP_ERR_INVALID_ARG && raster_calls == calls);
+    assert(present(context, NULL) == ESP_ERR_INVALID_ARG && raster_calls == calls);
+    frame.source_height = 2; raster_error = ESP_FAIL;
+    assert(present(context, &frame) == ESP_FAIL);
+    raster_error = ESP_OK;
+}
+
+static esp_err_t primary_present(void *context, const solar_os_display_raster_t *frame)
+{
+    solar_os_board_display_t *display = context;
+    return display->ops->present_frame(display, frame);
+}
+
 int main(void)
 {
     solar_os_expansion_binding_t bindings[] = {
@@ -89,6 +135,9 @@ int main(void)
     assert(solar_os_ssd1685_attach("epd0", bindings, 6) == ESP_OK);
     assert(target.width == 168 && target.height == 384 && !target.black_is_one);
     assert(strcmp(target.driver, "ssd1685") == 0 && strcmp(target.controller, "SSD1685") == 0);
+    assert(target.frame_formats == SOLAR_OS_DISPLAY_FORMAT_MONO1_BIT && target.preferred_stream_fps == 10);
+    test_raster_forwarding(target.frame_context, target.present_frame);
+    assert(raster_driver == target.frame_context);
     assert(solar_os_ssd1685_attach("epd0", bindings, 6) == ESP_ERR_INVALID_ARG);
     unregister_error = ESP_FAIL;
     assert(solar_os_ssd1685_detach("epd0") == ESP_FAIL && deinited == 2);
@@ -98,6 +147,14 @@ int main(void)
     primary = true;
     assert(solar_os_ssd1685_attach("display0", bindings, 6) == ESP_OK);
     assert(primary_display->ready && strcmp(primary_display->controller, "SSD1685") == 0);
+    assert(primary_display->frame_formats == SOLAR_OS_DISPLAY_FORMAT_MONO1_BIT);
+    assert(primary_display->preferred_stream_fps == 10 && primary_display->ops->present_mono_xbm);
+    test_raster_forwarding(primary_display, primary_present);
+    assert(raster_driver == primary_display->driver);
+    const uint8_t mono = 1;
+    assert(primary_display->ops->present_mono_xbm(primary_display, &mono, 1, 1, 2, 1, 1, 1, false) == ESP_OK);
+    assert(received.data == &mono && received.x == 1 && received.y == 2 && !received.palette_inverted);
+    assert(primary_display->ops->present_frame(NULL, NULL) == ESP_ERR_INVALID_STATE);
     assert(solar_os_ssd1685_detach("display0") == ESP_OK);
     puts("ssd1685_expansion_test: PASS"); return 0;
 }
