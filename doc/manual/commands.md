@@ -1494,8 +1494,13 @@ initial cleanup and does not schedule periodic full refreshes. `refresh=fast`
 forces a fast full-frame waveform and `refresh=full` forces the full cleanup
 waveform on every changed frame.
 
-The Elecrow 5.79-inch dual-SSD1683, Elecrow 4.2-inch green-sticker, and
-Waveshare 4.2-inch V2/revision-2.2 profiles also accept the optional
+SSD1685 targets use factory `refresh=auto|partial|full` modes. In auto mode,
+`cleanup-every=<1..128>` sets the number of partial updates before a full OTP
+cleanup (default 5). `refresh=partial` bypasses periodic cleanup;
+`refresh=fast` is an alias for it.
+
+The Elecrow 5.79-inch dual-SSD1683, Elecrow 4.2-inch green-sticker,
+Waveshare 4.2-inch V2/revision-2.2, and SSD1685 GDEY029T71H profiles also accept the optional
 `refresh=pulse` monochrome mode. `display mode <target> drive-cycles=<1..32>`
 sets the per-pixel budget, `pulse-frames=<1..32>` sets each drive phase's scan
 duration, `waveform-fr=<1..12>` selects a raw frame-rate code (the dual SSD1683
@@ -1511,12 +1516,13 @@ the image count. At a limit, the asynchronous worker schedules a native cleanup
 without waiting for another presentation or for all pending pixels to settle.
 Mode output includes the policy, peak/limit drive cycles, and changed-image age.
 These counters estimate accumulated activity and do not measure ghosting.
-These runtime settings apply only to pulse mode and are listed by
+These runtime settings apply to pulse mode, with SSD1685's `cleanup-every`
+also controlling its native auto-mode cleanup interval. They are listed by
 `display mode <target>`. `pulse-scan=sync` completes a presentation's pending
 cycles before returning. `pulse-scan=async` runs one cycle per scan in a
 persistent worker and accepts new targets while earlier pixels settle.
 `pulse-period=<10..1000>` requests the minimum new-image interval in milliseconds;
-the dual-SSD1683 and Elecrow green-sticker profiles instead accept 67–1000 ms.
+the dual-SSD1683, Elecrow green-sticker, and SSD1685 profiles instead accept 67–1000 ms.
 Settling drives run as BUSY permits without consuming new-image slots. A new
 target can replace the current target between drives when its image slot is due;
 unchanged pixels keep their remaining budgets. Identical submissions do not
@@ -1528,6 +1534,9 @@ count includes native baseline snapshots; submitted/coalesced counts also appear
 `pulse-power=<cycle,hold>` selects supply cycling or retention during settling,
 `pulse-ramp=<normal,fast>` selects booster duration, and
 `pulse-spi-khz=<100..20000>` overrides the SPI clock only for pulse operation.
+SSD1685 limits pulse SPI to 100–10000 kHz and also exposes `invert=<false,true>`
+for polarity testing; its custom waveform requires panel validation. See the
+[SSD1685 reference](expansion.reference.md#gdey029t71h-e-paper-ssd1685) for defaults.
 Elecrow 5.79-inch defaults are asynchronous, 67 ms new-image interval, retained supplies, fast
 booster ramp, 20000 kHz pulse SPI, 6 drive cycles, 8 scan frames, FR code 4,
 and adaptive cleanup with a baseline of 64. This profile uses the Fastwave

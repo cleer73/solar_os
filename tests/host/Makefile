@@ -299,11 +299,13 @@ ssd1685_expansion_test: ssd1685_expansion_test.c $(ROOT)/src/services/solar_os_s
 		-I$(ROOT)/components/u8g2/src/clib ssd1685_expansion_test.c -o $@
 
 epd_ssd1685_test: epd_ssd1685_test.c $(ROOT)/src/drivers/epd_ssd1685.c $(ROOT)/src/drivers/epd_ssd1685.h \
+        $(ROOT)/src/drivers/epd_ssd1685_waveform.c $(ROOT)/src/drivers/epd_ssd1685_waveform.h \
+        $(ROOT)/src/drivers/epd_pixel_budget.c $(ROOT)/src/drivers/epd_pixel_budget.h $(ROOT)/src/drivers/epd_scan_worker.h \
         $(EPD_U8G2_TEST_SOURCES) \
         $(wildcard epd_stubs/*.h epd_stubs/driver/*.h epd_stubs/freertos/*.h)
 	$(CC) $(CFLAGS) -Wno-unused-parameter -ffunction-sections -fdata-sections \
 		-Iepd_stubs -I. -I$(ROOT)/components/u8g2/src/clib \
-		epd_ssd1685_test.c $(EPD_U8G2_TEST_SOURCES) -Wl,--gc-sections -o $@
+		epd_ssd1685_test.c $(ROOT)/src/drivers/epd_ssd1685_waveform.c $(ROOT)/src/drivers/epd_pixel_budget.c $(EPD_U8G2_TEST_SOURCES) -Wl,--gc-sections -o $@
 
 uc8179_expansion_test: uc8179_expansion_test.c $(ROOT)/src/services/solar_os_uc8179.c \
         $(ROOT)/src/services/solar_os_uc8179_driver.c $(ROOT)/src/drivers/epd_ultrachip.h

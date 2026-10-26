@@ -640,10 +640,62 @@ expansion detach epd0
 
 The native framebuffer is 168x384. Rotations 1 and 3 expose a 384x168 target.
 Auto mode starts with a full refresh, skips unchanged frames, and performs
-five partial updates before the next full cleanup. `refresh=partial` requests
+five partial updates before the next full cleanup by default.
+`cleanup-every=1..128` changes this OTP cleanup interval. `refresh=partial`
+(also accepted as `refresh=fast`) requests
 partial updates while a valid previous frame is available; initialization,
 sleep/resume, and transfer recovery always begin with a full refresh.
 `refresh=full` uses the panel's temperature-dependent full waveform.
+
+The optional `refresh=pulse` uses an experimental SSD1685 Fastwave adapter
+with the shared per-pixel budgeting and scan worker used by the Elecrow boards.
+It retains factory source/gate voltages and sets VCOM to -0.2 V. Contrast,
+polarity, ghosting, and timing need validation on the installed panel.
+Repeated custom pulses can leave persistent staining.
+
+For CL-32 EPD:
+
+```text
+display mode display0 cleanup-every=64
+display mode display0 cleanup-policy=adaptive
+display mode display0 refresh=pulse
+display mode display0
+```
+
+`drive-cycles=1..32` sets successful activations per changed pixel (default 3).
+`pulse-frames=1..32` sets the duration of each drive phase (default 10), and
+`waveform-fr=1..12` selects a frame-rate code (default 5, nominal 125 Hz).
+Identical frames do not refill budgets. `pulse-scan=async` is the default;
+settling pulses continue in the background, and newer targets can replace older
+ones between drives. `pulse-scan=sync` finishes the pending drives before
+returning. `pulse-period=67..1000` sets the minimum new-image interval in
+milliseconds (default 100), independently of settling pulses.
+
+In pulse mode, `cleanup-policy=fixed` schedules a full OTP cleanup every
+`cleanup-every` changed images. The default `cleanup-policy=adaptive` cleans
+up when a pixel reaches `cleanup-every * drive-cycles` successful drives or
+after `4 * cleanup-every` changed images. The default cleanup baseline is 5;
+the example increases it to 64. Mode output reports cleanup age, peak drive
+exposure, pending pixels, and separate image and scan counters.
+
+`pulse-power=hold|cycle` selects retained supplies or cycling between drives
+(default `hold`). `pulse-ramp=normal|fast` changes booster startup duration
+(default `normal`). `pulse-spi-khz=100..10000` overrides the clock in pulse
+mode, initially using the attachment's SPI clock. `invert=true` swaps drive
+polarity for panel testing (default `false`). Use one setting per command.
+
+To return to the factory setup:
+
+```text
+display mode display0 refresh=auto
+```
+
+The aliases `waveform=fastwave` and `waveform=otp` select `refresh=pulse` and
+`refresh=auto`, respectively. Initialization, resume, and mode recovery establish
+a full-refresh baseline. An asynchronous failure returns to `refresh=auto`
+and attempts a full refresh of the latest accepted image. Pulse mode requires
+PSRAM for pixel budgets and worker snapshots; allocation failure leaves the
+previous refresh mode selected.
 
 CL-32's e-paper variant uses this panel with SCK GPIO9, MOSI GPIO10, CS GPIO6,
 DC GPIO13, reset GPIO12, and BUSY GPIO14. Build `cl32_epd` to attach it as the
