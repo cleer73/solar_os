@@ -470,16 +470,18 @@ static void test_failures_and_sleep(void)
 
 static void test_raster_async_snapshot(void)
 {
-    epd_ssd1685_t d = make_display();
-    d.lock = xSemaphoreCreateMutexStatic(&d.lock_storage);
+    epd_ssd1685_t d = {0};
+    const epd_ssd1685_config_t config = {.spi_bus = "spi0", .cs_pin = 10, .dc_pin = 9,
+        .reset_pin = 46, .busy_pin = 3, .power_pin = 7, .spi_clock_hz = 10000000,
+        .rotation = U8G2_R3, .panel = EPD_SSD1685_PANEL_GDEY029T71H};
+    count = 0;
+    assert(epd_ssd1685_init(&d, &config) == ESP_OK);
+    assert(d.refresh_mode == EPD_SSD1685_REFRESH_PULSE && d.scan_submit_ready);
+    assert(d.scan_worker.task && d.scan_worker.enabled && d.scan_async);
+    assert(d.pulse_tuning.cleanup_every == 64 && d.pulse_tuning.cleanup_adaptive);
+    assert(d.pulse_tuning.drive_cycles == 3 && d.scan_period_ms == 100);
+    assert(d.scan_worker.period_ms == 100);
     watched_panel_lock = d.lock;
-    u8g2_SetupDisplay(&d.u8g2, display_cb, u8x8_dummy_cb, u8x8_dummy_cb, u8x8_dummy_cb);
-    u8g2_SetupBuffer(&d.u8g2, d.buffer, EPD_SSD1685_HEIGHT / 8U,
-                     u8g2_ll_hvline_vertical_top_lsb, U8G2_R3);
-    u8g2_InitDisplay(&d.u8g2);
-    assert(d.last_error == ESP_OK);
-    assert(epd_ssd1685_set_controller_mode(&d, "pulse-scan=async") == ESP_OK);
-    assert(epd_ssd1685_set_controller_mode(&d, "refresh=pulse") == ESP_OK);
     uint8_t bitmap[160 / 8 * 144] = {1}; /* Game Boy-sized MONO1 frame */
     uint8_t snapshot[EPD_SSD1685_BUFFER_BYTES];
     count = 0;
@@ -509,8 +511,9 @@ static void test_raster_async_snapshot(void)
     assert(epd_ssd1685_present_mono_xbm(&d, bitmap, sizeof(bitmap), 112, 12, 160, 144, 20, false) == ESP_OK);
     assert(!count && worker_tick(&d.scan_worker) == ESP_OK && !has(0x32));
     expect(0x22, (uint8_t[]){0xf7}, 1);
-    release_pulse(&d);
     watched_panel_lock = NULL;
+    epd_ssd1685_deinit(&d);
+    assert(!d.spi && !d.buffer && !d.scan_worker.task && !d.pixel_budget.pixels);
 }
 
 static void test_init_rotation_and_cleanup(void)
@@ -523,6 +526,7 @@ static void test_init_rotation_and_cleanup(void)
     for (unsigned r = 0; r < 4; ++r) {
         count = 0; c.rotation = rotations[r];
         assert(epd_ssd1685_init(&d, &c) == ESP_OK);
+        assert(epd_ssd1685_set_controller_mode(&d, "refresh=auto") == ESP_OK);
         assert(u8g2_GetDisplayWidth(&d.u8g2) == (r % 2 ? 384 : 168));
         assert(u8g2_GetDisplayHeight(&d.u8g2) == (r % 2 ? 168 : 384));
         u8g2_SetDrawColor(&d.u8g2, 0);
@@ -592,6 +596,10 @@ static void test_init_rotation_and_cleanup(void)
     assert(epd_ssd1685_init(&d, &c) == ESP_ERR_TIMEOUT);
     assert(!d.spi && !d.buffer && !d.powered);
     stuck_busy = false;
+    count = 0; worker_init_fail = true;
+    assert(epd_ssd1685_init(&d, &c) == ESP_ERR_NO_MEM);
+    assert(!d.spi && !d.buffer && !d.shadow && !d.scan_worker.task && !d.pixel_budget.pixels);
+    worker_init_fail = false;
 }
 
 int main(void)

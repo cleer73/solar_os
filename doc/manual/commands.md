@@ -1494,13 +1494,14 @@ initial cleanup and does not schedule periodic full refreshes. `refresh=fast`
 forces a fast full-frame waveform and `refresh=full` forces the full cleanup
 waveform on every changed frame.
 
-SSD1685 targets use factory `refresh=auto|partial|full` modes. In auto mode,
+SSD1685 targets default to asynchronous `refresh=pulse` and also provide
+factory `refresh=auto|partial|full` modes. In auto mode,
 `cleanup-every=<1..128>` sets the number of partial updates before a full OTP
-cleanup (default 5). `refresh=partial` bypasses periodic cleanup;
+cleanup (default 64). `refresh=partial` bypasses periodic cleanup;
 `refresh=fast` is an alias for it.
 
 The Elecrow 5.79-inch dual-SSD1683, Elecrow 4.2-inch green-sticker,
-Waveshare 4.2-inch V2/revision-2.2, and SSD1685 GDEY029T71H profiles also accept the optional
+Waveshare 4.2-inch V2/revision-2.2, and SSD1685 GDEY029T71H profiles provide the
 `refresh=pulse` monochrome mode. `display mode <target> drive-cycles=<1..32>`
 sets the per-pixel budget, `pulse-frames=<1..32>` sets each drive phase's scan
 duration, `waveform-fr=<1..12>` selects a raw frame-rate code (the dual SSD1683

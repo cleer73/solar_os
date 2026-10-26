@@ -547,7 +547,7 @@ esp_err_t epd_ssd1685_init(epd_ssd1685_t *d, const epd_ssd1685_config_t *c)
     *d = (epd_ssd1685_t){.dc_pin = c->dc_pin,
         .reset_pin = c->reset_pin, .busy_pin = c->busy_pin, .power_pin = c->power_pin,
         .pulse_tuning = {.drive_cycles = 3, .pulse_frames = 10, .waveform_fr = 5,
-                         .cleanup_every = 5, .cleanup_adaptive = true},
+                         .cleanup_every = 64, .cleanup_adaptive = true},
         .scan_async = true, .scan_period_ms = 100, .pulse_power_hold = true,
         .pulse_spi_clock_hz = c->spi_clock_hz};
     d->lock = xSemaphoreCreateMutexStatic(&d->lock_storage);
@@ -575,6 +575,8 @@ esp_err_t epd_ssd1685_init(epd_ssd1685_t *d, const epd_ssd1685_config_t *c)
         u8g2_InitDisplay(&d->u8g2);
         err = d->last_error;
     }
+    if (err == ESP_OK)
+        err = epd_ssd1685_set_controller_mode(d, "refresh=pulse");
     if (err != ESP_OK) epd_ssd1685_deinit(d);
     return err;
 }
