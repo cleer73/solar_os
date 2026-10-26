@@ -29,6 +29,38 @@ in shell scrollback; app screens are discarded. Errors return to the shell
 with a diagnostic. Run `status` to check the most recent app exit code: 0 means
 success. See [Sessions](sessions.apps.md) for switching and display focus.
 
+## messages
+
+Manage messaging instances, connections, and local message history on the display
+or a VT100 terminal. Run `messages` without arguments to open the TUI. Existing
+`messages` subcommands remain available for shell and scripting use.
+
+Press `Tab` to switch between **Instances**, **Connections**, and **Messages**.
+Use the arrow keys to select a row, `Enter` to open it, `a` for actions, and `?`
+for help. `f` selects an instance or **All instances**. The selected instance
+is shared between tabs. `Esc` returns to the previous view; `q` closes the TUI.
+
+- **Instances:** `n` adds an instance using a provider form, `e` edits its
+  settings, and `d` removes it after confirmation. Select a field and press
+  `Enter` to edit it in place with a visible insertion cursor; `s` saves the form.
+  The other fields remain visible. Unchanged secret fields keep their saved
+  values. Submitting an empty secret field clears it. Removal deletes local
+  history, queued sends, settings, and credentials for that instance.
+- **Connections:** `c` enables the selected instance and `x` disables it.
+  `Enter` shows connection state, worker state, and errors. Enabling an instance
+  does not start its worker; use `job start` with the appropriate worker settings.
+- **Messages:** `v` cycles through conversations, unread messages, and the
+  pending outbox. `Enter` opens conversation history or a message's full text.
+  `Page Up` loads older records and `Page Down` loads newer records. `c` opens
+  Chat for the selected conversation; closing Chat returns to this browser.
+  `r` marks the selected conversation read. `d` deletes one selected local message
+  after confirmation. A pending send must first be cancelled with `x` before its
+  history can be deleted. Local deletion does not retract a remote message.
+
+Message browsing uses the persistent Messaging archive. The universal Inbox
+also contains notifications from other applications; see `inbox` for those.
+See [Messaging](messaging.md) for provider settings, trust, and storage behavior.
+
 ## dlp
 
 Use a named SolarOS display as a Display Link Protocol receiver. The `dlp`

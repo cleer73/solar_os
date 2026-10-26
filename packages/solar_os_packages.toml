@@ -2743,6 +2743,7 @@ label = "app.chat"
 depends = ["service_messaging"]
 sources = [
   "apps/solar_os_chat.c",
+  "apps/solar_os_messages.c",
   "shell/solar_os_shell_messages.c",
 ]
 capabilities = ["psram"]

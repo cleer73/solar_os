@@ -145,6 +145,33 @@ int main(void)
     scope = solar_os_gateway_scope_enter(gateway_find(b));
     assert(solar_os_chat_get_config(&config) == ESP_OK && !strcmp(config.token, "token-b"));
     solar_os_gateway_scope_leave(scope);
+    /* Form readback never returns secrets. Editing another field preserves the
+     * token, failed writes preserve it too, and an explicit empty edit clears. */
+    solar_os_messaging_settings_t form;
+    assert(solar_os_messaging_settings_read("gateway", b, 0, &form) == ESP_OK);
+    assert(form.count == 2 && form.enabled && form.present[1] && !form.values[1][0]);
+    assert(!strcmp(form.values[0], settings_b[0]) && !strcmp(form.worker, "gateway-sync"));
+    assert(solar_os_messaging_settings_read("link", b, 0, &form) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_settings_read("gateway", b, 0, &form) == ESP_OK);
+    form.changed[0] = true; strlcpy(form.values[0], "chats://edited.example:7443", sizeof(form.values[0]));
+    solar_os_messaging_provider_id_t result = 0;
+    assert(solar_os_messaging_settings_write("gateway", b, 0, NULL, &form, &result) == ESP_OK && result == b);
+    scope = solar_os_gateway_scope_enter(gateway_find(b));
+    assert(solar_os_chat_get_config(&config) == ESP_OK && !strcmp(config.token, "token-b") && config.enabled);
+    solar_os_gateway_scope_leave(scope);
+    assert(solar_os_messaging_settings_read("gateway", b, 0, &form) == ESP_OK);
+    form.changed[1] = true; strlcpy(form.values[1], "replacement", sizeof(form.values[1]));
+    fail_migration_promotion = true;
+    assert(solar_os_messaging_settings_write("gateway", b, 0, NULL, &form, &result) != ESP_OK);
+    scope = solar_os_gateway_scope_enter(gateway_find(b));
+    assert(solar_os_chat_get_config(&config) == ESP_OK && !strcmp(config.token, "token-b"));
+    solar_os_gateway_scope_leave(scope);
+    memset(form.values[1], 0, sizeof(form.values[1]));
+    assert(solar_os_messaging_settings_write("gateway", b, 0, NULL, &form, &result) == ESP_OK);
+    assert(solar_os_messaging_settings_read("gateway", b, 0, &form) == ESP_OK && !form.present[1]);
+    memset(form.values[0], 'x', sizeof(form.values[0]));
+    assert(solar_os_messaging_settings_write("gateway", b, 0, NULL, &form, &result) == ESP_ERR_INVALID_SIZE);
+    solar_os_messaging_settings_clear(&form);
     assert(solar_os_messaging_instance_remove(b) == ESP_OK);
     assert(solar_os_messaging_instance_remove(SOLAR_OS_MESSAGING_PROVIDER_GATEWAY) == ESP_OK);
     reboot_gateway();

@@ -1437,6 +1437,14 @@ esp_err_t solar_os_messaging_message_page(solar_os_conversation_id_t conversatio
     solar_os_messaging_provider_id_t provider, size_t offset,
     solar_os_messaging_message_t *messages, size_t capacity, size_t *count, bool *more)
 {
+    return solar_os_messaging_message_page_filtered(conversation, provider, false,
+        offset, messages, capacity, count, more);
+}
+
+esp_err_t solar_os_messaging_message_page_filtered(solar_os_conversation_id_t conversation,
+    solar_os_messaging_provider_id_t provider, bool unread_only, size_t offset,
+    solar_os_messaging_message_t *messages, size_t capacity, size_t *count, bool *more)
+{
     if (!messages || !capacity || !count || !more) return ESP_ERR_INVALID_ARG;
     *count = 0; *more = false;
     esp_err_t error = solar_os_messaging_init();
@@ -1450,7 +1458,7 @@ esp_err_t solar_os_messaging_message_page(solar_os_conversation_id_t conversatio
         (provider && messaging.conversations[c].provider != provider))) {
         messaging_history_unlock(); return ESP_OK;
     }
-    bool indexed = n && offset <= n->recent_count &&
+    bool indexed = !unread_only && n && offset <= n->recent_count &&
         (capacity <= n->recent_count - offset || n->count <= n->recent_count);
     size_t skip = offset;
     size_t limit = indexed ? n->recent_count - offset : messaging.disk_head;
@@ -1469,14 +1477,14 @@ esp_err_t solar_os_messaging_message_page(solar_os_conversation_id_t conversatio
             m = &messaging.record_scratch->message;
         }
         if (!m->key || (conversation && m->conversation_id != conversation) ||
-            (provider && m->provider != provider)) continue;
+            (provider && m->provider != provider) || (unread_only && !m->unread)) continue;
         if (!indexed && skip) { skip--; continue; }
         if (*count == capacity) { *more = true; break; }
         messages[(*count)++] = *m;
         if (!cached) messaging_history_cache_record_locked(messaging.record_scratch, index);
     }
     if (file) messaging_history_fclose(file);
-    if (n) *more = offset < n->count && *count < n->count - offset;
+    if (n && !unread_only) *more = offset < n->count && *count < n->count - offset;
     for (size_t i = 0; i < *count / 2; i++) {
         messaging.pending_slot->message = messages[i];
         messages[i] = messages[*count - i - 1];

@@ -604,7 +604,7 @@ static const shell_command_t shell_builtin_commands[] = {
     {"contacts", "browse and manage contacts", solar_os_shell_cmd_contacts},
 #endif
 #if SOLAR_OS_PACKAGE_APP_CHAT
-    {"messages", "inspect and send provider-neutral messages", solar_os_shell_cmd_messages},
+    {"messages", "manage messaging instances, connections, and history", solar_os_shell_cmd_messages},
     {"outbox", "list or cancel pending messages", solar_os_shell_cmd_outbox},
 #endif
 #if SOLAR_OS_PACKAGE_SERVICE_IRC

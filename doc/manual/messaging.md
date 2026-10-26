@@ -9,6 +9,12 @@ packages_any = ["service_contacts", "service_credentials"]
 +++
 # Messaging identities and security
 
+Run `messages` without arguments to open the tabbed instance, connection, and
+message manager. It supports provider settings forms, connection diagnostics,
+conversation and unread browsing, pending-send cancellation, and deletion of
+individual local messages. `c` opens the existing Chat as a child and returns
+to the browser when Chat closes. See [Application controls](apps.md#messages).
+
 Provider classes describe protocols; named instances describe individual
 connections. Multiple IRC instances can share a class while keeping server
 settings, rooms, nicknames, and message routing separate. Chat groups by
@@ -126,6 +132,7 @@ contacts trust CONTACT_ID [ENDPOINT_ID]
 contacts block CONTACT_ID [ENDPOINT_ID]
 contacts remove CONTACT_ID
 contacts link TARGET_CONTACT_ID SOURCE_CONTACT_ID
+messages
 messages status
 messages conversations
 messages list CONVERSATION_ID
