@@ -30,6 +30,7 @@ TARGETS += drv8830_test
 TARGETS += motor_service_test
 TARGETS += encoder_service_test pcnt_encoder_test
 TARGETS += ssd1306_named_bus_test
+TARGETS += expansion_tui_test
 TARGETS += gt911_test
 TARGETS += sdmmc_expansion_test
 TARGETS += axp2101_service_test
@@ -1065,6 +1066,16 @@ terminal_preferences_test: terminal_preferences_test.c $(ROOT)/src/services/sola
 	$(CC) $(CFLAGS) -I. -I$(ROOT)/src -I$(ROOT)/src/services \
 		terminal_preferences_test.c $(ROOT)/src/services/solar_os_terminal_preferences.c -o $@
 
+EXPANSION_PROFILES_HEADER := $(MANUAL_GENERATED_DIR)/solar_os_expansion_profiles_generated.h
+$(EXPANSION_PROFILES_HEADER): $(ROOT)/boards/expansion_drivers.toml $(ROOT)/scripts/generate_expansion_profiles.py $(ROOT)/scripts/solaros_board_manifest.py
+	python3 $(ROOT)/scripts/generate_expansion_profiles.py --catalog $(ROOT)/boards/expansion_drivers.toml \
+		--packages "expansion_ssd1306 expansion_ssd1683 driver_display_st7305 expansion_ssd1685 expansion_uc8179 expansion_uc8279" --output $@
+
+expansion_tui_test: expansion_tui_test.c $(ROOT)/src/shell/solar_os_shell_expansion_tui.c $(ROOT)/src/services/solar_os_tui_widgets.c $(EXPANSION_PROFILES_HEADER)
+	$(CC) $(CFLAGS) -D_GNU_SOURCE -include compat.h -ffunction-sections -fdata-sections \
+		-Iexpansion_stubs -I. -I$(MANUAL_GENERATED_DIR) -I$(ROOT)/src -I$(ROOT)/src/services -I$(ROOT)/src/shell -I$(ROOT)/src/apps \
+		expansion_tui_test.c $(ROOT)/src/services/solar_os_tui_widgets.c -Wl,--gc-sections -o $@
+
 tui_widgets_test: tui_widgets_test.c $(ROOT)/src/services/solar_os_tui_widgets.c $(ROOT)/src/services/solar_os_tui_widgets.h
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -ffunction-sections -fdata-sections -I. \
 		-I$(ROOT)/src -I$(ROOT)/src/services -I$(ROOT)/src/shell \
@@ -1294,6 +1305,7 @@ test: $(TARGETS)
 	./encoder_service_test
 	./pcnt_encoder_test
 	./ssd1306_named_bus_test
+	./expansion_tui_test
 	./epd_xteink_identify_test
 	./x4pro_expansion_test
 	./gt911_test

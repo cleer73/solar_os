@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from board_config import Configurator, profile_from_expansion, render_overlay
+from generate_expansion_profiles import generate_header as generate_runtime_profiles
 from solaros_board_manifest import (
     ManifestError, board_defines_for_bindings, display_profile_for_bindings,
     generate_header, load_board_manifest, load_driver_catalog, merge_board_overlay,
@@ -177,6 +178,19 @@ class DisplayProfilesTest(unittest.TestCase):
                 board["devices"][-1]["bindings"]["panel"] = count
                 with self.assertRaises(ManifestError):
                     validate_board(board, self.drivers)
+
+    def test_runtime_panel_labels_follow_the_catalog_and_enabled_packages(self):
+        catalog = ROOT / "boards/expansion_drivers.toml"
+        header = generate_runtime_profiles(catalog, {"expansion_ssd1306"})
+        self.assertEqual(header.count("    X("), 12)
+        self.assertIn('X("ssd1306", 1, "128x32 Univision", 0)', header)
+        self.assertIn('X("sh1106", 3, "72x40 Wise", 0)', header)
+        self.assertNotIn('X("st7305"', header)
+        self.assertNotIn('X("ssd1683"', header)
+        epd = generate_runtime_profiles(catalog, {"expansion_ssd1683"})
+        self.assertIn('X("ssd1683", 3, "400x300 Waveshare 4.2-inch V2", 1)', epd)
+        self.assertIn('X("ssd1683", 4, "792x272 Elecrow 5.79-inch dual controller", 0)', epd)
+        self.assertNotIn("    X(", generate_runtime_profiles(catalog, set()))
 
     def test_invalid_catalog_profiles_are_rejected(self):
         catalog = '''schema = 1

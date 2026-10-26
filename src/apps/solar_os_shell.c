@@ -8245,13 +8245,28 @@ static void shell_completion_emit_expansion_spec(
 
     if (spec->allowed_value_count > 0) {
         for (size_t i = 0; i < spec->allowed_value_count; i++) {
-            snprintf(candidate, sizeof(candidate), "%s=0x%02x", spec->key, spec->allowed_values[i]);
+            snprintf(candidate, sizeof(candidate),
+                     spec->kind == SOLAR_OS_EXPANSION_BINDING_I2C_ADDRESS ?
+                         "%s=0x%02x" : "%s=%d",
+                     spec->key, spec->allowed_values[i]);
             shell_completion_emit(state, candidate);
         }
         return;
     }
 
     switch (spec->kind) {
+    case SOLAR_OS_EXPANSION_BINDING_PARAMETER:
+        if (spec->has_value_range && spec->max_value >= spec->min_value &&
+            (int64_t)spec->max_value - spec->min_value < 16) {
+            for (int64_t value = spec->min_value; value <= spec->max_value; value++) {
+                snprintf(candidate, sizeof(candidate), "%s=%d", spec->key, (int)value);
+                shell_completion_emit(state, candidate);
+            }
+        } else {
+            snprintf(candidate, sizeof(candidate), "%s=", spec->key);
+            shell_completion_emit(state, candidate);
+        }
+        break;
     case SOLAR_OS_EXPANSION_BINDING_I2C_BUS:
         for (size_t i = 0; i < solar_os_expansion_i2c_bus_count(); i++) {
             solar_os_expansion_i2c_bus_t bus;
@@ -8382,10 +8397,11 @@ static bool shell_complete_expansion_argument(solar_os_context_t *ctx,
         char completed[SHELL_INPUT_MAX];
         snprintf(completed,
                  sizeof(completed),
-                 "%.*s%s ",
+                 "%.*s%s%s",
                  (int)token_start,
                  shell_session(ctx)->input,
-                 state.match);
+                 state.match,
+                 solar_os_shell_completion_needs_trailing_space(state.match) ? " " : "");
         shell_replace_input(ctx, completed);
         return true;
     }
