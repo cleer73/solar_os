@@ -3,15 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef enum {
-    SOLAR_OS_CL32_TOGGLE_OFF,
-    SOLAR_OS_CL32_TOGGLE_ONCE,
-    SOLAR_OS_CL32_TOGGLE_LOCKED,
-} solar_os_cl32_toggle_t;
-
 typedef struct {
-    solar_os_cl32_toggle_t shift;
-    solar_os_cl32_toggle_t fn;
+    bool fn_held;
     uint8_t held_modifiers;
 } solar_os_cl32_keyboard_t;
 

@@ -181,13 +181,14 @@ the configured brightness, including while the light is toggled off.
 | Hold Menu | Left Ctrl modifier. |
 | File + Left / Right | Previous / next retained session on the focused display. |
 | File+OK | Toggle full screen in shared text menus. |
-| Tap Shift or Fn | Cycle that modifier through one-shot, locked, and off. |
-| Fn active + keypad 1–9 / 0 | F1–F9 / F10. |
-| Fn active + Up / Down | Page Up / Page Down. |
-| Fn active + Left / Right | Home / End. |
+| Hold Shift | Shift modifier. |
+| Hold Fn | Select the alternate symbol and function-key layer. |
+| Fn + keypad 1–9 / 0 | F1–F9 / F10. |
+| Fn + Up / Down | Page Up / Page Down. |
+| Fn + Left / Right | Home / End. |
 
-One-shot Shift or Fn applies to the next key. Locked Shift or Fn remains
-active until you turn it off.
+Shift and Fn stay active only while held. Release them to return to normal
+typing.
 
 ## ODROID-GO
 
