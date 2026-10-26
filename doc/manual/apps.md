@@ -460,6 +460,11 @@ width; a repeating linear sweep; sweep end frequency; sweep time; and playback
 stream. The TUI exposes the same controls. `--tui` forces it on a graphical
 shell.
 
+Small graphical displays show one selected control at a time, with its position
+in the eight-control sequence. The waveform remains visible when space allows.
+Short terminals scroll the controls to keep the selection visible. Long output
+names are clipped to the available width.
+
 Controls:
 
 - `Left`/`Right` selects a control.
