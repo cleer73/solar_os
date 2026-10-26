@@ -113,6 +113,7 @@ spi_dlp = true
 stream_dlp = true
 dlp_client = true
 ssd1683 = true
+ssd1685 = true
 uc8179 = true
 uc8279 = true
 ssd1306 = true

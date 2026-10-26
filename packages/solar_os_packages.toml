@@ -3222,6 +3222,25 @@ depends = ["service_meshcore_ble"]
 sources = ["jobs/solar_os_meshcore_ble_job.c"]
 capabilities = ["ble", "psram"]
 
+[groups.ssd1685]
+label = "SSD1685 e-paper expansion"
+description = "GDEY029T71H 168x384 monochrome panels"
+members = ["expansion_ssd1685"]
+
+[packages.expansion_ssd1685]
+label = "expansion.ssd1685"
+targets = ["esp32", "esp32s3"]
+expansion_drivers = ["solar_os_ssd1685_expansion_driver"]
+depends = ["service_expansion", "service_spi"]
+sources = [
+  "board/solar_os_board_display_expansion.c",
+  "drivers/epd_ssd1685.c",
+  "services/solar_os_ssd1685.c",
+  "services/solar_os_ssd1685_driver.c",
+]
+requires = ["esp_driver_gpio", "esp_driver_spi", "esp_timer", "u8g2"]
+capabilities = ["gfx", "expansion_gpio"]
+
 [groups.uc8179]
 label = "UC8179 e-paper expansion"
 description = "800x480 UltraChip UC8179 panels"

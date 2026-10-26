@@ -39,6 +39,17 @@ class BoardManifestTest(unittest.TestCase):
         cls.manifest_dir = ROOT / "boards" / "manifests"
         cls.drivers = load_driver_catalog(ROOT / "boards" / "expansion_drivers.toml")
 
+    def test_ssd1685_catalog_exposes_reusable_panel_bindings(self) -> None:
+        driver = self.drivers["ssd1685"]
+        self.assertEqual(driver.targets, ("esp32", "esp32s3"))
+        self.assertEqual(driver.package, "expansion_ssd1685")
+        self.assertTrue((ROOT / "boards" / "drivers" / f"{driver.board_driver}.cmake").is_file())
+        specs = {binding.key: binding for binding in driver.bindings}
+        self.assertTrue(specs["panel"].required)
+        self.assertEqual(specs["panel"].allowed, (1,))
+        self.assertEqual(specs["clock"].maximum, 10000)
+        self.assertEqual((specs["rotation"].minimum, specs["rotation"].maximum), (0, 3))
+
     def test_all_manifests_validate(self) -> None:
         for path in self.manifest_dir.glob("*.toml"):
             with self.subTest(path=path.name):

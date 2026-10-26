@@ -268,6 +268,7 @@ Run `expansion drivers` on the device to see the exact registered set.
 | `ssd1683` | SSD1683 monochrome e-paper | `spi=<bus> cs=<pin> dc=<pin> reset=<pin> busy=<pin>`; optional `power=<pin> clock=<khz> rotation=<0..3> panel=<0..4> startup-pulse=<0|1>` | Registers an auxiliary target, or Elecrow's fixed `display0`, with auto, fast, and full refresh modes. Panel 0 auto-detects the 4.2-inch Elecrow revision; 1 is legacy Elecrow, 2 is green-sticker Elecrow, 3 is Waveshare V2, and 4 is Elecrow's 792x272 dual-controller panel. Panels 2, 3, and 4 also accept pulse mode and its runtime tuning controls. `startup-pulse=1` selects pulse at attach when supported; the default is native auto. |
 | `uc8279` | UC8279 800x480 monochrome e-paper | `spi=<bus> cs=<pin> dc=<pin> reset=<pin> busy=<pin> panel=<1..2>`; optional `power=<pin> clock=<khz> rotation=<0..3>` | Panel 1 selects X4 Pro glass and sets its PLL; panel 2 selects X4 Classic glass and preserves the panel's programmed PLL. Both address 600 gates with the visible rows at gates 120..599 and require programmed OTP/MTP waveforms. Active-low BUSY, automatic full cleanup every 20 changed frames, and selectable partial/full refresh. Controller and panel selection are explicit; UC8279 X3 792x528 and other variants require separate profiles. |
 | `x4pro` | Xteink X4 Pro primary display and frontlight | `spi=<bus> cs=<pin> dc=<pin> reset=<pin> busy=<pin> latch=<pin> cool=<pin> warm=<pin>` | Identifies SSD1677, UC8179, or UC8279 once and caches the controller ID in SolarOS NVS. Native 800x480 landscape, 10 MHz SPI, and 25 kHz dual PWM with a fixed 50/50 mix controlled by `setterm brightness`. The primary attachment holds the shared peripheral latch on. |
+| `ssd1685` | SSD1685 168x384 monochrome e-paper | `spi=<bus> cs=<pin> dc=<pin> reset=<pin> busy=<pin> panel=1`; optional `power=<pin> clock=<khz> rotation=<0..3>` | Panel 1 selects GDEY029T71H glass, including its source offset and OTP waveforms. Active-high BUSY, 10 MHz maximum SPI clock, full/partial refresh, and automatic full cleanup after five partial updates. Rotation 1 or 3 gives 384x168 landscape. |
 | `uc8179` | UC8179 800x480 monochrome e-paper | `spi=<bus> cs=<pin> dc=<pin> reset=<pin> busy=<pin> panel=1`; optional `power=<pin> clock=<khz> rotation=<0..3>` | Panel 1 selects Xteink 800x480 glass with 600 addressed gates and programmed OTP waveforms. Active-low BUSY, automatic full cleanup every 20 changed frames, and selectable partial/full refresh. No controller autodetection; other panel geometries and waveforms need their own profile. |
 | `ssd1677` | SSD1677 800x480 monochrome e-paper | `spi=<bus> cs=<pin> dc=<pin> reset=<pin> busy=<pin>`; optional `power=<pin> clock=<khz> rotation=<0..3>` or paired `power_i2c=<bus> power_addr=0x34` through an attached AXP2101 service | Registers an auxiliary target, or Waveshare's fixed `display0`, with automatic dirty-window partial refresh plus selectable partial and full modes. Holds the PMIC attachment while using its ALDO3 rail. |
 | `ssd1306` | 128x64 I2C OLED | `i2c=<bus> addr=<address>` | Registers an auxiliary display target. |
@@ -619,6 +620,35 @@ display test lcd0
 
 Wire a module backlight according to the module board and use suitable current
 limiting when connecting it to 3V3.
+
+### GDEY029T71H e-paper (SSD1685)
+
+Use the `ssd1685` driver with `panel=1` for this 2.9-inch black-and-white
+panel. Supply 3.3 V and connect BUSY as an active-high input. The optional
+`power` GPIO controls an active-high module supply enable. SPI defaults to
+10 MHz; `clock` accepts 100 through 10000 kHz.
+
+On a named SPI bus with the following free control pins:
+
+```text
+expansion attach ssd1685 epd0 spi=spi0 cs=gpio10 dc=gpio17 reset=gpio16 busy=gpio15 panel=1 rotation=3
+display test epd0
+display mode epd0 refresh=full
+display mode epd0 refresh=auto
+expansion detach epd0
+```
+
+The native framebuffer is 168x384. Rotations 1 and 3 expose a 384x168 target.
+Auto mode starts with a full refresh, skips unchanged frames, and performs
+five partial updates before the next full cleanup. `refresh=partial` requests
+partial updates while a valid previous frame is available; initialization,
+sleep/resume, and transfer recovery always begin with a full refresh.
+`refresh=full` uses the panel's temperature-dependent full waveform.
+
+CL-32's e-paper variant uses this panel with SCK GPIO9, MOSI GPIO10, CS GPIO6,
+DC GPIO13, reset GPIO12, and BUSY GPIO14. Its built-in RLCD profile owns those
+same SPI/control pins: using e-paper as the primary display requires a board
+profile that selects `ssd1685` instead of `st7305`.
 
 ### Waveshare 4.2-inch V2 e-paper on ESP32-S3-DevKitC-1
 
