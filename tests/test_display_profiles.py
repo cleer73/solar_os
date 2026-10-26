@@ -139,22 +139,44 @@ class DisplayProfilesTest(unittest.TestCase):
 
         base_path = self.manifests / "esp32_s3_devkitc1_n16r8.toml"
         base = load_board_manifest(base_path, self.manifests)
-        for name, selected, rotation, expected in (
-            ("st7305", "168x384", "3", (384, 168)),
-            ("ssd1683", "elecrow-579-dual", "1", (272, 792)),
+        for name, selected, rotation, panel, expected in (
+            ("st7305", "168x384", "3", 1, (384, 168)),
+            ("ssd1683", "elecrow-579-dual", "1", 4, (272, 792)),
+            ("ssd1306", "128x32-univision", "1", 1, (32, 128)),
+            ("sh1106", "72x40-wise", "2", 3, (72, 40)),
         ):
             screen = Screen(selected, rotation)
             configurator = Configurator(screen, base_path, base, self.drivers)
-            wiring = {"spi": "spi0", "cs": 10, "dc": 17, "reset": 16, "busy": 15}
+            wiring = {"spi": "spi0", "cs": 10, "dc": 17, "reset": 16, "busy": 15,
+                      "i2c": "i2c0", "addr": 0x3c}
             with patch.object(configurator, "_binding_value",
                               side_effect=lambda driver, spec, bindings: wiring[spec.key]):
                 profile = configurator.create("test", "Test", "Custom", "Module", [name])
             bindings = profile["devices"][0]["bindings"]
-            self.assertEqual(self.geometry(name, bindings), expected)
-            self.assertEqual(bindings["panel"], 1 if name == "st7305" else 4)
+            self.assertEqual(bindings["panel"], panel)
             self.assertEqual(bindings["rotation"], int(rotation))
-            self.assertEqual(int(profile["defines"]["SOLAR_OS_BOARD_DISPLAY_WIDTH"]), expected[0])
+            if "display" in self.drivers[name].board_capabilities:
+                self.assertEqual(self.geometry(name, bindings), expected)
+                self.assertEqual(int(profile["defines"]["SOLAR_OS_BOARD_DISPLAY_WIDTH"]), expected[0])
+            else:
+                self.assertNotIn("SOLAR_OS_BOARD_DISPLAY_WIDTH", profile.get("defines", {}))
             self.assertIn(f"{expected[0]}x{expected[1]}", str(screen.choices[-1]))
+
+    def test_oled_profiles_preserve_primary_geometry_and_validate_bindings(self):
+        for driver, count in (("ssd1306", 8), ("sh1106", 4)):
+            with self.subTest(driver=driver):
+                definition = self.drivers[driver]
+                self.assertEqual(len(definition.display_profiles), count)
+                self.assertEqual(board_defines_for_bindings(definition, {"panel": 1, "rotation": 3}), {})
+                board = load_board_manifest(self.manifests / "cl_32.toml", self.manifests)
+                original = dict(board["defines"])
+                board["devices"].append({"driver": driver, "name": "oled0",
+                    "bindings": {"i2c": "i2c0", "addr": 0x3c, "panel": 1, "rotation": 3}})
+                validate_board(board, self.drivers)
+                self.assertEqual(board["defines"], original)
+                board["devices"][-1]["bindings"]["panel"] = count
+                with self.assertRaises(ManifestError):
+                    validate_board(board, self.drivers)
 
     def test_invalid_catalog_profiles_are_rejected(self):
         catalog = '''schema = 1

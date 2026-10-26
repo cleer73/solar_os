@@ -271,8 +271,8 @@ Run `expansion drivers` on the device to see the exact registered set.
 | `ssd1685` | SSD1685 168x384 monochrome e-paper | `spi=<bus> cs=<pin> dc=<pin> reset=<pin> busy=<pin> panel=1`; optional `power=<pin> clock=<khz> rotation=<0..3>` | Panel 1 selects GDEY029T71H glass, including its source offset and OTP waveforms. Active-high BUSY, 10 MHz maximum SPI clock, full/partial refresh, and automatic full cleanup after five partial updates. Rotation 1 or 3 gives 384x168 landscape. |
 | `uc8179` | UC8179 800x480 monochrome e-paper | `spi=<bus> cs=<pin> dc=<pin> reset=<pin> busy=<pin> panel=1`; optional `power=<pin> clock=<khz> rotation=<0..3>` | Panel 1 selects Xteink 800x480 glass with 600 addressed gates and programmed OTP waveforms. Active-low BUSY, automatic full cleanup every 20 changed frames, and selectable partial/full refresh. No controller autodetection; other panel geometries and waveforms need their own profile. |
 | `ssd1677` | SSD1677 800x480 monochrome e-paper | `spi=<bus> cs=<pin> dc=<pin> reset=<pin> busy=<pin>`; optional `power=<pin> clock=<khz> rotation=<0..3>` or paired `power_i2c=<bus> power_addr=0x34` through an attached AXP2101 service | Registers an auxiliary target, or Waveshare's fixed `display0`, with automatic dirty-window partial refresh plus selectable partial and full modes. Holds the PMIC attachment while using its ALDO3 rail. |
-| `ssd1306` | 128x64 I2C OLED | `i2c=<bus> addr=<address>` | Registers an auxiliary display target. |
-| `sh1106` | 128x64 I2C OLED with SH1106 addressing | `i2c=<bus> addr=<address>` | Registers an auxiliary display target with the two-column offset. |
+| `ssd1306` | SSD1306 I2C OLED | `i2c=<bus> addr=<address>`; optional `panel=<0..7> rotation=<0..3>` | Registers an auxiliary display target with the selected panel's geometry and addressing. Defaults to 128x64, rotation 0. |
+| `sh1106` | SH1106 I2C OLED | `i2c=<bus> addr=<address>`; optional `panel=<0..3> rotation=<0..3>` | Registers an auxiliary display target with panel-specific initialization and column offsets. Defaults to 128x64, rotation 0. |
 | `st7305` | 400x300 or 384x168 reflective LCD | `spi=<bus> cs=<pin> dc=<pin> reset=<pin>`; optional `panel=0|1 rotation=1|3` | ESP32 and ESP32-S3. Panel 0 is the native 300x400 Waveshare panel; panel 1 is the native 168x384 Pi0cket CL-32 panel. Both boards register their panel as fixed `display0`. |
 | `ili9341` | 320x240 color TFT | `spi=<bus> cs=<pin> dc=<pin>`; optional `reset=<pin> bl=<pin> active=0|1 pwm=0|1` | ESP32 and ESP32-S3; ODROID-GO registers it as fixed `display0`. |
 | `st7796` | 480x320 color TFT | `spi=<bus> cs=<pin> dc=<pin>`; optional `reset=<pin> bl=<pin> active=0|1 pwm=0|1` | ESP32 and ESP32-S3; Freenove registers it as fixed `display0`. |
@@ -919,6 +919,28 @@ The driver polls the radio status registers, so DIO0/IRQ is optional. An IRQ
 binding can still be reserved for future interrupt-driven operation.
 
 ### SSD1306 or SH1106 on SolarTerm
+
+Both drivers accept `panel` and `rotation`. Panel numbers are specific to the
+controller; select the profile that matches the module:
+
+| Panel | SSD1306 | SH1106 |
+| --- | --- | --- |
+| `0` (default) | Generic 128x64 | Generic 128x64 |
+| `1` | Univision 128x32 | Visionox 128x32 |
+| `2` | EastRising 64x48 | 64x32 |
+| `3` | Generic 64x32 | Wise 72x40 |
+| `4` | EastRising 96x16 | |
+| `5` | 96x40 | |
+| `6` | EastRising 72x40 | |
+| `7` | Winstar 48x64 | |
+
+Rotations `0`, `1`, `2`, and `3` select 0, 90, 180, and 270 degrees.
+Rotations 1 and 3 swap the target's width and height. For example, a 128x32
+SSD1306 module can expose a 32x128 target:
+
+```text
+expansion attach ssd1306 oled0 i2c=i2c0 addr=0x3c panel=1 rotation=1
+```
 
 OLED attachments use the named I2C bus for the address probe, initialization,
 display updates, and shutdown. This also supports runtime-created buses on

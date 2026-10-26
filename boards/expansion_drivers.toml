@@ -997,11 +997,77 @@ min = 0
 max = 1
 
 [drivers.ssd1306]
-summary = "128x64 I2C OLED"
+summary = "SSD1306 I2C OLED with panel profiles"
 package = "expansion_ssd1306"
 targets = ["esp32", "esp32s3"]
 capabilities = ["expansion_i2c"]
 default_name = "display0"
+
+[[drivers.ssd1306.display_profiles]]
+name = "128x64"
+label = "Generic 128x64"
+width = 128
+height = 64
+bindings = { panel = 0 }
+rotation = 0
+default = true
+
+[[drivers.ssd1306.display_profiles]]
+name = "128x32-univision"
+label = "Univision 128x32"
+width = 128
+height = 32
+bindings = { panel = 1 }
+rotation = 0
+
+[[drivers.ssd1306.display_profiles]]
+name = "64x48-er"
+label = "EastRising 64x48"
+width = 64
+height = 48
+bindings = { panel = 2 }
+rotation = 0
+
+[[drivers.ssd1306.display_profiles]]
+name = "64x32"
+label = "Generic 64x32"
+width = 64
+height = 32
+bindings = { panel = 3 }
+rotation = 0
+
+[[drivers.ssd1306.display_profiles]]
+name = "96x16-er"
+label = "EastRising 96x16"
+width = 96
+height = 16
+bindings = { panel = 4 }
+rotation = 0
+
+[[drivers.ssd1306.display_profiles]]
+name = "96x40"
+label = "96x40"
+width = 96
+height = 40
+bindings = { panel = 5 }
+rotation = 0
+
+[[drivers.ssd1306.display_profiles]]
+name = "72x40-er"
+label = "EastRising 72x40"
+width = 72
+height = 40
+bindings = { panel = 6 }
+rotation = 0
+
+[[drivers.ssd1306.display_profiles]]
+name = "48x64-winstar"
+label = "Winstar 48x64"
+width = 48
+height = 64
+bindings = { panel = 7 }
+rotation = 0
+
 [[drivers.ssd1306.bindings]]
 key = "i2c"
 kind = "i2c_bus"
@@ -1014,12 +1080,62 @@ hint = "0x3c|0x3d"
 required = true
 allowed = [0x3c, 0x3d]
 
+[[drivers.ssd1306.bindings]]
+key = "panel"
+kind = "parameter"
+role = "panel"
+hint = "0..7"
+min = 0
+max = 7
+
+[[drivers.ssd1306.bindings]]
+key = "rotation"
+kind = "parameter"
+role = "rotation"
+hint = "0..3"
+min = 0
+max = 3
+
 [drivers.sh1106]
-summary = "128x64 I2C OLED"
+summary = "SH1106 I2C OLED with panel profiles"
 package = "expansion_ssd1306"
 targets = ["esp32", "esp32s3"]
 capabilities = ["expansion_i2c"]
 default_name = "display0"
+
+[[drivers.sh1106.display_profiles]]
+name = "128x64"
+label = "Generic 128x64"
+width = 128
+height = 64
+bindings = { panel = 0 }
+rotation = 0
+default = true
+
+[[drivers.sh1106.display_profiles]]
+name = "128x32-visionox"
+label = "Visionox 128x32"
+width = 128
+height = 32
+bindings = { panel = 1 }
+rotation = 0
+
+[[drivers.sh1106.display_profiles]]
+name = "64x32"
+label = "64x32"
+width = 64
+height = 32
+bindings = { panel = 2 }
+rotation = 0
+
+[[drivers.sh1106.display_profiles]]
+name = "72x40-wise"
+label = "Wise 72x40"
+width = 72
+height = 40
+bindings = { panel = 3 }
+rotation = 0
+
 [[drivers.sh1106.bindings]]
 key = "i2c"
 kind = "i2c_bus"
@@ -1031,6 +1147,22 @@ kind = "i2c_address"
 hint = "0x3c|0x3d"
 required = true
 allowed = [0x3c, 0x3d]
+
+[[drivers.sh1106.bindings]]
+key = "panel"
+kind = "parameter"
+role = "panel"
+hint = "0..3"
+min = 0
+max = 3
+
+[[drivers.sh1106.bindings]]
+key = "rotation"
+kind = "parameter"
+role = "rotation"
+hint = "0..3"
+min = 0
+max = 3
 
 [drivers.spi-dlp]
 summary = "Negotiated SDLP SPI display"

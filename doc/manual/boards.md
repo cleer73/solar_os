@@ -169,6 +169,10 @@ SSD1685, SSD1677, UC8179, and UC8279 also derive geometry from their panel profi
 and rotation. Runtime expansion commands continue to use numeric `panel` and
 `rotation` bindings.
 
+SSD1306 and SH1106 also offer named OLED panel profiles and all four rotations.
+These configure auxiliary displays; the primary display's geometry stays with
+its own driver and panel selection.
+
 Catalog display profiles declare native `width` and `height`, a named `label`,
 the panel selector `bindings`, and the default `rotation`. Exactly one profile
 per driver has `default = true`. All profiles for a driver use the same selector

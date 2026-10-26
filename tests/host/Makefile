@@ -263,7 +263,17 @@ EPD_U8G2_TEST_SOURCES := $(addprefix $(ROOT)/components/u8g2/src/clib/, \
         u8g2_intersection.c u8x8_setup.c u8x8_display.c)
 
 OLED_U8G2_TEST_SOURCES := $(EPD_U8G2_TEST_SOURCES) $(addprefix $(ROOT)/components/u8g2/src/clib/, \
-        u8x8_byte.c u8x8_cad.c u8x8_message.c u8x8_gpio.c u8g2_message.c u8x8_d_ssd1306_128x64_noname.c)
+        u8x8_byte.c u8x8_cad.c u8x8_message.c u8x8_gpio.c u8g2_message.c \
+        u8x8_d_ssd1306_128x64_noname.c \
+        u8x8_d_ssd1306_128x32.c \
+        u8x8_d_ssd1306_64x48.c \
+        u8x8_d_ssd1306_64x32.c \
+        u8x8_d_ssd1306_96x16.c \
+        u8x8_d_ssd1306_96x40.c \
+        u8x8_d_ssd1306_72x40.c \
+        u8x8_d_ssd1306_48x64.c \
+        u8x8_d_sh1106_64x32.c \
+        u8x8_d_sh1106_72x40.c)
 ssd1306_named_bus_test: ssd1306_named_bus_test.c $(ROOT)/src/drivers/ssd1306.c $(ROOT)/src/drivers/ssd1306.h \
         $(ROOT)/src/services/solar_os_ssd1306.c $(ROOT)/src/services/solar_os_ssd1306.h $(OLED_U8G2_TEST_SOURCES)
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -Wno-unused-parameter -ffunction-sections -fdata-sections \

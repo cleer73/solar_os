@@ -177,7 +177,7 @@ def display_profile_for_bindings(driver: DriverDef, bindings: dict[str, Any]) ->
 def board_defines_for_bindings(driver: DriverDef, bindings: dict[str, Any]) -> dict[str, str]:
     defines = dict(driver.board_defines)
     profile = display_profile_for_bindings(driver, bindings)
-    if profile is None:
+    if profile is None or "display" not in driver.board_capabilities:
         return defines
     rotation = bindings.get("rotation", profile.rotation)
     spec = next((spec for spec in driver.bindings if spec.key == "rotation"), None)
@@ -686,7 +686,8 @@ def validate_board(board: dict[str, Any], drivers: dict[str, DriverDef]) -> None
 
         if driver.display_profiles:
             display_defines = board_defines_for_bindings(driver, bindings)
-            if name == "display0" and "display" in capabilities:
+            if (name == "display0" and "display" in capabilities and
+                    "display" in driver.board_capabilities):
                 for key in ("SOLAR_OS_BOARD_DISPLAY_WIDTH", "SOLAR_OS_BOARD_DISPLAY_HEIGHT"):
                     try:
                         matches = int(defines[key], 0) == int(display_defines[key], 0)
