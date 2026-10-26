@@ -2,6 +2,14 @@
 
 ## 4.x
 
+- **4.16.32** — 2026-10-26 — Added a tabbed messaging manager and direct Chat
+  access from Contacts. Fixed MeshCore send stack usage. Added Pi0cket CL-32
+  e-paper board support alongside RLCD, with held modifiers, session shortcuts,
+  and keyboard wake from sleep. Added the reusable SSD1685 driver with Fastwave,
+  native-app raster output, and pulse refresh by default. Extended `display relax`
+  to all supported e-paper displays. Added named display profiles and improved
+  runtime attachment with resolution and rotation lists. The function generator
+  now fits smaller displays.
 - **4.16.31** — 2026-10-25 — Chat now retains received and sent messages
   on disk with fast channel switching and access to older history. Added TWAI
   CAN expansion support and shell controls. Improved BLE keyboard compatibility,

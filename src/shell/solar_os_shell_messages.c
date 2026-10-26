@@ -5,9 +5,11 @@
 #include <string.h>
 
 #include "solar_os_memory.h"
+#include "solar_os_messages_app.h"
 #include "solar_os_messaging.h"
 #include "solar_os_shell_common.h"
 #include "solar_os_shell_io.h"
+#include "solar_os_shell.h"
 
 static const char * const messages_commands[] = {
     "status", "conversations", "list", "send", "read", "delete",
@@ -17,6 +19,7 @@ static const char * const messages_commands[] = {
 static void messages_usage(solar_os_shell_io_t *io)
 {
     solar_os_shell_io_writeln(io, "usage:");
+    solar_os_shell_io_writeln(io, "  messages (instance, connection, and history TUI)");
     solar_os_shell_io_writeln(io, "  messages status");
     solar_os_shell_io_writeln(io, "  messages classes|instances");
     solar_os_shell_io_writeln(io, "  messages add <class> <instance> <settings...>");
@@ -324,6 +327,12 @@ void solar_os_shell_cmd_messages(solar_os_context_t *ctx,
 {
     solar_os_shell_io_t *io = solar_os_context_shell_io(ctx);
     if (io == NULL) {
+        return;
+    }
+    if (argc == 1) {
+        esp_err_t error = solar_os_context_request_launch(ctx, &solar_os_messages_app, 0, NULL);
+        if (error == ESP_OK) solar_os_shell_session_prepare_foreground_launch(ctx, false);
+        else solar_os_shell_io_printf(io, "messages: launch failed: %s\n", solar_os_shell_error_text(error));
         return;
     }
     if (argc == 2 && strcmp(argv[1], "classes") == 0) {

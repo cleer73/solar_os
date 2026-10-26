@@ -646,9 +646,24 @@ static void test_disk_history_beyond_cache(void)
     bool inserted = true;
     assert(solar_os_messaging_publish_inbound(&in, &inserted, NULL) == ESP_OK && !inserted);
     assert(solar_os_messaging_message_get(first, &m) == ESP_OK && !m.unread);
+    /* Deleting one archive record is durable and isolated. A failed tombstone
+     * leaves the original message readable, including after reopening. */
+    fail_history_write = true;
+    assert(solar_os_messaging_message_delete(first) != ESP_OK);
+    assert(solar_os_messaging_message_get(first, &m) == ESP_OK);
+    restart_messages();
+    assert(solar_os_messaging_message_get(first, &m) == ESP_OK);
     assert(solar_os_messaging_message_delete(first) == ESP_OK);
     restart_messages();
     assert(solar_os_messaging_message_get(first, &m) == ESP_ERR_NOT_FOUND);
+    assert(solar_os_messaging_message_get(sent, &m) == ESP_OK);
+    solar_os_messaging_message_t filtered[3]; size_t filtered_count; bool filtered_more;
+    assert(solar_os_messaging_message_page_filtered(0, 1, true, 0, filtered, 3, &filtered_count, &filtered_more) == ESP_OK);
+    assert(filtered_count == 3 && filtered_more);
+    solar_os_message_key_t newest_unread = filtered[2].key;
+    for (size_t i = 0; i < filtered_count; i++) assert(filtered[i].unread && filtered[i].provider == 1);
+    assert(solar_os_messaging_message_page_filtered(0, 1, true, 3, filtered, 3, &filtered_count, &filtered_more) == ESP_OK);
+    assert(filtered_count == 3 && filtered[2].key != newest_unread);
     /* A failed durable write cannot queue a send or admit a received message. */
     assert(solar_os_messaging_message_get(sent, &m) == ESP_OK); busy = m.conversation_id;
     assert(solar_os_messaging_get_status(&status) == ESP_OK); size_t saved = status.messages;

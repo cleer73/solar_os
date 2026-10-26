@@ -181,6 +181,32 @@ credential file is unencrypted; access to its volume can recover these records.
 SSH keys, native-agent API keys, and existing tokens are not migrated into this
 service in this release.
 
+## Settings forms and messaging manager
+
+The `messages` foreground app uses the common TUI layer on display and VT100
+shells. It has Instances, Connections, and Messages tabs. Chat remains a separate
+app, launched with `SOLAR_OS_LAUNCH_CHILD_RETURN` so the manager retains its
+selected instance, view, and cursor.
+
+Settings use `solar_os_tui_draw_form`, the shared scrollable form widget. The
+widget renders the selected field's inline editor last and owns cursor position,
+visibility, horizontal input scrolling, and masking. Apps supply row labels and
+values, field actions, and save/cancel behavior. Draw surrounding screen elements
+before the form and refresh after it.
+
+Provider classes own `settings_read` and `settings_write` callbacks. A NULL
+context describes or creates an instance; non-NULL contexts are leased for the
+operation. Form indices enumerate backend variants. The generic settings API
+validates field lengths against the provider's schema before saving. Secret
+readback is empty with a separate presence flag; unchanged fields preserve saved
+values and explicitly edited empty secrets clear them. Settings forms and
+configuration copies belong in external memory, outside the foreground stack.
+
+`solar_os_messaging_message_page_filtered` provides bounded archive pages with
+optional unread filtering. Its offset counts matching messages. The browser
+deletes a selected message by its stable key through
+`solar_os_messaging_message_delete`; pending sends must be cancelled first.
+
 ## Conversations and messages
 
 Conversation kinds are `direct`, `group`, `room`, and `broadcast`. A snapshot

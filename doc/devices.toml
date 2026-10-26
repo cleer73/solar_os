@@ -95,6 +95,16 @@ power = "Battery monitoring through the ATmega808 board controller."
 sensors = "PCF85063 RTC."
 expansion = "I2C, SPI, UART, GPIO, ADC, PWM, and I2S."
 
+[devices.cl32_epd]
+display = "384×168 SSD1685 GDEY029T71H e-paper."
+keyboard = "Built-in keyboard managed by the ATmega808 board controller."
+sound = "Onboard PWM buzzer."
+storage = "microSD over SPI."
+connectivity = "Wi-Fi, BLE, native USB CDC, and UART."
+power = "Battery monitoring through the ATmega808 board controller."
+sensors = "PCF85063 RTC."
+expansion = "I2C, SPI, UART, GPIO, ADC, PWM, and I2S."
+
 [devices.odroid_go]
 display = "320×240 ILI9341 LCD with brightness control."
 keyboard = "Game buttons and ADC D-pad; no built-in keyboard."

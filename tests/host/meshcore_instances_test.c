@@ -116,6 +116,26 @@ int main(void)
     const char *ble_args[] = {"ble", "01:02:03:04:05:06", "random", "123456"};
     assert(solar_os_messaging_instance_add("meshcore", "radio-b", 3, radio_args, &b) == ESP_OK);
     assert(solar_os_messaging_instance_add("meshcore", "companion", 4, ble_args, &companion) == ESP_OK);
+    solar_os_messaging_settings_t form;
+    assert(solar_os_messaging_settings_read("meshcore", 0, 0, &form) == ESP_OK && form.count == 4);
+    assert(!strcmp(form.label, "MeshCore radio"));
+    assert(solar_os_messaging_settings_read("meshcore", 0, 1, &form) == ESP_OK && form.count == 5);
+    assert(!strcmp(form.label, "MeshCore BLE"));
+    assert(solar_os_messaging_settings_read("meshcore", companion, 0, &form) == ESP_OK);
+    assert(form.present[2] && !form.values[2][0] && !strcmp(form.values[0], ble_args[1]));
+    assert(!strcmp(form.worker, "meshcore-ble"));
+    form.changed[3] = true; strlcpy(form.values[3], "edited", sizeof(form.values[3]));
+    solar_os_messaging_provider_id_t saved;
+    assert(solar_os_messaging_settings_write("meshcore", companion, 0, NULL, &form, &saved) == ESP_OK && saved == companion);
+    assert(solar_os_messaging_profile_load(companion, &config, sizeof(config)) == ESP_OK);
+    assert(config.pin_supplied && config.pin == 123456 && !strcmp(config.name, "edited") && !config.enabled);
+    form.changed[2] = true; /* Explicit empty edit clears a saved PIN. */
+    assert(solar_os_messaging_settings_write("meshcore", companion, 0, NULL, &form, &saved) == ESP_OK);
+    assert(solar_os_messaging_profile_load(companion, &config, sizeof(config)) == ESP_OK && !config.pin_supplied);
+    form.changed[2] = false; form.changed[4] = true;
+    strlcpy(form.values[4], "invalid", sizeof(form.values[4]));
+    assert(solar_os_messaging_settings_write("meshcore", companion, 0, NULL, &form, &saved) == ESP_ERR_INVALID_SIZE);
+    solar_os_messaging_settings_clear(&form);
     assert_legacy_instance(1, a);
     assert_legacy_instance(2, companion);
     solar_os_messaging_provider_id_t duplicate;

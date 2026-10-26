@@ -41,6 +41,7 @@ if(EXISTS "${SOLAR_OS_BOARD_MANIFEST}")
         "${SOLAR_OS_GENERATED_DIR}/solar_os_board_generated.h")
     file(GLOB SOLAR_OS_BOARD_MANIFEST_INPUTS
         "${SOLAR_OS_BOARD_MANIFEST_DIR}/*.toml"
+        "${SOLAR_OS_BOARD_MANIFEST_DIR}/common/*.toml"
     )
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
         "${SOLAR_OS_BOARD_GENERATOR}"
@@ -271,6 +272,20 @@ if(NOT SOLAR_OS_FLAVOR_GENERATE_RESULT EQUAL 0)
     message(FATAL_ERROR "SolarOS flavor generation failed")
 endif()
 include("${SOLAR_OS_GENERATED_CMAKE}")
+
+set(SOLAR_OS_EXPANSION_PROFILE_GENERATOR "${SOLAR_OS_PROJECT_DIR}/scripts/generate_expansion_profiles.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${SOLAR_OS_EXPANSION_PROFILE_GENERATOR}" "${SOLAR_OS_BOARD_DRIVER_CATALOG}")
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${SOLAR_OS_EXPANSION_PROFILE_GENERATOR}"
+            "--catalog" "${SOLAR_OS_BOARD_DRIVER_CATALOG}"
+            "--packages" "${SOLAR_OS_PACKAGE_ID_LIST}"
+            "--output" "${SOLAR_OS_GENERATED_DIR}/solar_os_expansion_profiles_generated.h"
+    RESULT_VARIABLE SOLAR_OS_EXPANSION_PROFILE_RESULT
+)
+if(NOT SOLAR_OS_EXPANSION_PROFILE_RESULT EQUAL 0)
+    message(FATAL_ERROR "SolarOS expansion profile generation failed")
+endif()
 
 # Compile profile defaults from the same descriptions used by the desktop CLI.
 # Empty options produce standard maps and remove overrides from previous builds.

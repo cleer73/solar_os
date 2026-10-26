@@ -96,9 +96,13 @@ class ForegroundPresenterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "foreground_focus_dispatch.inc").write_text(production_functions(
                 source, ("dispatch_input_key",)))
+            Path(tmp, "cl32_publish.inc").write_text(production_functions(
+                (ROOT / "src/services/solar_os_cl32_core.c").read_text(),
+                ("publish_wire_event",)))
             binary = Path(tmp, "focus")
             subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                "-DCL32_KEYBOARD_TEST",
                 "-include", str(ROOT / "tests/host/compat.h"),
                 "-I", tmp, "-I", str(ROOT / "tests/host"),
                 "-I", str(ROOT / "src"), "-I", str(ROOT / "src/services"),
@@ -106,6 +110,7 @@ class ForegroundPresenterTest(unittest.TestCase):
                 str(ROOT / "tests/host/foreground_focus_overlay_test.c"),
                 str(ROOT / "src/services/solar_os_input.c"),
                 str(ROOT / "src/services/solar_os_keys.c"),
+                str(ROOT / "src/services/solar_os_cl32_keyboard.c"),
                 "-o", str(binary),
             ], check=True)
             subprocess.run([str(binary)], check=True)
