@@ -20,6 +20,7 @@ typedef enum {
     SOLAR_OS_CL32_KEY_NONE,
     SOLAR_OS_CL32_KEY_TRANSITION,
     SOLAR_OS_CL32_KEY_UNSUPPORTED,
+    SOLAR_OS_CL32_KEY_TAP,
 } solar_os_cl32_key_result_t;
 
 void solar_os_cl32_keyboard_reset(solar_os_cl32_keyboard_t *keyboard);

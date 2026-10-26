@@ -186,6 +186,7 @@ the configured brightness, including while the light is toggled off.
 | Fn + keypad 1–9 / 0 | F1–F9 / F10. |
 | Fn + Up / Down | Page Up / Page Down. |
 | Fn + Left / Right | Home / End. |
+| Fn + Yes (OK) / No (Cancel) | Previous / next retained session on the focused display, once per key press. |
 
 Shift and Fn stay active only while held. Release them to return to normal
 typing.

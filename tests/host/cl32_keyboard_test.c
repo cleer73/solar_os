@@ -45,6 +45,19 @@ static void set_fn(solar_os_cl32_keyboard_t *keyboard, bool pressed)
     assert(keyboard->fn_held == pressed);
 }
 
+static void expect_session_tap(solar_os_cl32_keyboard_t *keyboard,
+                               uint8_t physical_key, uint16_t usage, uint8_t key)
+{
+    solar_os_cl32_key_transition_t transition;
+    const uint8_t held_modifiers = keyboard->held_modifiers;
+    assert(decode(keyboard, physical_key, true, &transition) == SOLAR_OS_CL32_KEY_TAP);
+    assert(transition.physical_key == physical_key && transition.pressed);
+    assert(transition.usage == usage && transition.key == key);
+    assert(transition.modifiers == SOLAR_OS_INPUT_MOD_LEFT_ALT);
+    assert(keyboard->held_modifiers == held_modifiers);
+    expect_transition(keyboard, physical_key, false, 0U, 0U, held_modifiers);
+}
+
 int main(void)
 {
     solar_os_cl32_keyboard_t keyboard;
@@ -120,12 +133,16 @@ int main(void)
     expect_transition(&keyboard, 80U, true, 74U, SOLAR_OS_KEY_HOME, 0U);
     expect_transition(&keyboard, 81U, true, 78U, SOLAR_OS_KEY_PAGE_DOWN, 0U);
     expect_transition(&keyboard, 82U, true, 75U, SOLAR_OS_KEY_PAGE_UP, 0U);
+    expect_session_tap(&keyboard, 119U, 80U, SOLAR_OS_KEY_LEFT);
+    expect_session_tap(&keyboard, 120U, 79U, SOLAR_OS_KEY_RIGHT);
     /* Release Fn before its key: the key still has a physical release. */
     set_fn(&keyboard, false);
     expect_transition(&keyboard, 82U, false, 0U, 0U, 0U);
     expect_transition(&keyboard, 82U, true, 82U, SOLAR_OS_KEY_UP, 0U);
     expect_transition(&keyboard, 89U, true, 89U, '1', 0U);
     expect_transition(&keyboard, 4U, true, 4U, 0U, 0U);
+    expect_transition(&keyboard, 119U, true, 40U, 0U, 0U);
+    expect_transition(&keyboard, 120U, true, 41U, 0U, 0U);
     for (unsigned i = 0; i < 3U; i++) {
         set_fn(&keyboard, true);
         set_fn(&keyboard, false);
@@ -173,6 +190,9 @@ int main(void)
     expect_transition(&keyboard, 118U, true, 0xe0U, 0U, alt_ctrl);
     expect_transition(&keyboard, 127U, true, 0xe1U, 0U, all_modifiers);
     set_fn(&keyboard, true);
+    /* The session chord stays exact even with other physical modifiers held. */
+    expect_session_tap(&keyboard, 119U, 80U, SOLAR_OS_KEY_LEFT);
+    expect_session_tap(&keyboard, 120U, 79U, SOLAR_OS_KEY_RIGHT);
     expect_transition(&keyboard, 89U, true, 0x3aU, SOLAR_OS_KEY_F1,
                       all_modifiers);
     expect_transition(&keyboard, 127U, false, 0xe1U, 0U, alt_ctrl);

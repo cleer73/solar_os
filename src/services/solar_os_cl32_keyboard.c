@@ -149,6 +149,14 @@ static bool fn_mapping(uint8_t physical_key, cl32_key_mapping_t *mapping)
         mapping->usage = 75U;
         mapping->key = SOLAR_OS_KEY_PAGE_UP;
         return true;
+    case CL32_KEY_OK:
+        mapping->usage = 80U;
+        mapping->key = SOLAR_OS_KEY_LEFT;
+        return true;
+    case CL32_KEY_CANCEL:
+        mapping->usage = 79U;
+        mapping->key = SOLAR_OS_KEY_RIGHT;
+        return true;
     default:
         return base_mapping(physical_key, mapping);
     }
@@ -227,5 +235,12 @@ solar_os_cl32_key_result_t solar_os_cl32_keyboard_decode(
     transition->usage = mapping.usage;
     transition->key = mapping.key;
     transition->modifiers = keyboard->held_modifiers;
+    if (keyboard->fn_held &&
+        (physical_key == CL32_KEY_OK || physical_key == CL32_KEY_CANCEL)) {
+        /* Use the desktop's session shortcut as a complete tap. No synthetic
+         * Alt hold or arrow repeat may survive a foreground session switch. */
+        transition->modifiers = SOLAR_OS_INPUT_MOD_LEFT_ALT;
+        return SOLAR_OS_CL32_KEY_TAP;
+    }
     return SOLAR_OS_CL32_KEY_TRANSITION;
 }

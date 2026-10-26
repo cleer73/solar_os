@@ -183,7 +183,7 @@ static void publish_wire_event(solar_os_cl32_core_device_t *device,
         device->state_events++;
         return;
     }
-    if (result != SOLAR_OS_CL32_KEY_TRANSITION) {
+    if (result != SOLAR_OS_CL32_KEY_TRANSITION && result != SOLAR_OS_CL32_KEY_TAP) {
         device->unsupported++;
         return;
     }
@@ -194,14 +194,21 @@ static void publish_wire_event(solar_os_cl32_core_device_t *device,
                                                   transition.modifiers,
                                                   false);
     }
-    if (solar_os_input_write_key(
+    const esp_err_t error = result == SOLAR_OS_CL32_KEY_TAP ?
+        solar_os_input_write_key_tap(device->input_source,
+                                     transition.physical_key,
+                                     transition.usage,
+                                     key,
+                                     transition.modifiers) :
+        solar_os_input_write_key(
             device->input_source,
             transition.physical_key,
             transition.usage,
             key,
             transition.modifiers,
             transition.pressed ? SOLAR_OS_INPUT_KEY_PRESS :
-                                 SOLAR_OS_INPUT_KEY_RELEASE) == ESP_OK) {
+                                 SOLAR_OS_INPUT_KEY_RELEASE);
+    if (error == ESP_OK) {
         device->transitions++;
     } else {
         device->dropped++;
