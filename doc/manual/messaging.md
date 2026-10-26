@@ -15,6 +15,10 @@ conversation and unread browsing, pending-send cancellation, and deletion of
 individual local messages. `c` opens the existing Chat as a child and returns
 to the browser when Chat closes. See [Application controls](apps.md#messages).
 
+To start a direct conversation by name, open `contacts`, select the person,
+and press `c`. Chat opens their conversation and returns to Contacts when
+closed. The Chat application must be included in the firmware.
+
 Provider classes describe protocols; named instances describe individual
 connections. Multiple IRC instances can share a class while keeping server
 settings, rooms, nicknames, and message routing separate. Chat groups by

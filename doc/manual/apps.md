@@ -1160,8 +1160,14 @@ the selected endpoint addresses, capabilities, last-seen times, and bounded
 provider metadata summary, and `Esc` or `q` to leave. The footer shows
 `a Actions` and `? Help`, including on compact screens.
 
+When Chat is included, select a contact and press `c` to open their direct
+conversation. Closing Chat returns to Contacts. Chat uses the contact's
+preferred direct endpoint, favoring trusted endpoints; sending to a discovered
+endpoint still requires confirmation.
+
 Press `a` in the list or details to manage the selected contact:
 
+- `c`: open Chat for the selected contact, when Chat is included.
 - `t`: trust all endpoints or choose one endpoint.
 - `b`: block all endpoints or choose one endpoint.
 - `r`: edit the contact name, then `Enter` to save or `Esc` to cancel.
