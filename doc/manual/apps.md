@@ -21,7 +21,7 @@ by its command name, with any arguments shown below.
 | Move local input between displays | `Ctrl+Alt+Arrow` | `session focus TARGET` |
 
 Either Alt key works, including AltGr. Apps may also provide `Esc` or `Q` to
-exit. In shared text menus, `Alt+Enter` toggles full screen; on CL-32 use
+exit. In shared text menus, `Alt+Enter` toggles full screen; on Pi0cket CL-32 use
 `File+OK`. Small text menus start in full screen automatically.
 
 Closing returns to the shell. Python/Lua stdout, errors, and tracebacks remain

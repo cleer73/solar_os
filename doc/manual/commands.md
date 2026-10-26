@@ -488,7 +488,7 @@ Cleanup failures are reported and prevent power-down. Use RESET or cycle power
 to restart after a cleanup failure.
 
 Shutdown uses the board's declared hardware power-off provider when available:
-the CL32 controller, AXP2101 on Waveshare ESP32-S3-ePaper-3.97, and BQ25896
+the Pi0cket CL-32 controller, AXP2101 on Waveshare ESP32-S3-ePaper-3.97, and BQ25896
 battery disconnect on T-LoRa-Pager. Xteink X4 Pro drops its peripheral latch;
 T-Deck Plus and ThinkNode M9 turn off their shared display/peripheral rail.
 Other targets enter ESP32 deep sleep. USB power can keep a board
@@ -578,10 +578,10 @@ percentage from 0 to 100 (0 turns them off), or `follow` to track the primary
 display's configured brightness. Independent brightness defaults to 50%; both
 the numeric setting and follow mode are saved across reboots. Follow mode
 requires display brightness control. The keyboard backlights on T-Deck Plus,
-T-LoRa-Pager, ThinkNode M9, and CL-32 use this control. Unsupported hardware
+T-LoRa-Pager, ThinkNode M9, and Pi0cket CL-32 use this control. Unsupported hardware
 reports `unsupported`. Suspend and explicit sleep temporarily turn auxiliary
 lighting off; resume restores the selected setting. Shutdown also turns it off.
-The CL-32 companion controller retains its keyboard-activity timeout and fade.
+The Pi0cket CL-32 companion controller retains its keyboard-activity timeout and fade.
 T-Deck Alt+B toggles the light for the current boot without typing a character
 or saving changes across reboots. Suspend and light sleep preserve this on/off
 choice. Toggling on from a configured level of zero uses 50%. The query shows
@@ -591,7 +591,7 @@ the configured brightness, including while the light is toggled off.
 `setterm backlight` for the screen must use `setterm brightness` instead.
 
 `setterm keyrate` configures the shared repeat policy for BLE, PS/2, CardKB,
-and the CL-32 keyboard, fixed board buttons, `gpio-keys`, and ADC D-pads.
+and the Pi0cket CL-32 keyboard, fixed board buttons, `gpio-keys`, and ADC D-pads.
 Analog joysticks publish axes and do not generate key events.
 The value is stored in NVS and is available on builds without BLE.
 

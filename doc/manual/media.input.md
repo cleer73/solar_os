@@ -36,7 +36,7 @@ not a count of currently held keys. Character-only devices such as CardKB emit
 one press and one release per character, so one tap normally adds two events.
 Their last event has `physical=0` and `usage=0`; `key=10` is newline/Enter.
 
-On CL-32, Shift and Fn cycle
+On Pi0cket CL-32, Shift and Fn cycle
 through one-shot, locked, and off states. File is left Alt, Menu is left Ctrl,
 OK is Enter, Cancel is Escape, and Fn with keypad 1 through 0 produces F1
 through F10.

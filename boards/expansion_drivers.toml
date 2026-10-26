@@ -212,7 +212,7 @@ role = "backlight"
 
 [drivers.cl32-core]
 keyboard = true
-summary = "CL-32 board controller"
+summary = "Pi0cket CL-32 board controller"
 package = "board_cl32_core"
 targets = ["esp32s3"]
 capabilities = ["i2c"]

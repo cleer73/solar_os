@@ -170,7 +170,7 @@ the display. Alt+B does not save changes across reboots. When the configured
 brightness is zero, toggling on uses 50%. The `setterm backlight` query shows
 the configured brightness, including while the light is toggled off.
 
-## CL-32
+## Pi0cket CL-32
 
 | Control | Action |
 | --- | --- |
@@ -219,6 +219,6 @@ T-Pager: wheel is Up/Down, press is Enter, Space+Enter is Escape, held Space
 selects symbols, and held Caps is Shift. Its default profile lacks Left,
 Right, Tab, and Ctrl. T-Deck Plus: trackball supplies arrows and Enter,
 Mic is Tab, Shift+Mic is Ctrl, Alt+C is Escape, and Alt+Q closes the app.
-CL-32: OK is Enter, Cancel is
+Pi0cket CL-32: OK is Enter, Cancel is
 Escape, File is Alt, and Menu is Ctrl. ODROID-GO: D-pad supplies arrows,
 A is Enter, B is Space, SELECT is Escape, and MENU closes the app.

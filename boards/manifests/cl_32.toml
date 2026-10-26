@@ -2,8 +2,8 @@ schema = 1
 
 [board]
 id = "cl_32"
-name = "CL-32"
-vendor = "CL-32"
+name = "Pi0cket CL-32"
+vendor = "Pi0cket"
 module = "ESP32-S3-WROOM-1-N16R8"
 
 [target]
