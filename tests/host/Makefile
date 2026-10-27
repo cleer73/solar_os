@@ -74,6 +74,7 @@ TARGETS += epd_ssd1683_test epd_ssd1683_waveform_test
 TARGETS += shell_table_test
 TARGETS += io_layout_test
 TARGETS += io_layout_can_test
+TARGETS += batmon_job_test
 TARGETS += power_key_test power_key_wired_test power_key_input_test power_key_custom_test
 
 shell_table_test: shell_table_test.c $(ROOT)/src/shell/solar_os_shell_io.c $(ROOT)/src/shell/solar_os_shell_io.h
@@ -946,6 +947,10 @@ battery_service_test: battery_service_test.c $(ROOT)/src/services/solar_os_batte
 		battery_service_test.c $(ROOT)/src/services/solar_os_battery.c \
 		$(ROOT)/src/services/solar_os_battery_trend.c -o $@
 
+batmon_job_test: batmon_job_test.c $(ROOT)/src/jobs/solar_os_batmon_job.c $(ROOT)/src/services/solar_os_shutdown.c
+	$(CC) $(CFLAGS) -D_GNU_SOURCE -include compat.h -I. -I$(ROOT)/src \
+		-I$(ROOT)/src/services $< -o $@
+
 battery_trend_test: battery_trend_test.c $(ROOT)/src/services/solar_os_battery_trend.c $(ROOT)/src/services/solar_os_battery_trend.h
 	$(CC) $(CFLAGS) -I$(ROOT)/src/services \
 		battery_trend_test.c $(ROOT)/src/services/solar_os_battery_trend.c -o $@
@@ -1227,6 +1232,7 @@ test: $(TARGETS)
 	./input_keymap_service_test
 	./cl32_keyboard_test
 	./battery_service_test
+	./batmon_job_test
 	./camera_service_test
 	./script_media_test
 	./script_media_rtsp_test

@@ -113,13 +113,13 @@ job start batmon 60
 ## batmon
 
 Battery monitor. It periodically samples battery voltage, maintains a smoothed
-trend, estimates power state, and can request light sleep when the configured
-minimum voltage is reached.
+trend, estimates power state, and can request sleep, deep sleep, or shutdown
+when the configured minimum voltage is reached.
 
 Usage:
 
 ```text
-job start batmon [interval-sec]
+job start batmon [interval-sec] [sleep|deepsleep|shutdown]
 job stop batmon
 job status batmon
 ```
@@ -129,6 +129,17 @@ Defaults:
 | Setting | Value |
 | --- | --- |
 | Interval | `60` seconds |
+| Low-voltage action | `sleep` |
+
+The action can also be supplied without an interval, for example
+`job start batmon shutdown`. The selected action appears in the startup log
+and the job's battery resource details.
+
+| Action | Behavior |
+| --- | --- |
+| `sleep` | Request the same light sleep as the `sleep` command. |
+| `deepsleep` | Request the same deep sleep as the `deepsleep` command. |
+| `shutdown` | Run the normal shutdown sequence, including storage cleanup and board power-off when supported. |
 
 Battery limits are configured with the `battery` shell command:
 
@@ -142,14 +153,19 @@ Notes:
 
 - Discharging trend means battery power.
 - Charging trend means external power.
-- Voltage above `max_voltage` is a fast external-power shortcut.
-- Three consecutive samples at or below `min_voltage` while on battery request
-  light sleep.
+- Three consecutive samples at or below `min_voltage`, with an established
+  discharging trend and no inferred external power, request the selected action.
+- The voltage trend needs at least five minutes of history. This check runs
+  only while `batmon` is running.
+- Set `min_voltage` above the board's minimum operating voltage, with margin
+  for voltage drop under load. Changing the action does not change the threshold
+  or bypass the trend and consecutive-sample checks.
 
 Example:
 
 ```text
 job start batmon 60
+job start batmon 30 shutdown
 ```
 
 ## bridge

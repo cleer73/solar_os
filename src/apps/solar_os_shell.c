@@ -1010,6 +1010,7 @@ static const char * const session_shell_size_values[] = {"80x24", "100x30", "132
 
 static const char * const job_log_values[] = {"file"};
 static const char * const batmon_interval_values[] = {"30", "60", "300", "900"};
+static const char * const batmon_action_values[] = {"sleep", "deepsleep", "shutdown"};
 static const char * const ntp_sync_values[] = {"once", "60", "300", "900", "3600"};
 static const char * const ntp_sync_server_values[] = {
     "pool.ntp.org",
@@ -2119,6 +2120,7 @@ static const char * const path_job[] = {"job"};
 static const char * const path_job_status[] = {"job", "status"};
 static const char * const path_job_start[] = {"job", "start"};
 static const char * const path_job_start_batmon[] = {"job", "start", "batmon"};
+static const char * const path_job_start_batmon_interval[] = {"job", "start", "batmon", SHELL_COMPLETION_ANY};
 static const char * const path_job_start_log[] = {"job", "start", "log"};
 static const char * const path_job_start_log_port[] = {"job", "start", "log", SHELL_COMPLETION_ANY};
 static const char * const path_job_start_log_file[] = {"job", "start", "log", "file"};
@@ -3432,6 +3434,8 @@ static const shell_completion_rule_t shell_completion_rules[] = {
     SHELL_COMPLETION_JOBS(path_job_status),
     SHELL_COMPLETION_JOBS(path_job_start),
     SHELL_COMPLETION_STATIC(path_job_start_batmon, batmon_interval_values),
+    SHELL_COMPLETION_STATIC(path_job_start_batmon, batmon_action_values),
+    SHELL_COMPLETION_STATIC(path_job_start_batmon_interval, batmon_action_values),
     SHELL_COMPLETION_STATIC(path_job_start_log, job_log_values),
     SHELL_COMPLETION_PORTS(path_job_start_log),
     SHELL_COMPLETION_STATIC(path_job_start_log_port, log_level_values),
