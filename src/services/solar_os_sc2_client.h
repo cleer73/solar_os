@@ -12,7 +12,8 @@
  * inbox/room cursors and ack, sealed DMs (keys.claim + X3DH + ratchet),
  * public rooms (join, signed posts out, verified posts in), private rooms
  * (create with a signed genesis commit and an invite, join with an invite
- * proof, admin auto-add with commit + rotate + epoch key DMs to members,
+ * proof plus an end-to-end invite proof to the admin, authenticated membership
+ * checkpoints, admin auto-add with commit + rotate + epoch key DMs to members,
  * sealed room messages), a persisted sealed outbox replayed after
  * reconnects (the relay dedups), ping keepalive and a backoff helper.
  *
@@ -171,6 +172,8 @@ typedef struct {
     uint8_t commit_target[SC2_DEVICE_ID_LEN];
     uint8_t add_n;          /* admin: join requests waiting for a commit */
     uint8_t add_q[4][SC2_DEVICE_ID_LEN];
+    uint64_t admission_ms; /* last end-to-end invite proof sent; 0 = retry now */
+    uint64_t commit_hold; /* don't sync past a commit whose signer key is being fetched */
 } sc2c_room_t;
 
 typedef struct {
@@ -193,7 +196,7 @@ typedef struct {
     uint8_t secret[SC2_INVITE_SECRET_LEN];
     uint8_t admin_id[SC2_DEVICE_ID_LEN];
     uint8_t admin_ik[SC2_KEY_LEN];
-    sc2_roster_t roster; /* admins: full roster; members: epoch/head only */
+    sc2_roster_t roster; /* authenticated roster and commit head */
 } sc2c_roomrec_t;
 
 #define SC2C_RF_ADMIN 0x01u
@@ -215,7 +218,7 @@ typedef struct {
     uint8_t state;   /* sc2c_conn_state_t */
     uint8_t closed;  /* sc2c_close_t of the current or last session */
     uint8_t replaced; /* sessions in a row that ended with 409 replaced */
-    bool auto_admit; /* admin: add devices that present a valid invite */
+    bool auto_admit; /* admin: add only after an authenticated DM proves the invite secret */
     bool no_opks;    /* keys.publish without one-time prekeys */
     bool sync_more;
     uint32_t pub_max; /* public body limit from room.state (default 1024) */

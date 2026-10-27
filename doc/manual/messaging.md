@@ -163,13 +163,19 @@ primary relay with this device as its admin and prints its invite, a
 `sc2i:...` text that holds the room's invite secret. Whoever has the invite
 can join, so pass it on privately (`sc2 room invite ROOM` prints it again).
 On the other device, `sc2 room join sc2i:...` (or `sc2 room join @FILE` when
-the invite is longer than the input line) asks to join; the relay checks the
-invite proof and the admin device admits the member when it is next online
-and hands it the room key. Both rooms then appear as `room XXXXXXXX`
+the invite is longer than the input line) asks to join. The joining device
+also sends the admin an encrypted proof of invite possession. The admin checks
+that proof before admitting the member and sending its room key and membership
+checkpoint. A relay notification alone cannot admit a device. Both devices
+need firmware with this admission exchange; older clients remain waiting.
+Both rooms then appear as `room XXXXXXXX`
 conversations: use `messages send` as for any room, and `messages leave` to
 leave one (this also deletes the device's copy of the room record; an admin
 that leaves cannot invite again). `sc2 rooms` lists the instance's rooms with
 their state (`waiting for an admin`, `waiting for the room key`, `joined`).
+Room keys are accepted only from the invited admin after membership validation.
+Later membership changes require an authorized admin signature and a matching
+commit chain. Sending waits for the new epoch key after a membership change.
 Invites cannot be revoked from the device yet, and members cannot be removed;
 create a new room instead.
 

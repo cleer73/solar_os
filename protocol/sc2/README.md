@@ -121,6 +121,37 @@ It only changes local limits, never the wire:
 A state blob saved with more stored keys than the build allows loads and
 keeps the newest ones.
 
+## Device private-room trust
+
+The relay's `room.event` and `room.state` are routing information. They do not
+authorize membership or key installation. The device client uses two additional
+inner DM records, which the relay transports as opaque ciphertext:
+
+- `room_join`: `room` and base64 `proof`. The proof is HMAC-SHA-256 with the
+  invite's 16-byte secret over `SC2-ADMIN-JOIN\x01 || room:16 || joiner:16`.
+  The receiver checks that joiner is the authenticated DM sender. This key is
+  distinct from the invite key registered with the relay.
+- `epoch_key`: the existing `room`, `epoch`, and `key`, plus base64 `head`
+  (32-byte commit ID) and `roster` (sorted `device:16 || role:u8` entries).
+  The invited admin authenticates this checkpoint through its encrypted DM.
+  The roster must include the recipient and the invited admin; it must not
+  roll back the trusted epoch or conflict with an existing head at that epoch.
+
+The checkpoint bootstraps a new member without requiring room history from
+before admission. It also recovers membership after retained commit history
+expires. Subsequent `room.commit` records must match the outer room, identify
+an admin in the trusted roster, verify under that admin's identity key, and
+pass `sc2_roster_apply()` (epoch, previous head, operation and roster hash).
+Members wait for the new epoch key after a commit. A valid signed removal of
+this device erases its room keys. Unsigned removal notifications cannot do so.
+
+`sc2e_dm_open()` returns room controls without applying them. The network
+client authorizes them before `sc2e_dm_apply_control()` can change room keys.
+The lower-level `sc2e_dm_decrypt()` API retains its engine-only control handling;
+applications using that API must supply their own room-admission policy.
+Both devices need the admission exchange above; legacy join notifications and
+bare epoch keys do not provide a secure fallback.
+
 ## Build and test
 
 Host tests live in `tests/host` (`sc2_crypto_test`, `sc2_session_test`,

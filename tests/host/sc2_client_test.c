@@ -293,9 +293,246 @@ static void connect_to(tdev_t *d, unsigned s)
 
 static void feed_line(tdev_t *d, const char *line)
 {
-    char buf[512];
+    char buf[SC2E_FRAME_MAX + 1u];
     int n = snprintf(buf, sizeof(buf), "%s\n", line);
     CHECK_RC(sc2c_feed(&d->c, (const uint8_t *)buf, (size_t)n), SC2_OK);
+}
+
+static void bundle_to(tdev_t *owner, tdev_t *to)
+{
+    char publish[SC2E_FRAME_MAX], bundle[SC2E_FRAME_MAX], device[SC2_DEVICE_ID_HEX_LEN + 1];
+    size_t n, m;
+    sc2e_identity_info_t identity;
+    CHECK_RC(sc2e_identity(owner->engine, &identity), SC2_OK);
+    CHECK_RC(sc2e_keys_publish(owner->engine, NULL, 0, publish, sizeof(publish), &n), SC2_OK);
+    CHECK_RC(sc2e_relay_bundle(publish, n, &identity, bundle, sizeof(bundle), &m), SC2_OK);
+    CHECK_RC(sc2e_add_bundle(to->engine, bundle, m, device), SC2_OK);
+}
+
+static line_t *take_type(tdev_t *d, const char *want)
+{
+    line_t *l;
+    while ((l = q_pop(&d->to_relay)) != NULL) {
+        sc2_json_val_t root;
+        char type[SC2_TYPE_MAX + 1], rid[SC2_RID_MAX + 1];
+        if (sc2_frame_peek(l->s, l->len, &root, type, rid) == SC2_OK && !strcmp(type, want)) return l;
+        free(l);
+    }
+    return NULL;
+}
+
+static uint64_t inbox_seq;
+static void deliver_dm(tdev_t *to, line_t *dm)
+{
+    CHECK(dm != NULL);
+    if (!dm) return;
+    char frame[SC2E_FRAME_MAX];
+    size_t n;
+    CHECK_RC(sc2e_relay_dm(dm->s, dm->len, ++inbox_seq, frame, sizeof(frame), &n), SC2_OK);
+    feed_line(to, frame);
+    free(dm);
+}
+
+static sc2_roster_t room_roster(tdev_t *d, const char *room)
+{
+    char name[SC2E_NAME_MAX];
+    uint8_t record[sizeof(sc2c_roomrec_t) + SC2E_RECORD_OVERHEAD];
+    const uint8_t *payload;
+    size_t len, payload_len;
+    sc2c_roomrec_t rec;
+    snprintf(name, sizeof(name), "sc2c/%s_r%s", d->c.tag, room);
+    CHECK_RC(d->engine->pf.load(d->engine->pf.ctx, name, record, sizeof(record), &len), SC2_OK);
+    CHECK_RC(sc2e_record_unwrap(record, len, 0x31, 1, &payload, &payload_len), SC2_OK);
+    CHECK(payload_len == sizeof(rec));
+    memcpy(&rec, payload, sizeof(rec));
+    return rec.roster;
+}
+
+static void feed_commit(tdev_t *to, const sc2_commit_t *commit, tdev_t *signer,
+                         const uint8_t outer_room[SC2_ROOM_ID_LEN], bool bad_signature)
+{
+    uint8_t rec[SC2_COMMIT_LEN], sig[SC2_SIG_LEN];
+    char frame[1024], b64[256], sig64[128], room[SC2_DEVICE_ID_HEX_LEN + 1];
+    size_t n;
+    CHECK_RC(sc2_commit_encode(rec, commit), SC2_OK);
+    CHECK_RC(sc2_commit_sign(sig, rec, signer->engine->id.ik_seed), SC2_OK);
+    if (bad_signature) sig[0] ^= 1;
+    CHECK_RC(sc2_b64_encode(b64, sizeof(b64), &n, rec, sizeof(rec)), SC2_OK);
+    CHECK_RC(sc2_b64_encode(sig64, sizeof(sig64), &n, sig, sizeof(sig)), SC2_OK);
+    CHECK_RC(sc2_hex_encode(room, sizeof(room), outer_room, SC2_ROOM_ID_LEN), SC2_OK);
+    snprintf(frame, sizeof(frame), "{\"type\":\"room.commit\",\"room\":\"%s\",\"seq\":\"999\","
+        "\"commit\":\"%s\",\"sig\":\"%s\"}", room, b64, sig64);
+    feed_line(to, frame);
+}
+
+/* A hostile relay can forge notifications, reorder signed records and route
+ * authenticated DMs from arbitrary devices. None grants room authority. */
+static void private_room_trust(void)
+{
+    static tdev_t admin, member, attacker;
+    d_init(&admin, "admin", "adm", NULL);
+    d_init(&member, "member", "mem", NULL);
+    d_init(&attacker, "attacker", "atk", NULL);
+    tdev_t *all[] = {&admin, &member, &attacker};
+    for (unsigned i = 0; i < 3; i++) {
+        all[i]->sess = 0; /* capture outgoing frames without a real transport */
+        all[i]->c.state = SC2C_READY;
+        for (unsigned j = 0; j < 3; j++) if (i != j) bundle_to(all[i], all[j]);
+    }
+    admin.c.auto_admit = true;
+    char room[SC2_DEVICE_ID_HEX_LEN + 1], invite[SC2_INVITE_TEXT_MAX];
+    CHECK_RC(sc2c_room_create(&admin.c, room), SC2_OK);
+    q_clear(&admin.to_relay);
+    feed_line(&admin, "{\"type\":\"ack\",\"rid\":\"c0\"}");
+    CHECK_RC(sc2c_room_invite_text(&admin.c, room, invite, sizeof(invite)), SC2_OK);
+    q_clear(&admin.to_relay);
+
+    char frame[1024];
+    snprintf(frame, sizeof(frame), "{\"type\":\"room.event\",\"room\":\"%s\","
+        "\"event\":\"join_request\",\"device\":\"%s\",\"seq\":\"50\"}", room, attacker.c.self_hex);
+    feed_line(&admin, frame);
+    CHECK(take_type(&admin, "room.commit") == NULL);
+    CHECK(room_roster(&admin, room).count == 1);
+
+    /* An authenticated device still needs the invite-secret proof. */
+    char inner[256];
+    snprintf(inner, sizeof(inner), "{\"t\":\"room_join\",\"room\":\"%s\","
+        "\"proof\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"}", room);
+    size_t n;
+    char sealed[SC2E_FRAME_MAX];
+    CHECK_RC(sc2e_dm_encrypt(attacker.engine, admin.c.self_hex, NULL, inner, strlen(inner),
+                            sealed, sizeof(sealed), &n), SC2_OK);
+    queue_t dmq = {0};
+    q_push(&dmq, sealed, n);
+    deliver_dm(&admin, q_pop(&dmq));
+    CHECK(take_type(&admin, "room.commit") == NULL);
+    CHECK(room_roster(&admin, room).count == 1);
+
+    CHECK_RC(sc2c_room_join_invite(&member.c, invite, NULL), SC2_OK);
+    q_clear(&member.to_relay);
+    /* A foreign epoch key arriving first must create no engine room. */
+    CHECK_RC(sc2e_room_create(attacker.engine, room, NULL, NULL), SC2_OK);
+    CHECK_RC(sc2e_room_share(attacker.engine, room, member.c.self_hex, NULL, sealed, sizeof(sealed), &n), SC2_OK);
+    q_push(&dmq, sealed, n);
+    deliver_dm(&member, q_pop(&dmq));
+    sc2e_room_info_t info;
+    CHECK_RC(sc2e_room_info(member.engine, room, &info), SC2_OK);
+    CHECK(!info.known);
+
+    /* A pinned admin's bare epoch key is insufficient to bootstrap membership. */
+    CHECK_RC(sc2e_room_share(admin.engine, room, member.c.self_hex, NULL, sealed, sizeof(sealed), &n), SC2_OK);
+    q_push(&dmq, sealed, n);
+    deliver_dm(&member, q_pop(&dmq));
+    CHECK_RC(sc2e_room_info(member.engine, room, &info), SC2_OK);
+    CHECK(!info.known);
+
+    /* The member proves invite possession over its authenticated DM. */
+    q_clear(&member.to_relay);
+    feed_line(&member, "{\"type\":\"ack\",\"rid\":\"j0\",\"status\":\"requested\"}");
+    line_t *request = take_type(&member, "dm.send");
+    CHECK(request != NULL);
+    deliver_dm(&admin, request);
+    line_t *commit_frame = take_type(&admin, "room.commit");
+    CHECK(commit_frame != NULL);
+    free(commit_frame);
+    feed_line(&admin, "{\"type\":\"ack\",\"rid\":\"c0\"}");
+    sc2_roster_t roster = room_roster(&admin, room);
+    CHECK(roster.epoch == 2 && roster.count == 2);
+    deliver_dm(&member, take_type(&admin, "dm.send"));
+    CHECK_RC(sc2e_room_info(member.engine, room, &info), SC2_OK);
+    CHECK(info.known && info.epoch == 2 && !strcmp(info.admin, admin.c.self_hex));
+    CHECK(sc2c_room_get(&member.c, room)->state == SC2C_ROOM_JOINED);
+    sc2_roster_t trusted = room_roster(&member, room);
+    CHECK_MEM(&trusted, &roster, sizeof(roster));
+
+    /* Forged removal events must not change authenticated membership. */
+    snprintf(frame, sizeof(frame), "{\"type\":\"room.event\",\"room\":\"%s\","
+        "\"event\":\"removed\",\"device\":\"%s\",\"seq\":\"51\"}", room, member.c.self_hex);
+    feed_line(&member, frame);
+    CHECK(sc2c_room_get(&member.c, room)->state == SC2C_ROOM_JOINED);
+
+    sc2_commit_t valid, forged;
+    CHECK_RC(sc2_commit_make(&valid, &roster, admin.c.self_id, SC2_COMMIT_ROTATE, NULL), SC2_OK);
+    feed_commit(&member, &valid, &admin, roster.room, true);
+    forged = valid; memcpy(forged.by, attacker.c.self_id, sizeof(forged.by));
+    feed_commit(&member, &forged, &attacker, roster.room, false);
+    forged = valid; forged.prev[0] ^= 1;
+    feed_commit(&member, &forged, &admin, roster.room, false);
+    forged = valid; forged.epoch++;
+    feed_commit(&member, &forged, &admin, roster.room, false);
+    forged = valid; forged.roster_hash[0] ^= 1;
+    feed_commit(&member, &forged, &admin, roster.room, false);
+    forged = valid; forged.room[0] ^= 1;
+    feed_commit(&member, &forged, &admin, roster.room, false);
+    trusted = room_roster(&member, room);
+    CHECK_MEM(&trusted, &roster, sizeof(roster));
+    feed_commit(&member, &valid, &admin, roster.room, false);
+    trusted = room_roster(&member, room);
+    CHECK(trusted.epoch == 3);
+    CHECK(sc2c_room_get(&member.c, room)->state == SC2C_ROOM_WAITKEY);
+    CHECK_RC(sc2c_submit(&member.c, SC2C_PRIVATE, room, "stale key", 9, 1, 1), SC2C_AGAIN);
+    feed_commit(&member, &valid, &admin, roster.room, false); /* replay */
+    CHECK(room_roster(&member, room).epoch == 3);
+
+    /* Stale keys cannot roll back a signed epoch. A matching checkpoint can
+     * finish the transition after the admin rotates its engine key. */
+    CHECK_RC(sc2e_room_share_roster(admin.engine, room, member.c.self_hex, NULL, &roster,
+                                   sealed, sizeof(sealed), &n), SC2_OK);
+    q_push(&dmq, sealed, n); deliver_dm(&member, q_pop(&dmq));
+    CHECK(sc2c_room_get(&member.c, room)->state == SC2C_ROOM_WAITKEY);
+    CHECK_RC(sc2e_room_rotate(admin.engine, room, NULL), SC2_OK);
+    CHECK_RC(sc2e_room_share_roster(admin.engine, room, member.c.self_hex, NULL, &trusted,
+                                   sealed, sizeof(sealed), &n), SC2_OK);
+    q_push(&dmq, sealed, n); deliver_dm(&member, q_pop(&dmq));
+    CHECK(sc2c_room_get(&member.c, room)->state == SC2C_ROOM_JOINED);
+    CHECK_RC(sc2e_room_info(member.engine, room, &info), SC2_OK);
+    CHECK(info.epoch == 3);
+
+    /* Administrative authority comes from the authenticated roster, and
+     * delegated admin signatures must resolve to that device's key. */
+    CHECK_RC(sc2_commit_make(&valid, &trusted, admin.c.self_id, SC2_COMMIT_ADD, attacker.c.self_id), SC2_OK);
+    feed_commit(&member, &valid, &admin, roster.room, false);
+    trusted = room_roster(&member, room);
+    CHECK_RC(sc2_commit_make(&valid, &trusted, admin.c.self_id, SC2_COMMIT_PROMOTE, attacker.c.self_id), SC2_OK);
+    feed_commit(&member, &valid, &admin, roster.room, false);
+    trusted = room_roster(&member, room);
+    CHECK_RC(sc2_commit_make(&valid, &trusted, attacker.c.self_id, SC2_COMMIT_ROTATE, NULL), SC2_OK);
+    CHECK_RC(sc2e_forget_peer(member.engine, attacker.c.self_hex), SC2_OK);
+    feed_commit(&member, &valid, &attacker, roster.room, false);
+    CHECK(room_roster(&member, room).epoch == 5);
+    CHECK(sc2c_room_get(&member.c, room)->commit_hold == 999);
+    snprintf(frame, sizeof(frame), "{\"type\":\"sync.done\",\"inbox\":\"0\",\"rooms\":{\"%s\":\"1001\"}}", room);
+    feed_line(&member, frame);
+    CHECK(sc2c_room_get(&member.c, room)->cursor == 998);
+    sc2e_identity_info_t identity;
+    char bundle[SC2E_FRAME_MAX];
+    size_t bundle_len;
+    CHECK_RC(sc2e_identity(attacker.engine, &identity), SC2_OK);
+    CHECK_RC(sc2e_keys_publish(attacker.engine, NULL, 0, sealed, sizeof(sealed), &n), SC2_OK);
+    CHECK_RC(sc2e_relay_bundle(sealed, n, &identity, bundle, sizeof(bundle), &bundle_len), SC2_OK);
+    feed_line(&member, bundle);
+    CHECK(!sc2c_room_get(&member.c, room)->commit_hold);
+    feed_commit(&member, &valid, &attacker, roster.room, false);
+    trusted = room_roster(&member, room);
+    CHECK(trusted.epoch == 6);
+
+    /* A correctly chained signed removal erases keys and ends membership. */
+    CHECK_RC(sc2_commit_make(&valid, &trusted, admin.c.self_id, SC2_COMMIT_REMOVE, member.c.self_id), SC2_OK);
+    feed_commit(&member, &valid, &admin, roster.room, false);
+    CHECK(sc2c_room_get(&member.c, room)->state == SC2C_ROOM_LEFT);
+    CHECK_RC(sc2c_room_add(&member.c, room, 0), SC2_OK);
+    CHECK(sc2c_room_get(&member.c, room)->state == SC2C_ROOM_LEFT &&
+          !sc2c_room_get(&member.c, room)->want);
+    sc2c_free(&member.c);
+    sc2c_host_t host = {d_send, d_event, d_lock, d_unlock, t_alloc, t_release, d_mono, d_wall, &member};
+    sc2c_config_t config = {.tag = "mem", .nick = "member"};
+    CHECK_RC(sc2c_init(&member.c, &host, &config), SC2_OK);
+    CHECK_RC(sc2c_room_add(&member.c, room, 0), SC2_OK);
+    CHECK(sc2c_room_get(&member.c, room)->state == SC2C_ROOM_LEFT &&
+          !sc2c_room_get(&member.c, room)->want);
+    CHECK_RC(sc2e_room_info(member.engine, room, &info), SC2_OK);
+    CHECK(!info.known);
+    for (unsigned i = 0; i < 3; i++) d_free(all[i]);
 }
 
 /* ---------------- tests ---------------- */
@@ -468,6 +705,7 @@ int main(void)
     replaced_backoff(&a);
     replaced_by_relay(&a, &a2);
     idle_by_relay(&a);
+    private_room_trust();
 
     d_free(&a2);
     d_free(&a);
@@ -475,5 +713,5 @@ int main(void)
         q_clear(&to_client[s]);
     }
     sc2_mr_free(mr);
-    return sc2t_report("sc2_client_test: announced closes, reconnect delays, replaced backoff, mini-relay kicks");
+    return sc2t_report("sc2_client_test: reconnects, admission, key authorization and signed membership");
 }

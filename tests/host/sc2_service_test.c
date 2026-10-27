@@ -21,6 +21,7 @@
 #include "esp_timer.h"
 #include "solar_os_memory.h"
 #include "solar_os_sc2.h"
+#include "solar_os_sc2_client.h"
 #include "solar_os_storage.h"
 
 /* ---------------- host stand-ins for the SolarOS platform ---------------- */
@@ -236,6 +237,48 @@ static void test_notice(void)
     assert(solar_os_sc2_notice_mark("pub:third") == ESP_OK && solar_os_sc2_notice_seen("pub:third"));
 }
 
+static unsigned sent_dms;
+static char saved_dm[SC2E_FRAME_MAX];
+static int client_send(void *ctx, const char *line, size_t len)
+{
+    (void)ctx;
+    sc2_json_val_t root_value;
+    char type[SC2_TYPE_MAX + 1], rid[SC2_RID_MAX + 1];
+    assert(sc2_frame_peek(line, len, &root_value, type, rid) == SC2_OK);
+    if (!strcmp(type, "dm.send")) {
+        if (sent_dms++) assert(strlen(saved_dm) == len && !memcmp(saved_dm, line, len));
+        else { assert(len < sizeof(saved_dm)); memcpy(saved_dm, line, len); saved_dm[len] = 0; }
+    }
+    return 0;
+}
+static sc2e_t *client_lock(void *ctx) { (void)ctx; return solar_os_sc2_engine_lock(); }
+static void client_unlock(void *ctx) { (void)ctx; solar_os_sc2_engine_unlock(); }
+static uint64_t client_ms(void *ctx) { return t_clock(ctx) / 1000; }
+
+static void test_file_backed_outbox(const peer_t *peer)
+{
+    sc2c_host_t host = {.send = client_send, .engine_lock = client_lock, .engine_unlock = client_unlock,
+        .alloc = t_alloc, .release = t_release, .mono_ms = client_ms};
+    sc2c_config_t config = {.tag = "disk", .nick = "disk client"};
+    sc2c_t client;
+    assert(sc2c_init(&client, &host, &config) == SC2_OK);
+    client.state = SC2C_READY;
+    assert(sc2c_submit(&client, SC2C_DM, peer->info.device_id, "persisted", 9, 42, 123456) == SC2_OK);
+    assert(sent_dms == 1 && sc2c_outbox_count(&client) == 1);
+    sc2c_free(&client);
+    assert(sc2c_init(&client, &host, &config) == SC2_OK);
+    assert(sc2c_outbox_count(&client) == 1 && client.slots[0].token == 42 &&
+           client.slots[0].token_key == 123456 && !strcmp(client.slots[0].target, peer->info.device_id));
+    client.state = SC2C_AUTH;
+    const char authed[] = "{\"type\":\"authed\"}\n";
+    assert(sc2c_feed(&client, (const uint8_t *)authed, sizeof(authed) - 1) == SC2_OK);
+    assert(sent_dms == 2); /* Replay the identical sealed frame, without re-encryption. */
+    const char ack[] = "{\"type\":\"ack\",\"rid\":\"o0\",\"seq\":\"1\"}\n";
+    assert(sc2c_feed(&client, (const uint8_t *)ack, sizeof(ack) - 1) == SC2_OK);
+    assert(sc2c_outbox_count(&client) == 0);
+    sc2c_free(&client);
+}
+
 int main(void)
 {
     snprintf(root, sizeof(root), "/tmp/sc2_service_test.%d", (int)getpid());
@@ -247,9 +290,10 @@ int main(void)
     test_aliases(&b);
     test_verified(&b);
     test_notice();
+    test_file_backed_outbox(&b);
     sc2e_close(&b.e);
     sc2e_memstore_destroy(b.store);
     nftw(root, rm_entry, 8, FTW_DEPTH | FTW_PHYS);
-    printf("sc2_service_test: aliases, verification records and notices OK\n");
+    printf("sc2_service_test: aliases, verification, notices and file-backed outbox replay OK\n");
     return 0;
 }

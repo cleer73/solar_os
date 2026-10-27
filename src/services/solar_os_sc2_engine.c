@@ -14,7 +14,7 @@
 #define PEER_REC_MAX 512u
 #define DM_REC_MAX 3072u
 #define IDENTITY_REC_MAX 128u
-#define ROOM_SHARE_INNER_MAX 256u
+#define ROOM_SHARE_INNER_MAX (320u + ((17u * SC2_ROSTER_CAP + 2u) / 3u) * 4u)
 
 /* dm_decrypt lends its record buffer to prekeys_save_into. */
 _Static_assert(DM_REC_MAX >= PREKEYS_REC_MAX, "dm record buffer doubles as the prekeys buffer");
@@ -1045,8 +1045,8 @@ static int room_accept_key(sc2e_t *e, const uint8_t from[SC2_DEVICE_ID_LEN], con
 static int room_accept_history(sc2e_t *e, const uint8_t from[SC2_DEVICE_ID_LEN], const char *inner, size_t len,
                                sc2e_dm_result_t *res);
 
-int sc2e_dm_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *res, char *pt, size_t pt_cap,
-                    size_t *pt_len)
+static int dm_open(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *res, char *pt, size_t pt_cap,
+                    size_t *pt_len, bool apply_controls)
 {
     sc2_dm_env_t env;
     uint8_t sk[SC2_KEY_LEN];
@@ -1154,7 +1154,7 @@ int sc2e_dm_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *r
         } else if (trc == SC2_OK && strcmp(t, "history") == 0) {
             ctl_kind = 2;
         }
-        if (ctl_kind != 0) {
+        if (ctl_kind != 0 && apply_controls) {
             ctl = ws_alloc(e, n + 1u);
             if (ctl == NULL) {
                 rc = SC2_ERR_BOUNDS;
@@ -1176,6 +1176,41 @@ int sc2e_dm_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *r
         rc = ctl_kind == 1 ? room_accept_key(e, env.from, ctl, n, res) : room_accept_history(e, env.from, ctl, n, res);
         ws_release(e, ctl, n + 1u);
     }
+    return rc;
+}
+
+int sc2e_dm_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *res, char *pt, size_t pt_cap,
+                    size_t *pt_len)
+{
+    return dm_open(e, line, len, res, pt, pt_cap, pt_len, true);
+}
+
+int sc2e_dm_open(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *res, char *pt, size_t pt_cap,
+                size_t *pt_len)
+{
+    return dm_open(e, line, len, res, pt, pt_cap, pt_len, false);
+}
+
+int sc2e_dm_apply_control(sc2e_t *e, sc2e_dm_result_t *res, const char *inner, size_t len)
+{
+    sc2_json_val_t root;
+    char t[24];
+    uint8_t from[SC2_DEVICE_ID_LEN];
+    if (!e || !e->open || !res || parse_id(res->from, from) != SC2_OK ||
+        inner_type(inner, len, &root, t, sizeof(t)) != SC2_OK) return SC2_ERR_ARG;
+    if (strcmp(t, "epoch_key") == 0) return room_accept_key(e, from, inner, len, res);
+    if (strcmp(t, "history") == 0) return room_accept_history(e, from, inner, len, res);
+    return SC2_ERR_ARG;
+}
+
+int sc2e_peer_identity(sc2e_t *e, const char *peer_hex, uint8_t ik[SC2_KEY_LEN])
+{
+    uint8_t peer[SC2_DEVICE_ID_LEN];
+    sc2_bundle_t bundle;
+    if (!e || !e->open || !ik || parse_id(peer_hex, peer) != SC2_OK) return SC2_ERR_ARG;
+    int rc = peer_load(e, peer, &bundle);
+    if (rc == SC2_OK) memcpy(ik, bundle.ik, SC2_KEY_LEN);
+    sc2_memzero(&bundle, sizeof(bundle));
     return rc;
 }
 
@@ -1378,6 +1413,12 @@ int sc2e_room_rotate(sc2e_t *e, const char *room_hex, uint32_t *epoch)
 int sc2e_room_share(sc2e_t *e, const char *room_hex, const char *peer_hex, const char *rid, char *out, size_t cap,
                     size_t *out_len)
 {
+    return sc2e_room_share_roster(e, room_hex, peer_hex, rid, NULL, out, cap, out_len);
+}
+
+int sc2e_room_share_roster(sc2e_t *e, const char *room_hex, const char *peer_hex, const char *rid,
+                          const sc2_roster_t *roster, char *out, size_t cap, size_t *out_len)
+{
     uint8_t room[SC2_ROOM_ID_LEN];
     uint8_t peer[SC2_DEVICE_ID_LEN];
     sc2_jw_t w;
@@ -1392,20 +1433,22 @@ int sc2e_room_share(sc2e_t *e, const char *room_hex, const char *peer_hex, const
     if (rc != SC2_OK) {
         return rc;
     }
-    /* The inner message gets its own small buffer so the room work area can
-     * be released before dm_seal takes the DM one (never both at once). */
-    char *inner = ws_alloc(e, ROOM_SHARE_INNER_MAX);
-    room_ws_t *ws = inner ? ws_alloc(e, sizeof(*ws)) : NULL;
+    /* dm_seal encrypts into its private ciphertext buffer before writing
+     * out. Reuse the caller's output for the inner JSON until that point. */
+    char *inner = out;
+    room_ws_t *ws = ws_alloc(e, sizeof(*ws));
     if (ws == NULL) {
-        ws_release(e, inner, ROOM_SHARE_INNER_MAX);
         return SC2_ERR_BOUNDS;
     }
     rc = room_load(e, room, ws);
     if (rc == SC2_OK && (memcmp(ws->admin, e->self_id, SC2_DEVICE_ID_LEN) != 0 || !ws->slot[0].valid)) {
         rc = SC2_ERR_STATE;
     }
+    if (rc == SC2_OK && roster && (roster->count == 0 || roster->count > SC2_ROSTER_CAP ||
+        memcmp(roster->room, room, sizeof(room)) || roster->epoch != ws->slot[0].epoch ||
+        !sc2_roster_is_admin(roster, e->self_id) || sc2_roster_find(roster, peer) < 0)) rc = SC2_ERR_STATE;
     if (rc == SC2_OK) {
-        sc2_jw_init(&w, inner, ROOM_SHARE_INNER_MAX);
+        sc2_jw_init(&w, inner, cap < ROOM_SHARE_INNER_MAX ? cap : ROOM_SHARE_INNER_MAX);
         sc2_jw_object_begin(&w);
         sc2_jw_key(&w, "t");
         sc2_jw_cstring(&w, "epoch_key");
@@ -1415,6 +1458,18 @@ int sc2e_room_share(sc2e_t *e, const char *room_hex, const char *peer_hex, const
         sc2_jw_u64(&w, ws->slot[0].epoch);
         sc2_jw_key(&w, "key");
         sc2_jw_b64(&w, ws->slot[0].key, SC2_KEY_LEN);
+        if (roster) {
+            uint8_t members[17u * SC2_ROSTER_CAP];
+            for (unsigned i = 0; i < roster->count; i++) {
+                memcpy(members + 17u * i, roster->m[i].id, SC2_DEVICE_ID_LEN);
+                members[17u * i + SC2_DEVICE_ID_LEN] = roster->m[i].role;
+            }
+            sc2_jw_key(&w, "head");
+            sc2_jw_b64(&w, roster->head, SC2_COMMIT_ID_LEN);
+            sc2_jw_key(&w, "roster");
+            sc2_jw_b64(&w, members, 17u * roster->count);
+            sc2_memzero(members, sizeof(members));
+        }
         sc2_jw_object_end(&w);
         rc = sc2_jw_finish(&w, &inner_len);
     }
@@ -1422,7 +1477,10 @@ int sc2e_room_share(sc2e_t *e, const char *room_hex, const char *peer_hex, const
     if (rc == SC2_OK) {
         rc = dm_seal(e, peer, rid, (const uint8_t *)inner, inner_len, out, cap, out_len);
     }
-    ws_release(e, inner, ROOM_SHARE_INNER_MAX);
+    if (rc != SC2_OK) {
+        sc2_memzero(out, cap < SC2E_FRAME_MAX ? cap : SC2E_FRAME_MAX);
+        *out_len = 0;
+    }
     return rc;
 }
 
@@ -1504,7 +1562,6 @@ static int room_accept_history(sc2e_t *e, const uint8_t from[SC2_DEVICE_ID_LEN],
     uint8_t best_key[SC2_KEY_LEN];
     uint32_t best_epoch = 0;
     size_t pos = 0;
-    (void)from;
     res->kind = SC2E_DM_IGNORED;
     int rc = sc2_json_root(inner, len, &root);
     if (rc == SC2_OK) {
@@ -1526,6 +1583,10 @@ static int room_accept_history(sc2e_t *e, const uint8_t from[SC2_DEVICE_ID_LEN],
     }
     rc = room_load(e, room, ws);
     if (rc == SC2_ERR_NOT_FOUND) {
+        ws_release(e, ws, sizeof(*ws));
+        return SC2_OK;
+    }
+    if (rc == SC2_OK && memcmp(ws->admin, from, SC2_DEVICE_ID_LEN) != 0) {
         ws_release(e, ws, sizeof(*ws));
         return SC2_OK;
     }

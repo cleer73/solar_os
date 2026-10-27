@@ -1030,7 +1030,17 @@ def main():
         ok = True
         for path, data in ((jpath, js), (cpath, inc)):
             with open(path, encoding="utf-8") as f:
-                if f.read() != data:
+                stored = f.read()
+                if path == jpath:
+                    # Generator provenance varies by environment; protocol
+                    # values must match regardless of the installed PyNaCl.
+                    expected, actual = json.loads(stored), json.loads(data)
+                    expected.pop("libsodium", None)
+                    actual.pop("libsodium", None)
+                    matches = expected == actual
+                else:
+                    matches = stored == data
+                if not matches:
                     print("differs:", path)
                     ok = False
         print("vectors up to date" if ok else "vectors out of date")

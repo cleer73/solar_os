@@ -37,10 +37,17 @@ class Sc2ProtocolTest(unittest.TestCase):
                 subprocess.run(["cc", "-std=c11", "-w", *SANITIZE, "-fno-sanitize=shift", *INCLUDES,
                                 "-c", str(src), "-o", str(obj)], check=True)
                 objects.append(str(obj))
-            for name in ("crypto", "session", "frame", "admin"):
+            for name in ("crypto", "session", "frame", "admin", "engine", "client"):
                 binary = Path(directory) / name
+                extra = []
+                if name in ("engine", "client"):
+                    extra = [str(ROOT / "src/services" / f"solar_os_sc2_{part}.c")
+                             for part in ("engine", "selftest")]
+                if name == "client":
+                    extra.append(str(ROOT / "src/services/solar_os_sc2_client.c"))
                 subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", *SANITIZE, *INCLUDES,
-                                str(HOST / f"sc2_{name}_test.c"), *sources(), *objects, "-o", str(binary)],
+                                "-I" + str(ROOT / "src/services"),
+                                str(HOST / f"sc2_{name}_test.c"), *extra, *sources(), *objects, "-o", str(binary)],
                                check=True)
                 subprocess.run([str(binary)], check=True, stdout=subprocess.DEVNULL)
 

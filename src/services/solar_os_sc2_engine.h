@@ -212,6 +212,13 @@ int sc2e_dm_encrypt(sc2e_t *e, const char *peer_hex, const char *rid, const char
  * key-carrying control messages are consumed and only reported in res. */
 int sc2e_dm_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *res, char *pt, size_t pt_cap,
                     size_t *pt_len);
+/* Open without applying room controls. The caller must authorize decrypted
+ * epoch_key/history messages before calling sc2e_dm_apply_control(). */
+int sc2e_dm_open(sc2e_t *e, const char *line, size_t len, sc2e_dm_result_t *res, char *pt, size_t pt_cap,
+                size_t *pt_len);
+int sc2e_dm_apply_control(sc2e_t *e, sc2e_dm_result_t *res, const char *inner, size_t len);
+/* Identity key from an already verified stored peer bundle. */
+int sc2e_peer_identity(sc2e_t *e, const char *peer_hex, uint8_t ik[SC2_KEY_LEN]);
 
 /* Create a private room with a fresh epoch-1 key; this device is its admin.
  * room_hex may be NULL to pick a random 128-bit room ID. */
@@ -222,6 +229,9 @@ int sc2e_room_rotate(sc2e_t *e, const char *room_hex, uint32_t *epoch);
 /* Seal the current epoch key to a peer as a t:"epoch_key" DM (dm.send). */
 int sc2e_room_share(sc2e_t *e, const char *room_hex, const char *peer_hex, const char *rid, char *out, size_t cap,
                     size_t *out_len);
+/* Include an authenticated membership checkpoint with the epoch key. */
+int sc2e_room_share_roster(sc2e_t *e, const char *room_hex, const char *peer_hex, const char *rid,
+                          const sc2_roster_t *roster, char *out, size_t cap, size_t *out_len);
 int sc2e_room_encrypt(sc2e_t *e, const char *room_hex, const char *rid, const char *inner, size_t inner_len,
                       char *out, size_t cap, size_t *out_len);
 int sc2e_room_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_room_result_t *res, char *pt, size_t pt_cap,

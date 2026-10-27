@@ -13,7 +13,9 @@
 
 #define OB_MAGIC "SC2O"
 #define OB_VERSION 1u
-#define OB_HDR (4u + 1u + 1u + 4u + 8u + (SC2C_KEY_MAX + 1u) + 4u + 4u)
+#define OB_RECORD_HDR (4u + 1u + 1u + 4u + 8u + (SC2C_KEY_MAX + 1u) + 4u + 4u)
+#define OB_HDR (12u + OB_RECORD_HDR) /* SC2E envelope header, then outbox header */
+#define REC_OUTBOX_TYPE 0x32u
 #define OB_KIND_SHARE 9u /* epoch key DM owed to a room member (no event) */
 #define REC_ROOM_TYPE 0x31u
 #define REC_ROOM_VERSION 1u
@@ -262,8 +264,8 @@ static char *ob_frame(sc2c_t *c)
 static int ob_save(sc2c_t *c, unsigned slot, uint8_t kind, uint32_t token, uint64_t key, const char *target,
                    size_t frame_len)
 {
-    uint8_t *h = (uint8_t *)c->tx;
-    memset(h, 0, OB_HDR);
+    uint8_t *h = (uint8_t *)c->tx + 12u;
+    memset(h, 0, OB_RECORD_HDR);
     memcpy(h, OB_MAGIC, 4);
     h[4] = OB_VERSION;
     h[5] = kind;
@@ -275,8 +277,12 @@ static int ob_save(sc2c_t *c, unsigned slot, uint8_t kind, uint32_t token, uint6
     put_u32(h + 22 + SC2C_KEY_MAX + 1, fnv32((const uint8_t *)ob_frame(c), frame_len));
     char name[SC2E_NAME_MAX];
     slot_name(c, name, slot);
+    size_t stored_len = 0;
+    int rc = sc2e_record_wrap((uint8_t *)c->tx, SC2C_TX_MAX, &stored_len, REC_OUTBOX_TYPE, OB_VERSION,
+                              h, OB_RECORD_HDR + frame_len);
+    if (rc != SC2_OK) return rc;
     sc2e_t *e = lock(c);
-    int rc = e->pf.save(e->pf.ctx, name, h, OB_HDR + frame_len);
+    rc = e->pf.save(e->pf.ctx, name, (const uint8_t *)c->tx, stored_len);
     unlock(c);
     if (rc == SC2_OK) {
         sc2c_slot_t *s = &c->slots[slot];
@@ -303,12 +309,15 @@ static int ob_load(sc2c_t *c, unsigned slot, size_t *frame_len)
     if (rc != SC2_OK) {
         return rc;
     }
-    const uint8_t *h = (const uint8_t *)c->tx;
-    if (len < OB_HDR || memcmp(h, OB_MAGIC, 4) != 0 || h[4] != OB_VERSION) {
+    const uint8_t *h = NULL;
+    size_t payload_len = 0;
+    rc = sc2e_record_unwrap((const uint8_t *)c->tx, len, REC_OUTBOX_TYPE, OB_VERSION, &h, &payload_len);
+    if (rc != SC2_OK || payload_len < OB_RECORD_HDR || memcmp(h, OB_MAGIC, 4) != 0 || h[4] != OB_VERSION) {
         return SC2_ERR_FORMAT;
     }
     size_t fl = get_u32(h + 18 + SC2C_KEY_MAX + 1);
-    if (fl != len - OB_HDR || get_u32(h + 22 + SC2C_KEY_MAX + 1) != fnv32(h + OB_HDR, fl)) {
+    if (fl != payload_len - OB_RECORD_HDR ||
+        get_u32(h + 22 + SC2C_KEY_MAX + 1) != fnv32(h + OB_RECORD_HDR, fl)) {
         return SC2_ERR_FORMAT;
     }
     c->tx[len] = '\0';
@@ -560,6 +569,7 @@ static void shares_flush_room(sc2c_t *c, unsigned idx)
 {
     sc2c_room_t *r = &c->rooms[idx];
     const sc2_roster_t *ro = &c->rec.roster;
+    if (!sc2_roster_is_admin(ro, c->self_id)) return;
     for (unsigned m = 0; m < ro->count && r->share_pending != 0; m++) {
         if ((r->share_pending & (1u << m)) == 0) {
             continue;
@@ -586,7 +596,7 @@ static void shares_flush_room(sc2c_t *c, unsigned idx)
         size_t n = 0;
         snprintf(rid, sizeof(rid), "o%d", slot);
         e = lock(c);
-        rc = sc2e_room_share(e, r->key, peer, rid, ob_frame(c), SC2C_TX_MAX - OB_HDR, &n);
+        rc = sc2e_room_share_roster(e, r->key, peer, rid, ro, ob_frame(c), SC2C_TX_MAX - OB_HDR, &n);
         unlock(c);
         if (rc == SC2_OK) {
             rc = ob_save(c, (unsigned)slot, OB_KIND_SHARE, 0, 0, peer, n);
@@ -643,6 +653,147 @@ static void admin_catch_up(sc2c_t *c, unsigned idx)
 
 /* ------------------------------------------------------------------ */
 /* inbound                                                             */
+
+/* Unlike the relay's invite_key, this proof requires the out-of-band
+ * secret. Bind it to both the room and the authenticated DM sender. */
+static int admission_proof(uint8_t proof[32], const uint8_t secret[SC2_INVITE_SECRET_LEN],
+                           const uint8_t room[SC2_ROOM_ID_LEN], const uint8_t device[SC2_DEVICE_ID_LEN])
+{
+    static const uint8_t label[] = "SC2-ADMIN-JOIN\x01";
+    uint8_t data[sizeof(label) - 1u + SC2_ROOM_ID_LEN + SC2_DEVICE_ID_LEN];
+    memcpy(data, label, sizeof(label) - 1u);
+    memcpy(data + sizeof(label) - 1u, room, SC2_ROOM_ID_LEN);
+    memcpy(data + sizeof(label) - 1u + SC2_ROOM_ID_LEN, device, SC2_DEVICE_ID_LEN);
+    return sc2_hmac_sha256(proof, secret, SC2_INVITE_SECRET_LEN, data, sizeof(data));
+}
+
+static void admissions_flush(sc2c_t *c)
+{
+    if (c->state < SC2C_SYNCING) return;
+    for (unsigned i = 0; i < SC2C_ROOMS_MAX; i++) {
+        sc2c_room_t *r = &c->rooms[i];
+        uint64_t now = now_ms(c);
+        if (!r->want || r->kind != SC2C_PRIVATE ||
+            (r->state != SC2C_ROOM_REQUESTED && r->state != SC2C_ROOM_WAITKEY) ||
+            (r->admission_ms && now - r->admission_ms < CLAIM_RETRY_MS) ||
+            rec_load(c, r->key) != SC2_OK || !(c->rec.flags & SC2C_RF_INVITE) ||
+            (c->rec.flags & SC2C_RF_ADMIN)) continue;
+        int slot = ob_free_slot(c);
+        if (slot < 0) return;
+        char admin[SC2_DEVICE_ID_HEX_LEN + 1];
+        hex_of(admin, c->rec.admin_id);
+        sc2e_peer_info_t pi;
+        sc2e_t *e = lock(c);
+        int rc = sc2e_peer_info(e, admin, &pi);
+        unlock(c);
+        if (rc != SC2_OK) continue;
+        if (!pi.known) { (void)send_claim(c, admin); continue; }
+        uint8_t proof[32];
+        rc = admission_proof(proof, c->rec.secret, c->rec.roster.room, c->self_id);
+        size_t inner_len = 0, n = 0;
+        sc2_jw_t w;
+        sc2_jw_init(&w, c->work, SC2C_WORK_MAX);
+        sc2_jw_object_begin(&w);
+        sc2_jw_key(&w, "t"); sc2_jw_cstring(&w, "room_join");
+        sc2_jw_key(&w, "room"); sc2_jw_cstring(&w, r->key);
+        sc2_jw_key(&w, "proof"); sc2_jw_b64(&w, proof, sizeof(proof));
+        sc2_jw_object_end(&w);
+        if (rc == SC2_OK) rc = sc2_jw_finish(&w, &inner_len);
+        char rid[16];
+        snprintf(rid, sizeof(rid), "o%d", slot);
+        if (rc == SC2_OK) {
+            e = lock(c);
+            rc = sc2e_dm_encrypt(e, admin, rid, c->work, inner_len, ob_frame(c), SC2C_TX_MAX - OB_HDR, &n);
+            unlock(c);
+        }
+        sc2_memzero(proof, sizeof(proof));
+        sc2_memzero(c->work, inner_len);
+        if (rc == SC2_OK) rc = ob_save(c, (unsigned)slot, OB_KIND_SHARE, 0, 0, admin, n);
+        if (rc == SC2_OK) {
+            r->admission_ms = now ? now : 1;
+            ob_transmit(c, (unsigned)slot);
+        }
+    }
+}
+
+static void on_admission(sc2c_t *c, const sc2e_dm_result_t *res, const sc2_json_val_t *root)
+{
+    char room[SC2_DEVICE_ID_HEX_LEN + 1];
+    uint8_t proof[32], expected[32], device[SC2_DEVICE_ID_LEN];
+    if (!c->auto_admit || sc2_json_get_string(root, "room", room, sizeof(room), NULL) != SC2_OK ||
+        sc2_json_get_b64_exact(root, "proof", proof, sizeof(proof)) != SC2_OK ||
+        sc2_hex_decode(device, sizeof(device), res->from, SC2_DEVICE_ID_HEX_LEN) != SC2_OK) return;
+    int idx = room_index(c, room);
+    if (idx < 0 || !c->rooms[idx].want || c->rooms[idx].kind != SC2C_PRIVATE ||
+        rec_load(c, room) != SC2_OK || !(c->rec.flags & SC2C_RF_ADMIN) ||
+        !sc2_roster_is_admin(&c->rec.roster, c->self_id) ||
+        admission_proof(expected, c->rec.secret, c->rec.roster.room, device) != SC2_OK ||
+        !sc2_ct_eq(proof, expected, sizeof(proof))) {
+        notice(c, SC2_ERR_AUTH, "private-room admission proof rejected");
+        return;
+    }
+    int member = sc2_roster_find(&c->rec.roster, device);
+    if (member >= 0) {
+        c->rooms[idx].share_pending |= 1u << (unsigned)member;
+        shares_flush_room(c, (unsigned)idx);
+    } else {
+        queue_add(c, (unsigned)idx, device);
+        commit_next(c, (unsigned)idx);
+    }
+}
+
+/* c->tx holds the opened control throughout authorization. rec_load/save
+ * use c->work, so the key cannot be installed before this check completes. */
+static bool authorize_control(sc2c_t *c, const sc2e_dm_result_t *res,
+                               const sc2_json_val_t *root, bool history)
+{
+    char room[SC2_DEVICE_ID_HEX_LEN + 1], admin[SC2_DEVICE_ID_HEX_LEN + 1];
+    if (sc2_json_get_string(root, "room", room, sizeof(room), NULL) != SC2_OK) return false;
+    int idx = room_index(c, room);
+    if (idx < 0 || !c->rooms[idx].want || c->rooms[idx].kind != SC2C_PRIVATE ||
+        c->rooms[idx].state == SC2C_ROOM_LEFT || rec_load(c, room) != SC2_OK ||
+        !(c->rec.flags & SC2C_RF_INVITE) || (c->rec.flags & SC2C_RF_ADMIN)) return false;
+    hex_of(admin, c->rec.admin_id);
+    if (strcmp(admin, res->from) || (c->rec.roster.count &&
+        !sc2_roster_is_admin(&c->rec.roster, c->rec.admin_id))) return false;
+    uint8_t ik[SC2_KEY_LEN];
+    sc2e_t *e = lock(c);
+    int identity_rc = sc2e_peer_identity(e, res->from, ik);
+    unlock(c);
+    if (identity_rc != SC2_OK || !sc2_ct_eq(ik, c->rec.admin_ik, sizeof(ik))) return false;
+    if (history) return c->rec.roster.count && sc2_roster_find(&c->rec.roster, c->self_id) >= 0;
+
+    uint64_t epoch;
+    sc2_roster_t roster;
+    uint8_t members[17u * SC2_ROSTER_CAP];
+    size_t members_len = 0;
+    sc2_json_val_t v;
+    sc2_roster_init(&roster, c->rec.roster.room);
+    if (sc2_json_get_u64(root, "epoch", UINT32_MAX, &epoch) != SC2_OK || !epoch ||
+        epoch < c->rec.roster.epoch ||
+        sc2_json_get_b64_exact(root, "head", roster.head, sizeof(roster.head)) != SC2_OK ||
+        sc2_json_get(root, "roster", &v) != SC2_OK ||
+        sc2_json_b64(&v, members, sizeof(members), &members_len) != SC2_OK ||
+        !members_len || members_len % 17u) return false;
+    roster.epoch = (uint32_t)epoch;
+    roster.count = (uint8_t)(members_len / 17u);
+    for (unsigned i = 0; i < roster.count; i++) {
+        memcpy(roster.m[i].id, members + 17u * i, SC2_DEVICE_ID_LEN);
+        roster.m[i].role = members[17u * i + SC2_DEVICE_ID_LEN];
+        if (roster.m[i].role > SC2_ROLE_ADMIN ||
+            (i && memcmp(roster.m[i - 1].id, roster.m[i].id, SC2_DEVICE_ID_LEN) >= 0)) return false;
+    }
+    if (!sc2_roster_is_admin(&roster, c->rec.admin_id) || sc2_roster_find(&roster, c->self_id) < 0) return false;
+    if (c->rec.roster.count && roster.epoch == c->rec.roster.epoch) {
+        uint8_t old_hash[32], new_hash[32];
+        if (!sc2_ct_eq(roster.head, c->rec.roster.head, sizeof(roster.head)) ||
+            sc2_roster_hash(&roster, new_hash) != SC2_OK ||
+            sc2_roster_hash(&c->rec.roster, old_hash) != SC2_OK ||
+            !sc2_ct_eq(old_hash, new_hash, sizeof(old_hash))) return false;
+    }
+    c->rec.roster = roster;
+    return rec_save(c, room) == SC2_OK;
+}
 
 static void deliver_text(sc2c_t *c, sc2c_kind_t kind, const char *conv, const char *from, uint64_t seq,
                          const char *pt, size_t pl, bool replay)
@@ -725,7 +876,7 @@ static void on_dm(sc2c_t *c, const char *line, size_t len, bool replay)
     }
     memset(&res, 0, sizeof(res));
     sc2e_t *e = lock(c);
-    int rc = sc2e_dm_decrypt(e, line, len, &res, c->work, SC2C_WORK_MAX, &pl);
+    int rc = sc2e_dm_open(e, line, len, &res, c->work, SC2C_WORK_MAX, &pl);
     unlock(c);
     if (rc == SC2_ERR_NOT_FOUND && seq != 0 && dm_sender_claim(c, &root)) {
         /* First message from a device we have no keys for: fetch its bundle,
@@ -740,29 +891,36 @@ static void on_dm(sc2c_t *c, const char *line, size_t len, bool replay)
     }
     if (rc != SC2_OK) {
         notice(c, rc, "undecryptable DM dropped");
-    } else if (res.kind == SC2E_DM_MESSAGE) {
-        deliver_text(c, SC2C_DM, res.from, res.from, res.seq, c->work, pl, replay);
-    } else if (res.kind == SC2E_DM_EPOCH_KEY || res.kind == SC2E_DM_HISTORY) {
-        int idx = room_index(c, res.room);
-        bool ok = idx >= 0 && c->rooms[idx].kind == SC2C_PRIVATE;
-        if (ok && rec_load(c, res.room) == SC2_OK && (c->rec.flags & SC2C_RF_INVITE) != 0) {
-            char admin[SC2_DEVICE_ID_HEX_LEN + 1];
-            hex_of(admin, c->rec.admin_id);
-            ok = strcmp(admin, res.from) == 0;
-        }
-        if (!ok) {
-            /* the engine accepts a first key for an unknown room from anyone;
-             * this client only wants keys for rooms it asked to join */
-            e = lock(c);
-            sc2e_room_info_t info;
-            if (sc2e_room_info(e, res.room, &info) == SC2_OK && info.known && !info.is_admin &&
-                strcmp(info.admin, res.from) == 0 && idx < 0) {
-                (void)sc2e_room_forget(e, res.room);
+    } else {
+        sc2_json_val_t inner, type;
+        bool parsed = sc2_json_root(c->work, pl, &inner) == SC2_OK &&
+            sc2_json_get(&inner, "t", &type) == SC2_OK;
+        bool history = parsed && sc2_json_string_eq(&type, "history");
+        if (parsed && (history || sc2_json_string_eq(&type, "epoch_key"))) {
+            memcpy(c->tx, c->work, pl + 1u);
+            (void)sc2_json_root(c->tx, pl, &inner);
+            if (!authorize_control(c, &res, &inner, history)) {
+                notice(c, SC2_ERR_AUTH, "unauthorized room key ignored before installation");
+            } else {
+                e = lock(c);
+                sc2e_room_info_t prior;
+                char room[SC2_DEVICE_ID_HEX_LEN + 1];
+                if (sc2_json_get_string(&inner, "room", room, sizeof(room), NULL) == SC2_OK &&
+                    sc2e_room_info(e, room, &prior) == SC2_OK && prior.known && strcmp(prior.admin, res.from))
+                    (void)sc2e_room_forget(e, room);
+                rc = sc2e_dm_apply_control(e, &res, c->tx, pl);
+                unlock(c);
+                int idx = room_index(c, res.room);
+                if (rc == SC2_OK && res.kind == SC2E_DM_EPOCH_KEY && idx >= 0) {
+                    c->rooms[idx].commit_hold = 0;
+                    room_event(c, &c->rooms[idx], SC2C_ROOM_JOINED, NULL);
+                } else if (rc != SC2_OK) notice(c, rc, "authorized room key could not be installed");
             }
-            unlock(c);
-            notice(c, 0, "epoch key for a room we did not join ignored");
-        } else if (res.kind == SC2E_DM_EPOCH_KEY) {
-            room_event(c, &c->rooms[idx], SC2C_ROOM_JOINED, NULL);
+            sc2_memzero(c->tx, pl);
+        } else if (parsed && sc2_json_string_eq(&type, "room_join")) {
+            on_admission(c, &res, &inner);
+        } else {
+            deliver_text(c, SC2C_DM, res.from, res.from, res.seq, c->work, pl, replay);
         }
     }
     sc2_memzero(c->work, pl);
@@ -777,6 +935,7 @@ static bool room_seq_new(sc2c_t *c, int idx, uint64_t seq)
     if (idx < 0) {
         return false;
     }
+    if (c->rooms[idx].commit_hold && seq >= c->rooms[idx].commit_hold) return false;
     if (seq != 0 && seq <= c->rooms[idx].cursor) {
         return false;
     }
@@ -870,24 +1029,61 @@ static void on_commit(sc2c_t *c, const char *line, size_t len)
     }
     hex_of(key, room);
     int idx = room_index(c, key);
-    if (!room_seq_new(c, idx, seq) || memcmp(cm.by, c->self_id, SC2_DEVICE_ID_LEN) == 0) {
+    if (idx < 0 || !c->rooms[idx].want || c->rooms[idx].kind != SC2C_PRIVATE ||
+        c->rooms[idx].state == SC2C_ROOM_LEFT || memcmp(cm.room, room, sizeof(room)) ||
+        (memcmp(cm.by, c->self_id, SC2_DEVICE_ID_LEN) == 0 && c->rooms[idx].commit_op)) {
         return;
     }
-    if (rec_load(c, key) != SC2_OK) {
+    if (rec_load(c, key) != SC2_OK || !c->rec.roster.count ||
+        !sc2_roster_is_admin(&c->rec.roster, cm.by)) {
+        notice(c, SC2_ERR_AUTH, "commit without a trusted admin roster ignored");
         return;
     }
-    if ((c->rec.flags & SC2C_RF_INVITE) != 0 && memcmp(cm.by, c->rec.admin_id, SC2_DEVICE_ID_LEN) == 0 &&
-        sc2_commit_verify(sig, rec, c->rec.admin_ik) != SC2_OK) {
-        notice(c, SC2_ERR_AUTH, "commit with a bad admin signature ignored");
+    uint8_t ik[SC2_KEY_LEN];
+    if (memcmp(cm.by, c->rec.admin_id, SC2_DEVICE_ID_LEN) == 0) {
+        memcpy(ik, c->rec.admin_ik, sizeof(ik));
+    } else {
+        char signer[SC2_DEVICE_ID_HEX_LEN + 1];
+        hex_of(signer, cm.by);
+        sc2e_t *e = lock(c);
+        int rc = memcmp(cm.by, c->self_id, SC2_DEVICE_ID_LEN) == 0 ? SC2_OK :
+            sc2e_peer_identity(e, signer, ik);
+        if (memcmp(cm.by, c->self_id, SC2_DEVICE_ID_LEN) == 0) memcpy(ik, e->id.ik_pub, sizeof(ik));
+        unlock(c);
+        if (rc != SC2_OK) {
+            if (seq && (!c->rooms[idx].commit_hold || seq < c->rooms[idx].commit_hold)) {
+                c->rooms[idx].commit_hold = seq;
+                if (c->rooms[idx].cursor >= seq) c->rooms[idx].cursor = seq - 1;
+            }
+            room_event(c, &c->rooms[idx], SC2C_ROOM_WAITKEY, "fetching the membership signer key");
+            (void)send_claim(c, signer);
+            return;
+        }
+    }
+    if (sc2_commit_verify(sig, rec, ik) != SC2_OK) {
+        notice(c, SC2_ERR_AUTH, "commit with an invalid admin signature ignored");
         return;
     }
-    if (cm.epoch > c->rec.roster.epoch && (c->rec.flags & SC2C_RF_ADMIN) == 0) {
-        c->rec.roster.epoch = cm.epoch;
-        (void)sc2_commit_id(c->rec.roster.head, rec);
-        (void)rec_save(c, key);
+    uint8_t id[SC2_COMMIT_ID_LEN];
+    if (sc2_commit_id(id, rec) == SC2_OK && cm.epoch == c->rec.roster.epoch &&
+        sc2_ct_eq(id, c->rec.roster.head, sizeof(id))) return;
+    if (sc2_roster_apply(&c->rec.roster, rec) != SC2_OK || rec_save(c, key) != SC2_OK) {
+        notice(c, SC2_ERR_STATE, "commit with an invalid chain or roster ignored");
+        return;
     }
+    if (seq > c->rooms[idx].cursor) c->rooms[idx].cursor = seq;
+    c->rooms[idx].commit_hold = 0;
     if (cm.op == SC2_COMMIT_REMOVE && memcmp(cm.target, c->self_id, SC2_DEVICE_ID_LEN) == 0) {
+        sc2e_t *e = lock(c);
+        (void)sc2e_room_forget(e, key);
+        unlock(c);
+        c->rooms[idx].want = false;
         room_event(c, &c->rooms[idx], SC2C_ROOM_LEFT, "removed by an admin");
+    } else if ((c->rec.flags & SC2C_RF_ADMIN) && sc2_roster_is_admin(&c->rec.roster, c->self_id)) {
+        admin_catch_up(c, (unsigned)idx);
+        shares_flush_room(c, (unsigned)idx);
+    } else {
+        room_event(c, &c->rooms[idx], SC2C_ROOM_WAITKEY, "waiting for the authenticated epoch key");
     }
 }
 
@@ -911,9 +1107,6 @@ static void on_room_event(sc2c_t *c, const sc2_json_val_t *root)
         if (seq != 0 && seq <= c->inbox_done) {
             return;
         }
-        if (idx >= 0 && sc2_json_string_eq(&v, "removed") && strcmp(dev, c->self_hex) == 0) {
-            room_event(c, &c->rooms[idx], SC2C_ROOM_LEFT, "removed by an admin");
-        }
         if (seq != 0) {
             c->inbox_done = seq;
             send_ack(c, seq);
@@ -924,17 +1117,8 @@ static void on_room_event(sc2c_t *c, const sc2_json_val_t *root)
         return;
     }
     if (sc2_json_string_eq(&v, "join_request")) {
-        uint8_t id[SC2_DEVICE_ID_LEN];
-        if (!c->auto_admit || sc2_hex_decode(id, sizeof(id), dev, SC2_DEVICE_ID_HEX_LEN) != SC2_OK ||
-            rec_load(c, room) != SC2_OK || (c->rec.flags & SC2C_RF_ADMIN) == 0) {
-            return;
-        }
-        if (sc2_roster_find(&c->rec.roster, id) < 0) {
-            queue_add(c, (unsigned)idx, id);
-            commit_next(c, (unsigned)idx);
-        }
-    } else if (sc2_json_string_eq(&v, "removed") && strcmp(dev, c->self_hex) == 0) {
-        room_event(c, &c->rooms[idx], SC2C_ROOM_LEFT, "removed by an admin");
+        /* Relay notifications are hints, never admission authority. */
+        notice(c, 0, "join request awaits an end-to-end invite proof");
     }
 }
 
@@ -975,6 +1159,7 @@ static void on_room_state(sc2c_t *c, const sc2_json_val_t *root)
         (void)sc2_json_get_string(root, "notice", text, sizeof(text), NULL);
         room_event(c, r, SC2C_ROOM_JOINED, text[0] != '\0' ? text : NULL);
     } else {
+        if (!r->want || r->state == SC2C_ROOM_LEFT) return;
         if (!json_array_has(root, "members", c->self_hex)) {
             return;
         }
@@ -983,11 +1168,15 @@ static void on_room_state(sc2c_t *c, const sc2_json_val_t *root)
         sc2e_t *e = lock(c);
         int rc = sc2e_room_info(e, room, &info);
         unlock(c);
-        if (admin && rec_load(c, room) == SC2_OK && (c->rec.flags & SC2C_RF_ADMIN) != 0) {
+        if (admin && rec_load(c, room) == SC2_OK && (c->rec.flags & SC2C_RF_ADMIN) != 0 &&
+            sc2_roster_is_admin(&c->rec.roster, c->self_id)) {
             admin_catch_up(c, (unsigned)idx);
             shares_flush_room(c, (unsigned)idx);
         }
-        room_event(c, r, rc == SC2_OK && info.known ? SC2C_ROOM_JOINED : SC2C_ROOM_WAITKEY, NULL);
+        bool trusted = rec_load(c, room) == SC2_OK && c->rec.roster.count &&
+            sc2_roster_find(&c->rec.roster, c->self_id) >= 0;
+        room_event(c, r, trusted && !r->commit_hold && rc == SC2_OK && info.known && info.epoch == c->rec.roster.epoch ?
+                   SC2C_ROOM_JOINED : SC2C_ROOM_WAITKEY, NULL);
     }
     if (!r->synced) {
         r->synced = true;
@@ -1020,6 +1209,7 @@ static void on_sync_done(sc2c_t *c, const sc2_json_val_t *root)
                 sc2_json_u64_str(&v, &cur) != SC2_OK) {
                 continue;
             }
+            if (r->commit_hold && cur >= r->commit_hold) cur = r->commit_hold - 1;
             if (cur > r->cursor) {
                 r->cursor = cur;
             }
@@ -1075,6 +1265,7 @@ static void on_ack(sc2c_t *c, const char *rid, const sc2_json_val_t *root)
         sc2_json_val_t v;
         if (sc2_json_get(root, "status", &v) == SC2_OK && sc2_json_string_eq(&v, "requested")) {
             room_event(c, &c->rooms[i], SC2C_ROOM_REQUESTED, "waiting for an admin to add this device");
+            admissions_flush(c);
         }
         return;
     }
@@ -1389,6 +1580,11 @@ static int process_line(sc2c_t *c, const char *line, size_t len)
         }
         shares_flush(c);
         dm_resync(c);
+        admissions_flush(c);
+        if (rc == SC2_OK) {
+            for (unsigned j = 0; j < SC2C_ROOMS_MAX; j++) c->rooms[j].commit_hold = 0;
+            send_sync(c, -1);
+        }
     } else if (strcmp(type, "keys.low") == 0) {
         (void)send_keys(c);
     }
@@ -1458,7 +1654,7 @@ int sc2c_init(sc2c_t *c, const sc2c_host_t *host, const sc2c_config_t *cfg)
             ob_drop(c, i);
             continue;
         }
-        const uint8_t *h = (const uint8_t *)c->tx;
+        const uint8_t *h = (const uint8_t *)c->tx + 12u;
         sc2c_slot_t *s = &c->slots[i];
         s->used = true;
         s->kind = h[5];
@@ -1596,6 +1792,7 @@ int sc2c_tick(sc2c_t *c)
         }
         shares_flush(c);
     }
+    admissions_flush(c);
     return SC2_OK;
 }
 
@@ -1642,6 +1839,14 @@ int sc2c_room_add(sc2c_t *c, const char *key, uint64_t cursor)
     int idx = room_slot_new(c, key, kind, cursor);
     if (idx < 0) {
         return idx;
+    }
+    /* A configured room survives removal in the profile. Its authenticated
+     * roster is the durable authority: only an explicit invite join resets it. */
+    if (kind == SC2C_PRIVATE && rec_load(c, key) == SC2_OK && c->rec.roster.count &&
+        sc2_roster_find(&c->rec.roster, c->self_id) < 0) {
+        c->rooms[idx].want = false;
+        room_event(c, &c->rooms[idx], SC2C_ROOM_LEFT, "removed by an admin");
+        return SC2_OK;
     }
     if (c->state >= SC2C_SYNCING && (had < 0 || c->rooms[idx].state == SC2C_ROOM_IDLE ||
                                      c->rooms[idx].state == SC2C_ROOM_FAILED || c->rooms[idx].state == SC2C_ROOM_LEFT)) {
