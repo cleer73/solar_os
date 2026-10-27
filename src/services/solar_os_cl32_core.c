@@ -160,12 +160,14 @@ static esp_err_t acknowledge_core_interrupts(
         return err;
     }
     const uint8_t handled = CL32_CORE_INTERRUPT_KEYBOARD | CL32_CORE_INTERRUPT_POWER;
-    if ((interrupts & handled) == 0U) {
+    if (interrupts != 0U && (interrupts & handled) == 0U) {
         return ESP_OK;
     }
 
     /* Power state is read directly by battery_read(). Its notification bits
-     * must also be acknowledged to release the shared active-low wake line. */
+     * must also be acknowledged to release the shared active-low wake line.
+     * Write zero even when the register already reads zero: the AVR's IRQ
+     * output can remain asserted after its event flags have cleared. */
     interrupts &= (uint8_t)~handled;
     return solar_os_bus_i2c_write_reg(device->i2c_bus,
                                       device->address,

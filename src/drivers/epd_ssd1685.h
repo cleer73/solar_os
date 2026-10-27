@@ -58,11 +58,14 @@ typedef struct {
     bool fastwave_loaded, pulse_needs_cleanup, invert;
     bool pulse_mask_dirty;
     bool scan_async, suspended, pulse_power_hold, pulse_ramp_fast;
+    bool power_state_present;
     char mode_description[640];
 } epd_ssd1685_t;
 
 esp_err_t epd_ssd1685_init(epd_ssd1685_t *display, const epd_ssd1685_config_t *config);
 esp_err_t epd_ssd1685_refresh(epd_ssd1685_t *display);
+/* Join/discard asynchronous scans and complete a full refresh before returning. */
+esp_err_t epd_ssd1685_present_power_state(epd_ssd1685_t *display);
 esp_err_t epd_ssd1685_resume(epd_ssd1685_t *display);
 void epd_ssd1685_deinit(epd_ssd1685_t *display);
 esp_err_t epd_ssd1685_relax(epd_ssd1685_t *display, solar_os_display_relax_phase_t phase);

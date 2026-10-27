@@ -33,6 +33,7 @@
 #define pdMS_TO_TICKS(ms) (ms)
 #define SOLAR_OS_LOGW(...) log_message(__VA_ARGS__)
 #define SOLAR_OS_LOGI(...) log_message(__VA_ARGS__)
+#define ESP_ERR_SLEEP_REJECT ESP_ERR_INVALID_STATE
 
 typedef int gpio_num_t;
 typedef int esp_sleep_wakeup_cause_t;
@@ -42,8 +43,9 @@ typedef struct { int unused; } solar_os_input_key_event_t;
 
 static const char *TAG = "test";
 static uint32_t now = 1, held_until, line_active_until, input_generation;
+static uint32_t prepare_line_active_ms;
 static unsigned sleeps, deeps, resumes, suspends, ends, restores, wakes;
-static uint64_t configured_mask, wake_mask;
+static uint64_t configured_mask, wake_mask, active_wake_mask;
 static int wake_mode, extra_rtc = -1;
 static bool gpio_failure, rtc_failure, wake_failure;
 static bool key_capability;
@@ -82,7 +84,12 @@ static size_t solar_os_input_get_pressed(solar_os_input_key_event_t *held, size_
 { (void)held; assert(count == 1); return now < held_until ? 1 : 0; }
 static uint32_t solar_os_input_key_press_generation(void) { return input_generation; }
 void solar_os_power_get_status(solar_os_power_status_t *out) { *out = status; }
-esp_err_t solar_os_power_begin_explicit_sleep(void) { status.explicit_sleep_active = true; return ESP_OK; }
+esp_err_t solar_os_power_begin_explicit_sleep(void)
+{
+    status.explicit_sleep_active = true;
+    if (prepare_line_active_ms) line_active_until = now + prepare_line_active_ms;
+    return ESP_OK;
+}
 esp_err_t solar_os_power_end_explicit_sleep(void) { status.explicit_sleep_active = false; ends++; return ESP_OK; }
 esp_err_t solar_os_power_begin_suspend(void) { status.suspend_active = true; suspends++; return ESP_OK; }
 esp_err_t solar_os_power_end_suspend(void) { status.suspend_active = false; return ESP_OK; }
@@ -97,11 +104,11 @@ esp_err_t solar_os_power_hold_automatic_light_sleep(uint32_t duration) { (void)d
 static esp_err_t solar_os_display_show_power_state(const char *text) { assert(text[0]); return ESP_OK; }
 static esp_err_t solar_os_display_suspend_primary(void) { return ESP_OK; }
 static esp_err_t solar_os_display_set_overlay_active(void *display, bool active) { (void)display; assert(!active); return ESP_OK; }
-static esp_err_t esp_sleep_disable_wakeup_source(int source) { assert(source == ESP_SLEEP_WAKEUP_ALL); return ESP_OK; }
+static esp_err_t esp_sleep_disable_wakeup_source(int source)
+{ assert(source == ESP_SLEEP_WAKEUP_ALL); active_wake_mask = 0; return ESP_OK; }
 static esp_err_t esp_sleep_pd_config(int domain, int option) { (void)domain; (void)option; return ESP_OK; }
 static esp_err_t esp_sleep_enable_ext1_wakeup_io(uint64_t mask, int mode)
-{ wake_mask = mask; wake_mode = mode; return wake_failure ? ESP_FAIL : ESP_OK; }
-static esp_err_t esp_sleep_disable_ext1_wakeup_io(uint64_t mask) { assert(mask == wake_mask); return ESP_OK; }
+{ active_wake_mask = wake_mask = mask; wake_mode = mode; return wake_failure ? ESP_FAIL : ESP_OK; }
 static esp_err_t esp_sleep_enable_timer_wakeup(uint64_t delay) { assert(delay == 1000000); return ESP_OK; }
 static bool solar_os_schedule_next_wake_us(uint64_t *delay) { *delay = 1000000; return true; }
 static esp_err_t solar_os_rtc_get_info(solar_os_rtc_info_t *info)
@@ -109,7 +116,7 @@ static esp_err_t solar_os_rtc_get_info(solar_os_rtc_info_t *info)
 static esp_err_t esp_light_sleep_start(void) { sleeps++; return ESP_OK; }
 static void esp_deep_sleep_start(void) { deeps++; longjmp(deep_return, 1); }
 static int esp_sleep_get_wakeup_cause(void) { return 3; }
-static uint64_t esp_sleep_get_ext1_wakeup_status(void) { return wake_mask; }
+static uint64_t esp_sleep_get_ext1_wakeup_status(void) { return active_wake_mask; }
 
 #include "sleep.inc"
 
@@ -146,11 +153,11 @@ int main(void)
     assert(sleeps == before && !status.explicit_sleep_active);
     wake_failure = true; enter_sleep("shell", false); wake_failure = false;
     assert(sleeps == before && !status.explicit_sleep_active);
-    line_active_until = now + 1000;
+    line_active_until = now + SLEEP_WAKE_RELEASE_TIMEOUT_MS + 100;
     enter_sleep("shell", false);
     assert(sleeps == before); line_active_until = 0;
     if (SOLAR_OS_BOARD_HAS_WIRED_KEYBOARD) {
-        held_until = now + 1000;
+        held_until = now + SLEEP_WAKE_RELEASE_TIMEOUT_MS + 100;
         enter_sleep("shell", false);
         assert(sleeps == before); held_until = 0;
     }
@@ -158,6 +165,22 @@ int main(void)
     line_active_until = now + 100; held_until = now + 150;
     enter_sleep("shell", false);
     assert(sleeps == before + 1 && !status.explicit_sleep_active && restores > 0);
+    /* Repeated commands must tolerate a slower Enter release/IRQ drain,
+     * without ever sleeping through a permanently held key or low line. */
+    if (SOLAR_OS_BOARD_HAS_WIRED_KEYBOARD) {
+        for (unsigned cycle = 0; cycle < 10; cycle++) {
+            line_active_until = now + 700;
+            held_until = now + 900;
+            prepare_line_active_ms = 800;
+            enter_sleep("shell", false);
+            assert(sleeps == before + 2 + cycle && !status.explicit_sleep_active);
+        }
+        prepare_line_active_ms = SLEEP_WAKE_RELEASE_TIMEOUT_MS + 100;
+        enter_sleep("shell", false);
+        assert(sleeps == before + 11 && !status.explicit_sleep_active);
+        prepare_line_active_ms = 0;
+        line_active_until = 0;
+    }
     puts("Board wake input, suspend, light/deep sleep and rollback passed");
     return 0;
 }

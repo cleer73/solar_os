@@ -129,6 +129,10 @@
 #define SOLAR_OS_BOARD_SLEEP_WAKE_PULL_DOWN SOLAR_OS_BOARD_KEY_PULL_DOWN
 #endif
 #define SLEEP_WAKE_MASK (1ULL << SOLAR_OS_BOARD_PIN_SLEEP_WAKE)
+/* A keyboard command can still have Enter held, with a release event and
+ * shared peripheral IRQ acknowledgement pending in its polling worker. */
+#define SLEEP_WAKE_RELEASE_TIMEOUT_MS \
+    (SOLAR_OS_BOARD_HAS_WIRED_KEYBOARD ? 3000U : KEY_RELEASE_STABLE_TIMEOUT_MS)
 #if SOLAR_OS_BOARD_SLEEP_WAKE_ACTIVE_LEVEL == 0
 #if CONFIG_IDF_TARGET_ESP32
 #define SLEEP_WAKE_MODE ESP_EXT1_WAKEUP_ALL_LOW
@@ -793,6 +797,12 @@ static bool wait_sleep_wake_released_stable(bool rtc, uint32_t stable_ms, uint32
         else if ((now_ms - released_since_ms) >= stable_ms) return true;
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+    solar_os_input_key_event_t held;
+    SOLAR_OS_LOGW(TAG, "sleep wake input busy: gpio=%d level=%d rtc=%d held=%u",
+        (int)SOLAR_OS_BOARD_PIN_SLEEP_WAKE,
+        (int)(rtc ? rtc_gpio_get_level(SOLAR_OS_BOARD_PIN_SLEEP_WAKE) :
+                    gpio_get_level(SOLAR_OS_BOARD_PIN_SLEEP_WAKE)),
+        (int)rtc, (unsigned)solar_os_input_get_pressed(&held, 1));
     return false;
 }
 
@@ -937,7 +947,7 @@ static void enter_sleep(const char *reason, bool deep_sleep)
         SOLAR_OS_LOGW(TAG, "%s: wake GPIO setup failed: %s", reason, esp_err_to_name(err));
         return;
     }
-    if (!wait_sleep_wake_released_stable(false, KEY_RELEASE_STABLE_MS, KEY_RELEASE_STABLE_TIMEOUT_MS)) {
+    if (!wait_sleep_wake_released_stable(false, KEY_RELEASE_STABLE_MS, SLEEP_WAKE_RELEASE_TIMEOUT_MS)) {
         SOLAR_OS_LOGW(TAG, "%s: sleep cancelled, key release was not stable", reason);
         key_pressed = key_button_is_pressed();
         key_long_press_fired = false;
@@ -975,8 +985,8 @@ static void enter_sleep(const char *reason, bool deep_sleep)
         return;
     }
 
-    if (!wait_sleep_wake_released_stable(true, KEY_RELEASE_STABLE_MS, KEY_RELEASE_STABLE_TIMEOUT_MS)) {
-        SOLAR_OS_LOGW(TAG, "%s: sleep cancelled, RTC wake input was not stable", reason);
+    if (!wait_sleep_wake_released_stable(true, KEY_RELEASE_STABLE_MS, SLEEP_WAKE_RELEASE_TIMEOUT_MS)) {
+        SOLAR_OS_LOGW(TAG, "%s: sleep cancelled, wake input was not stable", reason);
         sleep_wake_restore_gpio();
         (void)solar_os_power_end_explicit_sleep();
         key_pressed = key_button_is_pressed();
@@ -1029,6 +1039,7 @@ static void enter_sleep(const char *reason, bool deep_sleep)
     err = esp_sleep_enable_ext1_wakeup_io(wake_mask, SLEEP_WAKE_MODE);
     if (err != ESP_OK) {
         SOLAR_OS_LOGW(TAG, "sleep wake source setup failed: %s", esp_err_to_name(err));
+        (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
         if (rtc_wake_gpio != SOLAR_OS_RTC_INTERRUPT_GPIO_NONE) {
             (void)rtc_gpio_deinit((gpio_num_t)rtc_wake_gpio);
         }
@@ -1123,11 +1134,14 @@ static void enter_sleep(const char *reason, bool deep_sleep)
         esp_deep_sleep_start();
     }
 
-    err = esp_light_sleep_start();
+    /* Radio shutdown and splash presentation can outlast the earlier release
+     * check. Let the keyboard worker settle any new shared IRQ before entry. */
+    err = wait_sleep_wake_released_stable(true, KEY_RELEASE_STABLE_MS,
+        SLEEP_WAKE_RELEASE_TIMEOUT_MS) ? esp_light_sleep_start() : ESP_ERR_SLEEP_REJECT;
 
     const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
     const uint64_t wake_ext1 = esp_sleep_get_ext1_wakeup_status();
-    (void)esp_sleep_disable_ext1_wakeup_io(wake_mask);
+    (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     (void)esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_AUTO);
     if (rtc_wake_gpio != SOLAR_OS_RTC_INTERRUPT_GPIO_NONE) {
         (void)rtc_gpio_deinit((gpio_num_t)rtc_wake_gpio);

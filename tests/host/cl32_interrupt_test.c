@@ -14,7 +14,7 @@ typedef struct {
 
 static uint8_t interrupts, queued;
 static unsigned acknowledgements, published;
-static bool fail_read, fail_write, keep_arriving;
+static bool fail_read, fail_write, keep_arriving, irq_low;
 static esp_err_t read_register(solar_os_cl32_core_device_t *device, uint8_t reg, uint8_t *value)
 {
     assert(device->address == 8);
@@ -30,6 +30,7 @@ static esp_err_t solar_os_bus_i2c_write_reg(const char *bus, uint8_t address,
     assert(!strcmp(bus, "i2c0") && address == 8 && reg == 2 && size == 1);
     if (fail_write) return ESP_FAIL;
     interrupts = *(const uint8_t *)data;
+    irq_low = interrupts != 0;
     acknowledgements++;
     return ESP_OK;
 }
@@ -66,6 +67,11 @@ int main(void)
     assert(poll_keyboard(&device) == ESP_OK && interrupts == 0);
     interrupts = 1; queued = 11;
     assert(poll_keyboard(&device) == ESP_ERR_INVALID_RESPONSE && interrupts == 1);
+    /* Empty event flags do not prove that the AVR released its IRQ output. */
+    interrupts = 0; queued = 0; irq_low = true;
+    const unsigned empty_ack = acknowledgements;
+    assert(poll_keyboard(&device) == ESP_OK && !irq_low);
+    assert(acknowledgements == empty_ack + 1);
     puts("CL-32 shared wake interrupt acknowledgement passed");
     return 0;
 }

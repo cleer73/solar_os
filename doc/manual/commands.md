@@ -456,7 +456,7 @@ Profiles:
 
 Suspend is different from explicit light sleep. It keeps the runtime, radios,
 background jobs, Inbox notifications, and audio active while the primary
-display is off. It temporarily uses the `lowpower` profile and prevents the
+display is suspended. It temporarily uses the `lowpower` profile and prevents the
 idle policy from entering explicit light sleep. Another press of KEY,
 a new keypress from a built-in or attached keyboard, or a BLE keyboard reconnect
 resumes the display and restores the selected profile. Releasing a held key or
@@ -477,11 +477,16 @@ separate board power control must still be used to remove its supply.
 On Pi0cket CL-32, the built-in keyboard resumes suspend and wakes light or
 deep sleep through the companion controller's shared interrupt. USB-power and
 charging changes can also wake the board. Release held keys before sleeping.
+Keyboard-equipped boards allow up to three seconds for held keys and the wake
+interrupt to settle; sleep is cancelled if the input remains active.
 
 `suspend` shows the SolarOS splash with **Suspended**; `sleep` and `deepsleep`
 show **Sleeping**. The splash replaces the current contents on every attached
 display before the transition, including e-paper displays that retain their
 image. Waking from suspend or light sleep restores the previous session.
+The CL-32 reflective LCD turns off during suspend after presenting the splash
+and restores the selected display power policy on resume. Unlike e-paper, it
+cannot retain the image after its supply is removed.
 
 `shutdown` works from display and port shells on every target. It stops new
 app and job launches, closes sessions, stops background jobs and radios,

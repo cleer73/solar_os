@@ -21,7 +21,8 @@ static esp_err_t scan_process(void *context, const uint8_t *source,
 static void scan_accepting(epd_ssd1685_t *d)
 {
     const bool enabled = d->refresh_mode == EPD_SSD1685_REFRESH_PULSE &&
-        d->scan_async && !d->suspended && !d->relax.storage && d->powered && d->controller_ready;
+        d->scan_async && !d->suspended && !d->power_state_present &&
+        !d->relax.storage && d->powered && d->controller_ready;
     epd_scan_worker_enable(&d->scan_worker, enabled);
     __atomic_store_n(&d->scan_submit_ready, enabled, __ATOMIC_RELEASE);
 }
@@ -384,6 +385,24 @@ static esp_err_t refresh_frame(epd_ssd1685_t *d)
     return native_frame(d, d->buffer, partial);
 }
 
+esp_err_t epd_ssd1685_present_power_state(epd_ssd1685_t *d)
+{
+    if (!d || !d->spi || !d->buffer || !d->line_buffer || !d->lock)
+        return ESP_ERR_INVALID_STATE;
+    scan_disable(d);
+    xSemaphoreTake(d->lock, portMAX_DELAY);
+    d->power_state_present = true;
+    /* Join the current scan, then discard any target it re-enabled. A full
+     * native refresh must finish before suspend or system power-off. */
+    scan_disable(d);
+    const esp_err_t err = d->suspended ? ESP_ERR_INVALID_STATE :
+        native_frame(d, d->buffer, false);
+    if (err != ESP_OK) d->controller_ready = d->shadow_valid = false;
+    d->last_error = err;
+    xSemaphoreGive(d->lock);
+    return err;
+}
+
 esp_err_t epd_ssd1685_refresh(epd_ssd1685_t *d)
 {
     if (!d) return ESP_ERR_INVALID_STATE;
@@ -496,6 +515,7 @@ static uint8_t display_cb(u8x8_t *u8x8, uint8_t message, uint8_t arg, void *ptr)
         if (arg) err = sleep_panel(d);
         else {
             d->suspended = false;
+            d->power_state_present = false;
             err = d->controller_ready ? ESP_OK : controller_init(d);
             if (err == ESP_OK) scan_accepting(d);
         }
@@ -590,6 +610,7 @@ esp_err_t epd_ssd1685_resume(epd_ssd1685_t *d)
     if (!d || !d->spi || !d->buffer) return ESP_ERR_INVALID_STATE;
     if (d->lock) xSemaphoreTake(d->lock, portMAX_DELAY);
     d->suspended = false;
+    d->power_state_present = false;
     esp_err_t err = configure_pins(d);
     if (err == ESP_OK) err = controller_init(d);
     d->last_error = err;

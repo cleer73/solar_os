@@ -60,6 +60,10 @@ esp_err_t epd_ssd1685_init(epd_ssd1685_t *display, const epd_ssd1685_config_t *c
 }
 void epd_ssd1685_deinit(epd_ssd1685_t *display) { (void)display; deinited++; }
 esp_err_t epd_ssd1685_resume(epd_ssd1685_t *display) { (void)display; return ESP_OK; }
+static epd_ssd1685_t *power_state_driver;
+static esp_err_t power_state_error;
+esp_err_t epd_ssd1685_present_power_state(epd_ssd1685_t *display)
+{ power_state_driver = display; return power_state_error; }
 u8g2_t *epd_ssd1685_get_u8g2(epd_ssd1685_t *display) { return &display->u8g2; }
 const char *epd_ssd1685_controller_mode(const epd_ssd1685_t *display)
 { (void)display; return "refresh=auto"; }
@@ -146,6 +150,11 @@ int main(void)
     assert(target.frame_formats == SOLAR_OS_DISPLAY_FORMAT_MONO1_BIT && target.preferred_stream_fps == 10);
     test_raster_forwarding(target.frame_context, target.present_frame);
     assert(raster_driver == target.frame_context);
+    assert(target.present_power_state(target.power_state_context) == ESP_OK);
+    assert(power_state_driver == target.frame_context);
+    power_state_error = ESP_FAIL;
+    assert(target.present_power_state(target.power_state_context) == ESP_FAIL);
+    power_state_error = ESP_OK;
     assert(solar_os_ssd1685_attach("epd0", bindings, 6) == ESP_ERR_INVALID_ARG);
     assert(target.relax(target.relax_context, SOLAR_OS_DISPLAY_RELAX_BEGIN) == ESP_OK);
     assert(relax_driver == target.relax_context);
@@ -161,6 +170,11 @@ int main(void)
     assert(primary_display->preferred_stream_fps == 10 && primary_display->ops->present_mono_xbm);
     test_raster_forwarding(primary_display, primary_present);
     assert(raster_driver == primary_display->driver);
+    assert(primary_display->ops->present_power_state(primary_display) == ESP_OK);
+    assert(power_state_driver == primary_display->driver);
+    power_state_error = ESP_FAIL;
+    assert(primary_display->ops->present_power_state(primary_display) == ESP_FAIL);
+    power_state_error = ESP_OK;
     const uint8_t mono = 1;
     assert(primary_display->ops->present_mono_xbm(primary_display, &mono, 1, 1, 2, 1, 1, 1, false) == ESP_OK);
     assert(received.data == &mono && received.x == 1 && received.y == 2 && !received.palette_inverted);
