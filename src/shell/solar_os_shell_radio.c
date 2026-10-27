@@ -2,9 +2,13 @@
 #include "solar_os_shell_common.h"
 #include "solar_os_shell_io.h"
 #include "solar_os_shell_tui_apps.h"
+#include "solar_os_config.h"
 
 static const char * const radio_commands[] = {
     "status", "list", "config", "profile", "state", "send", "recv",
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+    "scan",
+#endif
 };
 static const char * const radio_config_fields[] = {
     "frequency", "modulation", "bitrate", "deviation", "bandwidth", "sf",
@@ -22,6 +26,9 @@ static const char * const radio_config_fields[] = {
 #include "esp_err.h"
 #include "solar_os_radio.h"
 #include "solar_os_shell.h"
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+#include "solar_os_rfscan.h"
+#endif
 
 static solar_os_shell_io_t *terminal(solar_os_context_t *ctx)
 {
@@ -43,6 +50,9 @@ static void radio_print_usage(solar_os_shell_io_t *term)
     solar_os_shell_io_writeln(term, "  radio state <name> [sleep|standby|rx|tx]");
     solar_os_shell_io_writeln(term, "  radio send <name> <text|byte...>");
     solar_os_shell_io_writeln(term, "  radio recv <name> [timeout-ms]");
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+    solar_os_shell_io_writeln(term, "  radio scan [name]");
+#endif
 }
 
 static bool parse_u32_arg(const char *text, uint32_t min, uint32_t max, uint32_t *value)
@@ -940,6 +950,16 @@ void solar_os_shell_cmd_radio(solar_os_context_t *ctx, int argc, char **argv)
         }
         return;
     }
+
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+    if (strcmp(argv[1], "scan") == 0 && argc <= 3) {
+        char *args[] = {"rfscan", argc == 3 ? argv[2] : NULL};
+        esp_err_t err = solar_os_context_request_launch(ctx, &solar_os_rfscan_app, argc - 1, args);
+        if (err == ESP_OK) solar_os_shell_session_prepare_foreground_launch(ctx, true);
+        else radio_print_error(term, "radio scan", err);
+        return;
+    }
+#endif
 
     if (strcmp(argv[1], "status") == 0) {
         radio_cmd_status(term, argc, argv);

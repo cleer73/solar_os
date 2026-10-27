@@ -21,6 +21,7 @@ static unsigned transfers, wakes;
 static uint8_t opcodes[1024];
 static uint8_t rx_gain = 0x94;
 static bool fail_gain;
+static uint8_t gfsk_bw;
 
 int64_t esp_timer_get_time(void) { return now_us; }
 void esp_rom_delay_us(uint32_t us) { now_us += us; }
@@ -47,6 +48,12 @@ esp_err_t solar_os_bus_spi_transfer(const char *name, int cs, uint8_t mode,
         return ESP_OK;
     }
     assert(!asleep && !stuck_busy);
+    if (tx[0] == SX1262_OP_SET_MODULATION_PARAMS && len == 9) gfsk_bw = tx[5];
+    if (tx[0] == SX1262_OP_GET_RSSI_INST) {
+        assert(len == 3 && tx[1] == 0 && tx[2] == 0);
+        rx[1] = 0x24; /* Status is not RSSI. */
+        rx[2] = 201;
+    }
     if (tx[0] == SX1262_OP_WRITE_REGISTER && tx[1] == 0x08 && tx[2] == 0xac) {
         assert(len == 4);
         if (fail_gain) return ESP_FAIL;
@@ -83,7 +90,15 @@ int main(void)
             .preamble_len = 8, .spreading_factor = 7, .rx_bandwidth_hz = 125000,
             .coding_rate_denominator = 5, .sync_word_len = 1, .sync_word = {0x12},
             .tx_power_dbm = 14, .variable_length = true, .payload_length = 255}};
+    int16_t dbm = 0;
+    assert(sx1262_read_rssi(&dev, &dbm) == ESP_ERR_INVALID_STATE);
+    assert(sx1262_set_state(&dev, SOLAR_OS_RADIO_STATE_RX) == ESP_OK);
+    dev.has_last_packet = true; dev.last_rssi_dbm = -75;
+    assert(sx1262_read_rssi(&dev, &dbm) == ESP_OK && dbm == -100);
+    assert(dev.last_rssi_dbm == -75 && dev.state == SOLAR_OS_RADIO_STATE_RX);
     sleep_radio(&dev);
+    unsigned no_wake = transfers;
+    assert(sx1262_read_rssi(&dev, &dbm) == ESP_ERR_INVALID_STATE && transfers == no_wake);
     assert(sx1262_set_state(&dev, SOLAR_OS_RADIO_STATE_STANDBY) == ESP_OK);
     assert(!asleep && dev.state == SOLAR_OS_RADIO_STATE_STANDBY && wakes == 1);
     assert(retained && dev.config.frequency_hz == 868000000);
@@ -147,6 +162,24 @@ int main(void)
     fail_gain = false;
     assert(sx1262_receive(&dev, &packet, 0) == ESP_ERR_TIMEOUT && rx_gain == 0x94);
     assert(sx1262_configure(&dev, &config) == ESP_OK);
+    uint32_t settle_ms = 0;
+    const uint8_t saved_rx_gain = rx_gain;
+    before = transfers;
+    assert(sx1262_tune_rx(&dev, config.frequency_hz + 125000, &settle_ms) == ESP_OK);
+    assert(settle_ms == 2 && dev.state == SOLAR_OS_RADIO_STATE_RX);
+    assert(transfers == before + 4); /* XOSC standby, frequency, IRQ clear, RX. */
+    assert(opcodes[before] == SX1262_OP_SET_STANDBY);
+    assert(opcodes[before + 1] == SX1262_OP_SET_RF_FREQUENCY);
+    assert(opcodes[before + 2] == SX1262_OP_CLEAR_IRQ_STATUS);
+    assert(opcodes[before + 3] == SX1262_OP_SET_RX);
+    before = transfers;
+    assert(sx1262_tune_rx(&dev, 433000000, &settle_ms) == ESP_OK);
+    assert(transfers == before + 6 && opcodes[before + 1] == SX1262_OP_CALIBRATE_IMAGE);
+    assert(dev.image_cal_min_hz <= 433000000 && dev.image_cal_max_hz >= 433000000);
+    assert(sx1262_tune_rx(&dev, 800000000, &settle_ms) == ESP_OK);
+    assert(dev.image_cal_min_hz <= 800000000 && dev.image_cal_max_hz >= 800000000);
+    assert(dev.config.rx_gain == config.rx_gain && rx_gain == saved_rx_gain);
+    assert(sx1262_tune_rx(&dev, config.frequency_hz, &settle_ms) == ESP_OK);
     sleep_radio(&dev);
     fail_gain = true;
     assert(sx1262_set_state(&dev, SOLAR_OS_RADIO_STATE_RX) == ESP_FAIL);
@@ -155,6 +188,19 @@ int main(void)
     fail_gain = false;
     assert(sx1262_set_state(&dev, SOLAR_OS_RADIO_STATE_RX) == ESP_OK);
     assert(rx_gain == 0x96);
+    config.modulation = SOLAR_OS_RADIO_MODULATION_GFSK;
+    config.rx_bandwidth_hz = 62500;
+    assert(sx1262_configure(&dev, &config) == ESP_OK && gfsk_bw == 0x1b);
+    assert(dev.config.rx_bandwidth_hz == 78200);
+    config.rx_bandwidth_hz = 250000;
+    assert(sx1262_configure(&dev, &config) == ESP_OK && gfsk_bw == 0x19);
+    assert(dev.config.rx_bandwidth_hz == 312000);
+    config.rx_bandwidth_hz = 500000;
+    before = transfers;
+    assert(sx1262_configure(&dev, &config) == ESP_ERR_INVALID_ARG && transfers == before);
+    config.frequency_hz = 1000000000;
+    assert(sx1262_configure(&dev, &config) == ESP_ERR_INVALID_ARG && transfers == before);
+    assert(sx1262_set_state(&dev, SOLAR_OS_RADIO_STATE_RX) == ESP_OK);
     /* Ordinary BUSY waits still apply when the radio is already awake. */
     stuck_busy = true;
     before = transfers;

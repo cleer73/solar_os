@@ -39,11 +39,16 @@ where the board supports them:
 | `vision` | Decode QR codes and process images. | [Computer vision](vision.md) |
 | `inference` | Run resident models on ESP32-S3 with PSRAM. | [Model inference](inference.md) |
 | `inference_backend` | Include the ESP-DL engine in firmware; otherwise install the `espdl` library. | [Model inference](inference.md) |
+| `jet` | Include the script/display frontend for the separately installed Jet library. Also selected by Python and Lua on supported boards. | [Jet 3D renderer](jet.md) |
 | `zoo` | Browse and install model bundles. | [Zoo](apps.md#zoo) |
 | `pipelines` | Process images or video in the background. Also select the desired processor. | [Image pipelines](pipelines.md) |
 | `servo` | Control calibrated positional servos. | [Servo outputs](servo.md) |
 | `pwm` | Use native PWM outputs where supported. | [GPIO and PWM](gpio.analog.md) |
 | `pca9685` | Add 16 PWM outputs over expansion I2C. | [PCA9685](servo.md#pca9685-expansion-controller) |
+| `drv8830` | Control brushed DC motors over named I2C buses. | [Motor control](motor.md) |
+| `motor` | Common motor service, shell controls and Python/Lua APIs. | [Motor control](motor.md) |
+| `encoder` | Common encoder counts, shell controls and Python/Lua APIs. | [Encoder counts](encoder.md) |
+| `pcnt_encoder` | Attach native A/B encoders with explicit x1/x2/x4 counting. | [Encoder counts](encoder.md) |
 | `ds3231` | Add a battery-backed I2C clock and hardware alarm. | [DS3231](expansion.md#ds3231-real-time-clock) |
 
 Python or Lua alone does not enable optional media, vision, or inference

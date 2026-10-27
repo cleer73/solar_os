@@ -14,6 +14,7 @@ typedef int BaseType_t;
 #define portMAX_DELAY UINT32_MAX
 #define tskNO_AFFINITY 0
 #define FRAME_PRESENTER_STACK 3072U
+#define FRAME_PRESENTER_RGB565_STACK 6144U
 #define FRAME_PRESENTER_PRIORITY 1U
 #define FRAME_PRESENTER_HPM_HZ_TENTHS 255U
 #define SOLAR_OS_TASK_ROLE_FOREGROUND 0
@@ -26,6 +27,7 @@ static size_t display_width, display_height;
 static uint32_t display_formats;
 static uint16_t display_stack_bytes;
 static bool fail_allocation;
+static bool rgb565_worker;
 static solar_os_display_raster_t captured;
 
 size_t solar_os_gfx_width(const solar_os_gfx_t *gfx)
@@ -79,8 +81,8 @@ static int solar_os_task_create_pinned_internal(void (*worker)(void *), const ch
 {
     (void)name; (void)priority; (void)core; (void)role;
     assert(worker == frame_presenter_worker && arg);
-    assert(stack == (display_stack_bytes > FRAME_PRESENTER_STACK ?
-        display_stack_bytes : FRAME_PRESENTER_STACK));
+    unsigned minimum = rgb565_worker ? FRAME_PRESENTER_RGB565_STACK : FRAME_PRESENTER_STACK;
+    assert(stack == (display_stack_bytes > minimum ? display_stack_bytes : minimum));
     *task = arg;
     return pdPASS;
 }
@@ -241,6 +243,53 @@ int main(void)
     display_width = 0;
     assert(solar_os_frame_presenter_resume(p) == ESP_ERR_NOT_SUPPORTED);
     assert(!p->task);
+    assert(solar_os_frame_presenter_deinit(p) == ESP_OK);
+
+    /* RGB565 needs two bytes per pixel and no palette. Mono conversion is
+     * opt-in; a target supporting both formats always takes the direct path. */
+    display_width = 64; display_height = 48;
+    display_formats = SOLAR_OS_DISPLAY_FORMAT_MONO1_BIT;
+    config = (solar_os_frame_presenter_config_t){
+        .gfx = (solar_os_gfx_t *)&captured, .format = SOLAR_OS_DISPLAY_FORMAT_RGB565,
+        .width = 64, .height = 48, .stride = 128,
+        .fit = SOLAR_OS_FRAME_FIT_HEIGHT,
+    };
+    p = NULL;
+    assert(solar_os_frame_presenter_init(&p, &config) == ESP_ERR_NOT_SUPPORTED && !p);
+    rgb565_worker = true;
+    config.allow_mono_fallback = true;
+    assert(solar_os_frame_presenter_init(&p, &config) == ESP_OK && p->mono_fallback);
+    assert(solar_os_frame_presenter_acquire(p, &writing, &bytes) == ESP_OK);
+    memset(writing, 0xff, bytes);
+    assert(solar_os_frame_presenter_exchange(p, &writing) == ESP_OK);
+    uint8_t *swap = p->presenting; p->presenting = p->queued; p->queued = swap;
+    assert(frame_present(p) == ESP_OK && captured.format == SOLAR_OS_DISPLAY_FORMAT_MONO1);
+    assert(captured.source_stride == 8 && captured.data_size == 8 * 48);
+    for (unsigned i = 0; i < captured.data_size; ++i) assert(captured.data[i] == 0);
+    solar_os_frame_presenter_suspend(p);
+    display_width = 37; display_height = 35;
+    assert(solar_os_frame_presenter_resume(p) == ESP_OK);
+    assert(p->output_width == 37 && p->output_height == 28 && p->output_x % 8 == 0);
+    assert(frame_present(p) == ESP_OK && captured.source_stride == 5);
+    assert(solar_os_frame_presenter_deinit(p) == ESP_OK);
+    display_width = 64; display_height = 48;
+    display_formats = SOLAR_OS_DISPLAY_FORMAT_RGB565_BIT | SOLAR_OS_DISPLAY_FORMAT_MONO1_BIT;
+    p = NULL;
+    config.stride = 127;
+    assert(solar_os_frame_presenter_init(&p, &config) == ESP_ERR_INVALID_ARG && !p);
+    config.stride = 128;
+    assert(solar_os_frame_presenter_init(&p, &config) == ESP_OK);
+    assert(!p->mono_fallback && !p->mono);
+    assert(solar_os_frame_presenter_acquire(p, &writing, &bytes) == ESP_OK);
+    assert(bytes == 64 * 48 * 2);
+    writing[0] = 0xf8; writing[1] = 0;
+    const uint8_t *rgb_frame = writing;
+    assert(solar_os_frame_presenter_exchange(p, &writing) == ESP_OK);
+    assert(p->queued == rgb_frame && writing != rgb_frame);
+    uint8_t *old_active = p->presenting;
+    p->presenting = p->queued; p->queued = old_active;
+    assert(frame_present(p) == ESP_OK && captured.data == rgb_frame);
+    assert(!captured.palette_inverted && captured.palette_rgb565 == NULL);
     assert(solar_os_frame_presenter_deinit(p) == ESP_OK);
 
     puts("Presenter fits oversized source frames on mono and direct displays");

@@ -113,13 +113,13 @@ job start batmon 60
 ## batmon
 
 Battery monitor. It periodically samples battery voltage, maintains a smoothed
-trend, estimates power state, and can request light sleep when the configured
-minimum voltage is reached.
+trend, estimates power state, and can request sleep, deep sleep, or shutdown
+when the configured minimum voltage is reached.
 
 Usage:
 
 ```text
-job start batmon [interval-sec]
+job start batmon [interval-sec] [sleep|deepsleep|shutdown]
 job stop batmon
 job status batmon
 ```
@@ -129,6 +129,17 @@ Defaults:
 | Setting | Value |
 | --- | --- |
 | Interval | `60` seconds |
+| Low-voltage action | `sleep` |
+
+The action can also be supplied without an interval, for example
+`job start batmon shutdown`. The selected action appears in the startup log
+and the job's battery resource details.
+
+| Action | Behavior |
+| --- | --- |
+| `sleep` | Request the same light sleep as the `sleep` command. |
+| `deepsleep` | Request the same deep sleep as the `deepsleep` command. |
+| `shutdown` | Run the normal shutdown sequence, including storage cleanup and board power-off when supported. |
 
 Battery limits are configured with the `battery` shell command:
 
@@ -142,14 +153,19 @@ Notes:
 
 - Discharging trend means battery power.
 - Charging trend means external power.
-- Voltage above `max_voltage` is a fast external-power shortcut.
-- Three consecutive samples at or below `min_voltage` while on battery request
-  light sleep.
+- Three consecutive samples at or below `min_voltage`, with an established
+  discharging trend and no inferred external power, request the selected action.
+- The voltage trend needs at least five minutes of history. This check runs
+  only while `batmon` is running.
+- Set `min_voltage` above the board's minimum operating voltage, with margin
+  for voltage drop under load. Changing the action does not change the threshold
+  or bypass the trend and consecutive-sample checks.
 
 Example:
 
 ```text
 job start batmon 60
+job start batmon 30 shutdown
 ```
 
 ## bridge
@@ -278,7 +294,7 @@ for small trusted local networks.
 Usage:
 
 ```text
-job start chatd [port] [token] [--history path]
+job start chatd [port] [token] [--history path] [--sc2 on|off] [--v1 on|off] [--sc2-id ID]
 job start chatd [port] [token] [path]
 job stop chatd
 job status chatd
@@ -305,6 +321,55 @@ job start chatd
 job start chatd 7777 secret
 job start chatd 7777 secret --history /.shell/chatd.log
 ```
+
+### SC2 mini-relay
+
+On builds with SC2 messaging, chatd is also a small SC2 relay on the same
+port, so a device can be a relay and a client at once. The first line a
+client sends decides: an SC2 `hello` goes to the mini-relay, a v1 `hello`
+to the v1 server. Legacy v1 stays on by default, as on the self-hosted
+relay; `--v1 off` refuses v1 clients (426) and `--sc2 off` turns the
+mini-relay off. The token, when set, is also the SC2 admission code for
+new devices. Rate limits are off, as on the self-hosted relay.
+
+The mini-relay is a fixed-size subset of the relay protocol:
+
+| Feature | Limit |
+| --- | --- |
+| Login and auth (signed `welcome`, pinned relay key) | 6 connections |
+| Registered devices | 16 (then `503 server_full`) |
+| Prekeys per device (bundle publish and claim) | 8 one-time prekeys |
+| Offline DM mailbox (store and forward) | 24 messages, 12 per device, 3200-byte envelopes |
+| Public room `pub:general` | last 24 posts |
+
+The six connections are held for a bounded time, as on the self-hosted
+relay:
+
+- One session per device: when a device logs in again, its older session
+  gets `409 replaced` and is closed (this also clears a connection left
+  half-open by a network change).
+- Keepalive pings are not activity. A session that sends nothing else for
+  5 minutes gets `408 idle` and is closed; the client reconnects and picks
+  up waiting DMs at its next sync. A login has to finish within 30 seconds.
+- When all six connections are taken, a new one takes the slot of the
+  session that has been idle longest, if that one has been idle for at
+  least a minute (`503 evicted`); otherwise the newcomer gets
+  `503 server_full`.
+
+Private rooms and other public rooms are refused (`501`/`404`); use a full
+relay for those. All stores live in one PSRAM block (about 135 KiB), so the
+mailbox and history are lost when chatd stops. Without PSRAM the mini-relay
+stays off and v1 keeps working. The relay key is created once and kept in
+the SC2 store (`mr/relay`), so pinned clients keep trusting it across
+restarts. chatd logs it at start:
+
+```text
+chatd: SC2 relay chatd-1a2b3c4d key=B64 (134 KiB PSRAM), v1 too
+```
+
+Pin it on clients with `messages add sc2 NAME chat://IP:7777 [TOKEN] key=B64`.
+The device running chatd can use its own relay through
+`chat://127.0.0.1:7777`.
 
 The local chat app can connect with:
 
@@ -631,8 +696,9 @@ job start displayd web0
 
 Starting the job prints a random six-digit access code. Open
 `http://<device>/display`, enter that code, and click the displayed image
-before typing. The browser frontend polls the native 1-bit U8g2 frame up to
-twenty times per second and performs pixel rotation in the browser instead of
+before typing. The browser frontend polls native RGB565 frames on color
+targets and 1-bit U8g2 frames on monochrome targets up to twenty times per
+second. It performs pixel rotation in the browser instead of
 the HTTP server task. It sends bounded key input through the scheduler.
 `Ctrl+]` remains the application-exit key.
 
@@ -642,12 +708,20 @@ API:
 GET  /api/displays
 GET  /api/displays/<target>/frame.pbm
 GET  /api/displays/<target>/frame.raw
+GET  /api/displays/<target>/frame.rgb565
 POST /api/displays/<target>/input
 ```
 
 All API requests require `Authorization: Bearer <code>`. The access code is
 never accepted in the URL. The built-in frontend itself is public so that it
 can prompt for the code, but keeps the supplied code only in page memory.
+
+Display metadata reports `pixel_format` as `rgb565` or `mono1` and supplies
+`frame_rgb565` for color targets. The color endpoint contains native row-major
+RGB565 pixels, most-significant byte first, with `native_width * 2` bytes per
+row and the metadata's rotation. `frame.raw` retains the native 1-bit U8g2
+layout; `frame.pbm` remains a monochrome image. Color targets provide both
+formats. The color endpoint returns 404 for monochrome targets.
 
 Notes:
 
@@ -662,16 +736,23 @@ Notes:
 - The physical mirror reuses the active U8g2 display and does not create
   another display session. The built-in display shell is registered as the
   session attached to `display0`.
-- A consistent 1-bit frame snapshot and same-sized raw transmit buffer are held
-  in PSRAM while the job runs. For the 400x300 Waveshare display they consume
-  30,400 bytes in total. `web0` additionally owns a board-sized U8g2
+- A consistent frame snapshot and raw transmit buffer are held in PSRAM while
+  the job runs. Color targets keep an additional RGB565 snapshot and use a
+  color-sized transmit buffer: together these require four bytes per native
+  pixel plus the 1-bit snapshot. For the monochrome 400x300 Waveshare display,
+  the snapshot and transmit buffer consume 30,400 bytes in total. `web0`
+  additionally owns a board-sized U8g2
   framebuffer (15,200 bytes on Waveshare, 13,824 bytes on the 384x288 PAL
   target). HTTP transmission never holds a display or registry lock.
+- Indexed graphics and full-screen, unscaled RGB565 frames, including Jet
+  scenes, preserve their original colors in the browser. The monochrome
+  endpoints provide dithered snapshots. Partial or scaled RGB565 raster updates
+  are not mirrored.
 - The snapshot is copied into the transmit buffer and released before network
   I/O, so a slow browser cannot prevent newer display frames from being
   published.
-- The browser uses `frame.raw` to avoid per-pixel PBM conversion on the ESP32.
-  The PBM endpoint remains available for simple external clients.
+- The browser uses `frame.rgb565` for color targets and `frame.raw` for
+  monochrome targets. The PBM endpoint remains available for external clients.
 - If a browser is still reading a frame when the display presents again, that
   publication is skipped rather than blocking the display.
 - Input is queued by the HTTP task and dispatched only by the normal SolarOS

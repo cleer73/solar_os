@@ -2,6 +2,49 @@
 
 ## 4.x
 
+- **4.17.0** — 2026-10-27 — Added Sealed Chat (SC2) with end-to-end
+  encrypted direct messages and named private rooms, authenticated room
+  invitations, signed public rooms, safety-number verification, readable
+  sender labels, and shell completion. Added signed relay discovery, relay
+  key pinning, fallback relays, and Python/Lua SC2 APIs. The `sc2-sync`
+  worker follows explicit job start/stop controls. `chatd` can host a small
+  SC2 relay alongside legacy v1. Added configurable low-voltage actions to
+  `batmon` and CAN bus management in the I/O app. Fixed CL-32 sleep/wake
+  behavior and power splash screens.
+- **4.16.32** — 2026-10-26 — Added a tabbed messaging manager and direct Chat
+  access from Contacts. Fixed MeshCore send stack usage. Added Pi0cket CL-32
+  e-paper board support alongside RLCD, with held modifiers, session shortcuts,
+  and keyboard wake from sleep. Added the reusable SSD1685 driver with Fastwave,
+  native-app raster output, and pulse refresh by default. Extended `display relax`
+  to all supported e-paper displays. Added named display profiles and improved
+  runtime attachment with resolution and rotation lists. The function generator
+  now fits smaller displays.
+- **4.16.31** — 2026-10-25 — Chat now retains received and sent messages
+  on disk with fast channel switching and access to older history. Added TWAI
+  CAN expansion support and shell controls. Improved BLE keyboard compatibility,
+  fixed large-display rendering, and preserved full color in browser mirroring.
+- **4.16.30** — 2026-10-24 — Faster native-app discovery at boot and reduced
+  alert-tone SRAM use. Added Jet background caching and Python/Lua access to
+  terminal colors. Display snapshots now mirror unscaled full-screen RGB565
+  frames as dithered monochrome images.
+- **4.16.29** — 2026-10-24 — Added the optional `rfscan` graphical radio
+  scanner with live RSSI graphs, fast band sweeps and waterfalls on color and
+  monochrome displays. Added touchscreen tap, double-tap, hold and swipe
+  gestures.
+- **4.16.28** — 2026-10-23 — Added the optional Jet 3D renderer for Python
+  and Lua, with textured meshes, lighting, sprites, particles, shaders and asset
+  loading on color and dithered monochrome displays. Fixed streaming-script
+  terminal redraw and native-app audio on T-Deck and other expansion outputs.
+- **4.16.27** — 2026-10-22 — Added named motor and encoder services with
+  shell controls and Python/Lua bindings. DRV8830 motors use normalized signed
+  drive commands over named I2C buses, with an optional fault input. Native
+  A/B encoders support explicit x1, x2, and x4 counting modes, signed counts,
+  and reset. Fixed SSD1306/SH1106 OLED attachment on named buses and reduced
+  I2C refresh overhead; OLED emotion faces now default to animated 25 fps
+  submissions. Emotion colors follow terminal settings, with independent
+  foreground/background overrides. Fixed T-Deck keyboard and Wi-Fi wake
+  regressions, restored keyboard backlight state after suspend, and preserved
+  SD power and SPI chip selects during light sleep.
 - **4.16.25** — 2026-10-21 — Added an optional emotion engine for
   ESP32-S3 devices with executable PSRAM. Python and Lua scripts can animate
   21 Cozmo-style expressions on supported display targets, control gaze and

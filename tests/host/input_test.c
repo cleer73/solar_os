@@ -683,7 +683,8 @@ int main(void)
                SOLAR_OS_INPUT_CAP_GESTURE_EVENTS,
                true,
                &gesture_source) == ESP_OK);
-    assert(gesture_queue_allocations == 1);
+    /* Each of the three earlier touch-source lifetimes also owned this queue. */
+    assert(gesture_queue_allocations == 4);
     solar_os_input_gesture_event_t gesture = {
         .gesture = SOLAR_OS_INPUT_GESTURE_FLICK,
         .direction = SOLAR_OS_INPUT_GESTURE_DIRECTION_EAST,
@@ -752,7 +753,7 @@ int main(void)
         observe_gesture, &gesture_observer_calls[1]);
     solar_os_input_source_close(gesture_source);
     assert(solar_os_input_read_gesture_events(&gesture_read, 1) == 0);
-    assert(gesture_queue_frees == 1);
+    assert(gesture_queue_frees == 4);
     solar_os_input_source_close(buttons);
 
     assert(solar_os_input_get_pressed(pressed, 2) == 1);

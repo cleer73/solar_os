@@ -40,6 +40,12 @@ attachments and opens their details; detachable devices can be removed
 after confirmation. Its Drivers view groups drivers by category and opens an
 attachment form for drivers supported by the running board. Binding forms use
 existing named buses; create, attach, detach, or remove buses in the `io` app.
+Press Enter on a field to choose or edit its value. While editing the device
+name, Enter accepts the name and returns to the attachment menu.
+Display panel choices list their native resolutions and module names. Optional
+panel fields include a default choice. Rotation has its own selection list with
+degree labels and only the orientations supported by the driver. Leave its
+default choice selected to use the driver's default rotation.
 `expansion status` retains the textual capabilities, buses, devices, and claims
 report for scripts and terminal inspection.
 
@@ -52,6 +58,10 @@ From a script, inspect `solaros.expansion.drivers()` and
 physical device is attached.
 
 ## Attach deliberately
+
+Run `expansion attach <driver>` to list that driver's required and optional
+bindings. After entering a driver and device name, Tab completion offers its
+bindings and values, including display `panel` and `rotation` options.
 
 Use real bus and pin names returned by discovery:
 

@@ -132,6 +132,9 @@ static int solua_emotion_open(lua_State *L)
     char current[SOLAR_OS_DISPLAY_TARGET_NAME_MAX] = {0};
     if (solua.session_gfx) solar_os_gfx_display_target_name(solua.session_gfx, current, sizeof(current));
     bool foreground = *current && (!options.display || !strcmp(options.display, current));
+#if SOLAR_OS_PACKAGE_SERVICE_JET
+    if (solua_jet_drawing()) return luaL_error(L, "close Jet scene before opening a face");
+#endif
     if (solua.claimed_gfx || solua.tui_active) return luaL_error(L, "end graphics/TUI before opening a face");
     for (unsigned i = 0; i < 4; ++i)
         if (foreground && solar_os_emotion_uses_gfx(solua_runtime_state->emotions[i], solua.session_gfx))

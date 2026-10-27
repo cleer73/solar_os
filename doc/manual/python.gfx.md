@@ -99,6 +99,11 @@ foreground display.
 
 ## Colors and dimensions
 
+`gfx.theme()` returns a dictionary with `foreground` and `background` RGB888
+integers from the current `setterm` colors. It does not require `gfx.begin()`
+or claim a display. Use these literal values for Jet materials and backgrounds.
+Read the dictionary again after a terminal color change to obtain the new colors.
+
 Use `gfx.WHITE`, `gfx.LIGHT`, `gfx.DARK`, `gfx.BLACK`, `gfx.gray(level)`, or
 `gfx.rgb(red, green, blue)`. RGB components are `0..255`. On color TFTs, the
 named colors and `gray(level)` span the `setterm foreground` and `background`

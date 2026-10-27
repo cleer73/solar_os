@@ -36,11 +36,14 @@ typedef struct {
     uint32_t generation;
     size_t refs;
     size_t claim_refs;
+    bool terminal_blocked;
+    uint32_t terminal_epoch;
     SemaphoreHandle_t present_mutex;
     solar_os_display_target_t target;
     solar_os_gfx_t gfx;
     uint8_t *export_buffer;
     size_t export_buffer_size;
+    size_t export_rgb565_size;
     size_t export_readers;
     uint32_t export_frame_id;
     uint16_t export_native_width;
@@ -75,6 +78,8 @@ static bool display_snapshot_slot(size_t slot_index, solar_os_display_target_t *
 static void display_publish_frame(u8g2_t *u8g2);
 static void display_publish_surface(u8g2_t *u8g2,
                                     const solar_os_display_surface_t *surface);
+static void display_publish_rgb_frame(u8g2_t *u8g2,
+                                      const solar_os_display_raster_t *frame);
 
 bool solar_os_display_target_is_board_primary(const char *name)
 {
@@ -216,6 +221,7 @@ static uint8_t *display_detach_export_buffer_locked(display_target_slot_t *slot)
     uint8_t *buffer = slot->export_buffer;
     slot->export_buffer = NULL;
     slot->export_buffer_size = 0;
+    slot->export_rgb565_size = 0;
     slot->export_native_width = 0;
     slot->export_native_height = 0;
     slot->export_native_stride = 0;
@@ -902,6 +908,10 @@ esp_err_t solar_os_display_release(const char *name, const char *owner)
         slot->claim_refs--;
     }
     if (slot->claim_refs == 0) {
+        if (slot->terminal_blocked) {
+            slot->terminal_blocked = false;
+            ++slot->terminal_epoch;
+        }
         slot->target.owner[0] = '\0';
         surface_storage = solar_os_gfx_detach_surface_storage(&slot->gfx);
         display_init_slot_gfx(slot);
@@ -909,6 +919,42 @@ esp_err_t solar_os_display_release(const char *name, const char *owner)
     portEXIT_CRITICAL(&display_targets_lock);
     solar_os_memory_free(surface_storage);
     return ESP_OK;
+}
+
+esp_err_t solar_os_display_set_terminal_blocked(const char *name, const char *owner, bool blocked)
+{
+    if (!display_target_name_valid(name, SOLAR_OS_DISPLAY_TARGET_NAME_MAX) ||
+        !display_owner_valid(owner)) return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&display_targets_lock);
+    const int index = display_find_slot_locked(name);
+    esp_err_t err = ESP_ERR_NOT_FOUND;
+    if (index >= 0) {
+        display_target_slot_t *slot = &display_targets[index];
+        err = ESP_ERR_INVALID_STATE;
+        if (slot->claim_refs && !strcmp(slot->target.owner, owner)) {
+            if (slot->terminal_blocked != blocked) {
+                slot->terminal_blocked = blocked;
+                ++slot->terminal_epoch;
+            }
+            err = ESP_OK;
+        }
+    }
+    portEXIT_CRITICAL(&display_targets_lock);
+    return err;
+}
+
+bool solar_os_display_terminal_draw_state(const u8g2_t *u8g2, uint32_t *epoch)
+{
+    bool allowed = true;
+    if (epoch) *epoch = 0;
+    portENTER_CRITICAL(&display_targets_lock);
+    const int index = u8g2 ? display_find_slot_by_u8g2_locked(u8g2) : -1;
+    if (index >= 0) {
+        allowed = !display_targets[index].terminal_blocked;
+        if (epoch) *epoch = display_targets[index].terminal_epoch;
+    }
+    portEXIT_CRITICAL(&display_targets_lock);
+    return allowed;
 }
 
 static bool display_relax_cancelled(size_t index, uint32_t generation,
@@ -1836,8 +1882,39 @@ esp_err_t solar_os_display_present_frame(
         display_activate_pending_overlay_locked(&display_targets[slot_index]);
     }
     xSemaphoreGive(present_mutex);
+    if (ret == ESP_OK) {
+        display_publish_rgb_frame(u8g2, frame);
+    }
     display_release_slot_ref(slot_index, generation);
     return ret;
+}
+
+static void display_export_mono_rgb565(u8g2_t *u8g2, uint8_t *buffer,
+                                      size_t mono_size, size_t rgb565_size,
+                                      bool black_is_one)
+{
+    if (rgb565_size == 0U) return;
+    const u8x8_display_info_t *info = u8g2_GetU8x8(u8g2)->display_info;
+    const size_t stride = (size_t)u8g2_GetBufferTileWidth(u8g2) * 8U;
+    uint16_t colors[2];
+    const uint32_t theme[2] = {
+        display_background_rgb888, display_foreground_rgb888,
+    };
+    for (unsigned i = 0; i < 2; ++i) {
+        const uint32_t color = theme[i];
+        colors[i] = (uint16_t)(((color >> 8U) & 0xf800U) |
+                               ((color >> 5U) & 0x07e0U) |
+                               ((color >> 3U) & 0x001fU));
+    }
+    uint8_t *out = buffer + mono_size;
+    for (unsigned y = 0; y < info->pixel_height; ++y) {
+        for (unsigned x = 0; x < info->pixel_width; ++x) {
+            const bool set = (buffer[(y / 8U) * stride + x] & (1U << (y & 7U))) != 0;
+            const uint16_t color = colors[set == black_is_one];
+            *out++ = (uint8_t)(color >> 8U);
+            *out++ = (uint8_t)color;
+        }
+    }
 }
 
 static void display_publish_frame(u8g2_t *u8g2)
@@ -1850,6 +1927,8 @@ static void display_publish_frame(u8g2_t *u8g2)
     uint32_t generation = 0;
     uint8_t *export_buffer = NULL;
     size_t export_buffer_size = 0;
+    size_t export_rgb565_size = 0;
+    bool black_is_one = false;
 
     portENTER_CRITICAL(&display_targets_lock);
     const int found_index = display_find_slot_by_u8g2_locked(u8g2);
@@ -1872,9 +1951,13 @@ static void display_publish_frame(u8g2_t *u8g2)
     generation = slot->generation;
     export_buffer = slot->export_buffer;
     export_buffer_size = slot->export_buffer_size;
+    export_rgb565_size = slot->export_rgb565_size;
+    black_is_one = slot->target.black_is_one;
     portEXIT_CRITICAL(&display_targets_lock);
 
     memcpy(export_buffer, u8g2_GetBufferPtr(u8g2), export_buffer_size);
+    display_export_mono_rgb565(u8g2, export_buffer, export_buffer_size,
+                               export_rgb565_size, black_is_one);
 
     uint8_t *free_buffer = NULL;
     portENTER_CRITICAL(&display_targets_lock);
@@ -1934,8 +2017,10 @@ static void display_publish_surface(u8g2_t *u8g2,
         {0U, 8U, 2U, 10U}, {12U, 4U, 14U, 6U},
         {3U, 11U, 1U, 9U}, {15U, 7U, 13U, 5U},
     };
-    if (u8g2 == NULL || surface == NULL || surface->format !=
-        SOLAR_OS_DISPLAY_FORMAT_INDEX8 || surface->palette_rgb565 == NULL) {
+    if (u8g2 == NULL || surface == NULL ||
+        (surface->format != SOLAR_OS_DISPLAY_FORMAT_RGB565 &&
+         (surface->format != SOLAR_OS_DISPLAY_FORMAT_INDEX8 ||
+          surface->palette_rgb565 == NULL))) {
         return;
     }
 
@@ -1943,6 +2028,7 @@ static void display_publish_surface(u8g2_t *u8g2,
     uint32_t generation = 0;
     uint8_t *export_buffer = NULL;
     size_t export_buffer_size = 0;
+    size_t export_rgb565_size = 0;
     uint16_t native_stride = 0;
     bool black_is_one = false;
     portENTER_CRITICAL(&display_targets_lock);
@@ -1963,6 +2049,7 @@ static void display_publish_surface(u8g2_t *u8g2,
     generation = slot->generation;
     export_buffer = slot->export_buffer;
     export_buffer_size = slot->export_buffer_size;
+    export_rgb565_size = slot->export_rgb565_size;
     native_stride = slot->export_native_stride;
     black_is_one = slot->target.black_is_one;
     portEXIT_CRITICAL(&display_targets_lock);
@@ -1970,9 +2057,21 @@ static void display_publish_surface(u8g2_t *u8g2,
     memset(export_buffer, 0, export_buffer_size);
     for (uint16_t y = 0; y < surface->height; y++) {
         for (uint16_t x = 0; x < surface->width; x++) {
-            const uint8_t palette_index =
-                surface->data[(size_t)y * surface->stride + x];
-            const uint16_t rgb565 = surface->palette_rgb565[palette_index];
+            const uint8_t *row = surface->data + (size_t)y * surface->stride;
+            const uint16_t rgb565 = surface->format == SOLAR_OS_DISPLAY_FORMAT_RGB565 ?
+                ((uint16_t)row[x * 2U] << 8U) | row[x * 2U + 1U] :
+                surface->palette_rgb565[row[x]];
+            uint16_t native_x = 0;
+            uint16_t native_y = 0;
+            display_surface_logical_to_native(surface, x, y,
+                                               &native_x, &native_y);
+            const size_t rgb_offset =
+                ((size_t)native_y * surface->native_width + native_x) * 2U;
+            if (rgb_offset + 1U < export_rgb565_size) {
+                uint8_t *pixel = export_buffer + export_buffer_size + rgb_offset;
+                pixel[0] = (uint8_t)(rgb565 >> 8U);
+                pixel[1] = (uint8_t)rgb565;
+            }
             const unsigned red = ((rgb565 >> 11U) & 0x1fU) * 255U / 31U;
             const unsigned green = ((rgb565 >> 5U) & 0x3fU) * 255U / 63U;
             const unsigned blue = (rgb565 & 0x1fU) * 255U / 31U;
@@ -1983,10 +2082,6 @@ static void display_publish_surface(u8g2_t *u8g2,
             if (!set) {
                 continue;
             }
-            uint16_t native_x = 0;
-            uint16_t native_y = 0;
-            display_surface_logical_to_native(surface, x, y,
-                                               &native_x, &native_y);
             const size_t offset = (size_t)(native_y / 8U) * native_stride +
                 native_x;
             if (offset < export_buffer_size) {
@@ -2010,6 +2105,32 @@ static void display_publish_surface(u8g2_t *u8g2,
     if (slot->generation == generation && slot->refs > 0) slot->refs--;
     portEXIT_CRITICAL(&display_targets_lock);
     solar_os_memory_free(free_buffer);
+}
+
+static void display_publish_rgb_frame(u8g2_t *u8g2,
+                                      const solar_os_display_raster_t *frame)
+{
+    /* Full-display RGB streams (including Jet) bypass the indexed canvas.
+     * Export their actual pixels through the same snapshot path.
+     * Partial/scaled raster composition is not represented by a surface. */
+    if (frame->format != SOLAR_OS_DISPLAY_FORMAT_RGB565 ||
+        frame->x != 0U || frame->y != 0U ||
+        frame->width != frame->source_width || frame->height != frame->source_height ||
+        frame->width != u8g2_GetDisplayWidth(u8g2) ||
+        frame->height != u8g2_GetDisplayHeight(u8g2)) {
+        return;
+    }
+    const u8x8_display_info_t *info = u8g2_GetU8x8(u8g2)->display_info;
+    if (info == NULL) return;
+    const solar_os_display_surface_t surface = {
+        .data = frame->data, .data_size = frame->data_size,
+        .width = frame->width, .height = frame->height,
+        .stride = frame->source_stride,
+        .native_width = info->pixel_width, .native_height = info->pixel_height,
+        .format = SOLAR_OS_DISPLAY_FORMAT_RGB565,
+        .rotation = display_rotation(u8g2),
+    };
+    display_publish_surface(u8g2, &surface);
 }
 
 void solar_os_display_present(u8g2_t *u8g2, solar_os_display_present_mode_t mode)
@@ -2200,6 +2321,7 @@ esp_err_t solar_os_display_start_frame_export(const char *name)
     uint32_t generation = 0;
     u8g2_t *u8g2 = NULL;
     bool black_is_one = false;
+    bool color = false;
 
     portENTER_CRITICAL(&display_targets_lock);
     const int found_index = display_find_slot_locked(name);
@@ -2221,6 +2343,8 @@ esp_err_t solar_os_display_start_frame_export(const char *name)
     generation = slot->generation;
     u8g2 = slot->target.u8g2;
     black_is_one = slot->target.black_is_one;
+    color = ((slot->target.surface_formats | slot->target.frame_formats) &
+             (SOLAR_OS_DISPLAY_FORMAT_INDEX8_BIT | SOLAR_OS_DISPLAY_FORMAT_RGB565_BIT)) != 0U;
     portEXIT_CRITICAL(&display_targets_lock);
 
     const uint16_t tile_width = u8g2_GetBufferTileWidth(u8g2);
@@ -2228,13 +2352,16 @@ esp_err_t solar_os_display_start_frame_export(const char *name)
     const size_t buffer_size = (size_t)tile_width * (size_t)tile_height * 8U;
     const uint8_t *source_buffer = u8g2_GetBufferPtr(u8g2);
     const u8x8_display_info_t *display_info = u8g2_GetU8x8(u8g2)->display_info;
+    const size_t rgb565_size = color && display_info != NULL ?
+        (size_t)display_info->pixel_width * display_info->pixel_height * 2U : 0U;
     uint8_t *buffer = buffer_size > 0 && source_buffer != NULL && display_info != NULL ?
-        solar_os_memory_alloc(buffer_size,
+        solar_os_memory_alloc(buffer_size + rgb565_size,
                               SOLAR_OS_MEMORY_EXTERNAL_REQUIRED,
                               "display.export") :
         NULL;
     if (buffer != NULL) {
         memcpy(buffer, source_buffer, buffer_size);
+        display_export_mono_rgb565(u8g2, buffer, buffer_size, rgb565_size, black_is_one);
     }
 
     esp_err_t ret = buffer != NULL ?
@@ -2251,6 +2378,7 @@ esp_err_t solar_os_display_start_frame_export(const char *name)
         slot->export_buffer == NULL) {
         slot->export_buffer = buffer;
         slot->export_buffer_size = buffer_size;
+        slot->export_rgb565_size = rgb565_size;
         slot->export_frame_id++;
         if (slot->export_frame_id == 0) {
             slot->export_frame_id = 1;
@@ -2327,6 +2455,9 @@ esp_err_t solar_os_display_acquire_frame(const char *name, solar_os_display_fram
     *frame = (solar_os_display_frame_t){
         .data = slot->export_buffer,
         .data_size = slot->export_buffer_size,
+        .rgb565_data = slot->export_rgb565_size != 0U ?
+            slot->export_buffer + slot->export_buffer_size : NULL,
+        .rgb565_size = slot->export_rgb565_size,
         .frame_id = slot->export_frame_id,
         .target_generation = slot->generation,
         .width = width,

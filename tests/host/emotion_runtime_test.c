@@ -200,6 +200,19 @@ static void test_terminal_colors(void)
 int main(void)
 {
     test_terminal_colors();
+    /* A software OLED target can advertise animation rates without a
+     * hardware frame callback. Explicit reduced motion still caps at 2 fps. */
+    software_target=true;
+    solar_os_emotion_options_t automatic={.display="oled0",.motion=-1};
+    solar_os_emotion_t *face=NULL;
+    assert(!solar_os_emotion_open(&automatic,NULL,&face,NULL,0));
+    assert(face->software && face->motion && face->fps==25);
+    assert(!solar_os_emotion_close(&face));
+    automatic.motion=0;
+    assert(!solar_os_emotion_open(&automatic,NULL,&face,NULL,0));
+    assert(face->software && !face->motion && face->fps==2);
+    assert(!solar_os_emotion_close(&face));
+    software_target=false;
     solar_os_emotion_options_t o={.display="oled0",.sound=true,.motion=0};
     solar_os_emotion_t *s=NULL,*second=NULL;
     char detail[96];

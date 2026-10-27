@@ -46,6 +46,8 @@ typedef enum {
     SOLAR_OS_RADIO_FEATURE_CONTINUOUS_RX = 1U << 11,
     SOLAR_OS_RADIO_FEATURE_CONTINUOUS_TX = 1U << 12,
     SOLAR_OS_RADIO_FEATURE_RX_GAIN = 1U << 13,
+    SOLAR_OS_RADIO_FEATURE_LIVE_RSSI = 1U << 14,
+    SOLAR_OS_RADIO_FEATURE_FAST_TUNE = 1U << 15,
 } solar_os_radio_feature_t;
 
 typedef enum {
@@ -143,6 +145,13 @@ typedef struct {
                              size_t len,
                              uint32_t timeout_ms);
     esp_err_t (*receive)(void *ctx, solar_os_radio_packet_t *packet, uint32_t timeout_ms);
+    /* Read receiver energy without consuming a packet or changing radio state.
+     * Return INVALID_STATE outside RX; never return a cached packet RSSI. */
+    esp_err_t (*read_rssi)(void *ctx, int16_t *dbm);
+    /* Retune an initialized receiver without changing modulation/filter/gain.
+     * Leave it in RX and return the minimum RSSI settling interval in ms.
+     * Calibration boundaries and timing belong to the driver. */
+    esp_err_t (*tune_rx)(void *ctx, uint32_t frequency_hz, uint32_t *settle_ms);
 } solar_os_radio_ops_t;
 
 typedef struct {
@@ -192,6 +201,10 @@ size_t solar_os_radio_count(void);
 bool solar_os_radio_get(size_t index, solar_os_radio_info_t *info);
 esp_err_t solar_os_radio_get_info(const char *name, solar_os_radio_info_t *info);
 esp_err_t solar_os_radio_get_status(const char *name, solar_os_radio_status_t *status);
+/* Read-only observation is allowed while another service owns the radio. */
+esp_err_t solar_os_radio_read_rssi(const char *name, int16_t *dbm);
+esp_err_t solar_os_radio_handle_tune_rx(const solar_os_radio_handle_t *handle,
+                                       uint32_t frequency_hz, uint32_t *settle_ms);
 
 esp_err_t solar_os_radio_claim(const char *name,
                                const char *owner,

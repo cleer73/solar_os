@@ -57,7 +57,7 @@ static TaskHandle_t xTaskGetCurrentTaskHandle(void) { return current; }
 static uint64_t foreground_time_us(void) { return clock_us; }
 static void foreground_refresh_index2_palette(foreground_state_t *s) { (void)s; }
 static void foreground_audio_close(void) { scope->audio = NULL; audio_order = ++sequence; }
-static void solar_os_audio_stream_close(void *audio) { assert(audio); audio_order = ++sequence; }
+static void solar_os_stream_close(void *audio) { assert(audio); audio_order = ++sequence; }
 static int solar_os_frame_presenter_deinit(void *presenter) {
     assert(presenter); presenter_order = ++sequence; return presenter_fail ? ESP_FAIL : ESP_OK;
 }

@@ -39,6 +39,21 @@ class FlavorPackagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid flavor name"):
             generate_flavor_config.public_flavor_name("full", "beta flavor")
 
+    def test_radio_scanner_requires_graphics_and_radio_service(self):
+        _, _, groups, packages = self.resolve("full")
+        self.assertTrue(groups["radio_scanner"])
+        for name in ("app_rfscan", "service_radio_scan", "service_radio", "service_audio"):
+            self.assertTrue(packages[name], name)
+        _, capable = generate_flavor_config.apply_board_capability_pruning(
+            self.catalog, groups, packages, {"gfx", "expansion_spi"})
+        self.assertTrue(capable["app_rfscan"])
+        _, headless = generate_flavor_config.apply_board_capability_pruning(
+            self.catalog, groups, packages, {"expansion_spi"})
+        self.assertFalse(headless["app_rfscan"])
+        for flavor in ("classic", "writerdeck"):
+            _, _, _, optional = self.resolve(flavor)
+            self.assertFalse(optional["app_rfscan"])
+
     def test_games_are_only_in_full(self):
         built_in_flavors = ("full", "classic", "writerdeck")
         for flavor in built_in_flavors:
@@ -60,9 +75,10 @@ class FlavorPackagesTest(unittest.TestCase):
         name, _, groups, packages = self.resolve("classic")
         self.assertEqual(name, "classic")
         self.assertEqual({key for key in compact_groups if compact_groups[key] != groups[key]},
-                         {"adc_dpad", "synth"})
+                         {"adc_dpad", "synth", "sc2"})
         self.assertEqual({key for key in compact_packages if compact_packages[key] != packages[key]},
-                         {"service_adc_dpad", "app_synth", "service_synth", "service_midi"})
+                         {"service_adc_dpad", "app_synth", "service_synth", "service_midi",
+                          "service_sc2", "service_sc2_provider", "job_sc2_sync"})
         self.assertTrue(packages["service_adc_dpad"])
         self.assertFalse(packages["app_lua"])
         self.assertTrue(packages["app_python"])
@@ -88,6 +104,70 @@ class FlavorPackagesTest(unittest.TestCase):
                 self.assertTrue(pruned["service_servo"])
                 self.assertTrue(pruned["service_pwm"])
                 self.assertEqual(pruned["driver_pwm_native"], enabled)
+
+    def test_drv8830_is_optional_and_requires_expansion_i2c(self):
+        for flavor in ("classic", "writerdeck"):
+            _, _, groups, packages = self.resolve(flavor)
+            self.assertFalse(groups["drv8830"])
+            self.assertFalse(packages["drv8830"])
+        _, _, groups, packages = self.resolve("full")
+        self.assertTrue(groups["drv8830"])
+        for target in ("esp32", "esp32s3"):
+            selected = generate_flavor_config.apply_target_pruning(self.catalog, packages, target)
+            _, supported = generate_flavor_config.apply_board_capability_pruning(
+                self.catalog, groups, selected, {"i2c", "expansion_i2c"})
+            self.assertTrue(supported["drv8830"])
+            self.assertTrue(supported["service_motor"])
+            self.assertTrue(supported["service_i2c"])
+            _, unsupported = generate_flavor_config.apply_board_capability_pruning(
+                self.catalog, groups, selected, {"i2c"})
+            self.assertFalse(unsupported["drv8830"])
+            self.assertTrue(unsupported["service_motor"])
+
+    def test_encoder_driver_is_optional_and_requires_gpio(self):
+        for flavor in ("classic", "writerdeck"):
+            _, _, groups, packages = self.resolve(flavor)
+            self.assertFalse(groups["pcnt_encoder"])
+            self.assertFalse(packages["pcnt_encoder"])
+        _, _, groups, packages = self.resolve("full")
+        for target in ("esp32", "esp32s3"):
+            selected = generate_flavor_config.apply_target_pruning(self.catalog, packages, target)
+            _, supported = generate_flavor_config.apply_board_capability_pruning(
+                self.catalog, groups, selected, {"gpio"})
+            self.assertTrue(supported["pcnt_encoder"])
+            self.assertTrue(supported["service_encoder"])
+            _, unsupported = generate_flavor_config.apply_board_capability_pruning(
+                self.catalog, groups, selected, set())
+            self.assertFalse(unsupported["pcnt_encoder"])
+            self.assertTrue(unsupported["service_encoder"])
+
+    def test_encoder_service_does_not_pull_a_concrete_driver(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "encoder.toml"
+            path.write_text('[flavor]\nname = "encoder-only"\n[groups]\nencoder = true\n')
+            _, _, groups, packages = generate_flavor_config.load_flavor(path, self.catalog)
+        self.assertTrue(packages["service_encoder"])
+        self.assertFalse(packages["pcnt_encoder"])
+        self.assertFalse(packages["rotary_encoder"])
+        _, pruned = generate_flavor_config.apply_board_capability_pruning(
+            self.catalog, groups, packages, set())
+        self.assertTrue(pruned["service_encoder"])
+
+    def test_motor_service_does_not_pull_a_concrete_driver(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "motor.toml"
+            path.write_text('[flavor]\nname = "motor-only"\n[groups]\nmotor = true\n')
+            _, _, groups, packages = generate_flavor_config.load_flavor(path, self.catalog)
+        self.assertTrue(packages["service_motor"])
+        self.assertFalse(packages["drv8830"])
+        self.assertFalse(packages["service_i2c"])
+        _, pruned = generate_flavor_config.apply_board_capability_pruning(
+            self.catalog, groups, packages, set())
+        self.assertTrue(pruned["service_motor"])
 
     def test_pca9685_is_optional_and_uses_i2c_without_native_pwm(self):
         _, _, core_groups, core_packages = self.resolve("writerdeck")
@@ -225,6 +305,22 @@ class FlavorPackagesTest(unittest.TestCase):
             self.catalog, groups, packages, {"gfx", "spi", "expansion_spi"}
         )
         self.assertFalse(unavailable["expansion_uc8279"])
+
+    def test_ssd1685_expansion_profile_and_package(self):
+        _, _, groups, packages = self.resolve("full")
+        self.assertTrue(groups["ssd1685"])
+        self.assertTrue(packages["expansion_ssd1685"])
+        for caps, enabled in (
+            ({"gfx", "spi", "expansion_spi", "expansion_gpio"}, True),
+            ({"gfx", "spi", "expansion_spi"}, False),
+            ({"spi", "expansion_spi", "expansion_gpio"}, False),
+        ):
+            _, selected = generate_flavor_config.apply_board_capability_pruning(
+                self.catalog, groups, packages, caps)
+            self.assertEqual(selected["expansion_ssd1685"], enabled)
+        for flavor in ("classic", "writerdeck"):
+            _, _, _, optional = self.resolve(flavor)
+            self.assertFalse(optional["expansion_ssd1685"])
 
     def test_uc8179_expansion_profile_and_package(self):
         _, _, groups, packages = self.resolve("full")
@@ -390,6 +486,21 @@ class FlavorPackagesTest(unittest.TestCase):
         sources = generate_flavor_config.collect_sources(self.catalog, groups, selected)
         self.assertIn("drivers/rtc_ds3231.c", sources)
         self.assertIn("services/solar_os_ds3231_driver.c", sources)
+
+    def test_cl32_epd_keeps_shared_pulse_sources_in_writerdeck(self):
+        from solaros_board_manifest import load_board_manifest, load_driver_catalog, required_packages
+        manifest_dir = REPOSITORY / "boards/manifests"
+        board = load_board_manifest(manifest_dir / "cl32_epd.toml", manifest_dir)
+        drivers = load_driver_catalog(REPOSITORY / "boards/expansion_drivers.toml")
+        _, _, groups, packages = self.resolve("writerdeck")
+        selected = generate_flavor_config.enable_required_packages(
+            self.catalog, packages, set(required_packages(board, drivers)))
+        groups, selected = generate_flavor_config.apply_board_capability_pruning(
+            self.catalog, groups, selected, set(board["build"]["capabilities"]))
+        sources = generate_flavor_config.collect_sources(self.catalog, groups, selected)
+        for source in ("epd_ssd1685", "epd_ssd1685_waveform", "epd_pixel_budget", "epd_scan_worker"):
+            self.assertIn(f"drivers/{source}.c", sources)
+        self.assertNotIn("drivers/epd_ssd1683.c", sources)
 
     def test_unknown_board_required_package_is_rejected(self):
         _, _, _, packages = self.resolve("writerdeck")
@@ -581,6 +692,7 @@ class FlavorPackagesTest(unittest.TestCase):
             "driver_display_ili9341",
             "driver_display_st7796",
             "expansion_ssd1683",
+            "expansion_ssd1685",
             "expansion_uc8179",
             "expansion_uc8279",
         )

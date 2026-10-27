@@ -53,12 +53,14 @@ EMBEDDED_MANUAL_NOTICE = (
 )
 COMMAND_GITHUB_HREFS = {
     "agent": "agent.md",
+    "encoder": "encoder.md",
     "expansion": "expansion.md",
     "help": "help.md",
     "identity": "identity.md",
     "job": "jobs.md",
     "jobs": "jobs.md",
     "link": "link.md",
+    "motor": "motor.md",
     "servo": "servo.md",
 }
 # Bare names intentionally owned by a richer topic or an earlier focused page.
@@ -74,6 +76,7 @@ DERIVED_ALIAS_OWNERS = {
     ("command.commands", "commands"): "commands",
     ("command.control", "control"): "controls",
     ("command.expansion", "expansion"): "expansion",
+    ("command.encoder", "encoder"): "encoder",
     ("command.gpio", "gpio"): "gpio.analog",
     ("command.help", "help"): "help",
     ("command.i2c", "i2c"): "compatibility.io",
@@ -82,6 +85,7 @@ DERIVED_ALIAS_OWNERS = {
     ("command.jobs", "jobs"): "jobs",
     ("command.link", "link"): "link",
     ("command.meshcore", "meshcore"): "meshcore",
+    ("command.motor", "motor"): "motor",
     ("command.mqtt", "mqtt"): "network",
     ("command.network", "network"): "network",
     ("command.neopixel", "neopixel"): "expansion",
@@ -104,6 +108,7 @@ DERIVED_ALIAS_OWNERS = {
     ("app.help", "help"): "help",
     ("app.inbox", "inbox"): "command.inbox",
     ("app.lua", "lua"): "lua",
+    ("app.messages", "messages"): "command.messages",
     ("app.playground", "playground"): "playground",
     ("app.python", "python"): "python",
     ("job.controls", "controls"): "controls",

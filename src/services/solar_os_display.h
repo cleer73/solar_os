@@ -93,6 +93,10 @@ typedef enum {
 typedef struct {
     const uint8_t *data;
     size_t data_size;
+    /* Optional native row-major RGB565 snapshot, most-significant byte first.
+     * Rows contain native_width pixels without padding. Shares data's lifetime. */
+    const uint8_t *rgb565_data;
+    size_t rgb565_size;
     uint32_t frame_id;
     uint32_t target_generation;
     uint16_t width;
@@ -134,6 +138,11 @@ esp_err_t solar_os_display_open_gfx(const char *name,
                                     char *busy_owner,
                                     size_t busy_owner_len);
 esp_err_t solar_os_display_release(const char *name, const char *owner);
+/* A claimed streaming client can exclude terminal/status-bar painting without
+ * changing the terminal's saved preferences. Release the block after joining
+ * presentation. The epoch makes terminals repaint fully when drawing resumes. */
+esp_err_t solar_os_display_set_terminal_blocked(const char *name, const char *owner, bool blocked);
+bool solar_os_display_terminal_draw_state(const u8g2_t *u8g2, uint32_t *epoch);
 bool solar_os_display_brightness_supported(void);
 esp_err_t solar_os_display_get_brightness(uint8_t *percent);
 esp_err_t solar_os_display_set_brightness(uint8_t percent);

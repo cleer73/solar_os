@@ -731,7 +731,8 @@ void solar_os_shell_cmd_sleep(solar_os_context_t *ctx, int argc, char **argv)
         return;
     }
 
-    solar_os_shell_io_writeln(term, "sleeping; press KEY to wake");
+    solar_os_shell_io_printf(term, "sleeping; press %s to wake\n",
+                              SOLAR_OS_BOARD_SLEEP_WAKE_LABEL);
     solar_os_context_request_sleep(ctx);
 }
 
@@ -766,8 +767,8 @@ void solar_os_shell_cmd_deepsleep(solar_os_context_t *ctx, int argc, char **argv
         return;
     }
 
-    solar_os_shell_io_writeln(term,
-                              "entering deep sleep; press KEY or RESET to boot");
+    solar_os_shell_io_printf(term, "entering deep sleep; press %s or RESET to boot\n",
+                              SOLAR_OS_BOARD_SLEEP_WAKE_LABEL);
     (void)solar_os_shell_io_flush(term);
     solar_os_context_request_deep_sleep(ctx);
 }
@@ -788,7 +789,7 @@ void solar_os_shell_cmd_suspend(solar_os_context_t *ctx, int argc, char **argv)
         return;
     }
 
-    solar_os_shell_io_writeln(term, "suspending; press KEY to resume");
+    solar_os_shell_io_writeln(term, "suspending; press a key to resume");
     solar_os_context_request_suspend(ctx);
 }
 
@@ -1021,7 +1022,8 @@ void solar_os_shell_cmd_power(solar_os_context_t *ctx, int argc, char **argv)
             solar_os_shell_io_writeln(term, "sleep is only available from the display shell");
             return;
         }
-        solar_os_shell_io_writeln(term, "sleeping; press KEY to wake");
+        solar_os_shell_io_printf(term, "sleeping; press %s to wake\n",
+                                  SOLAR_OS_BOARD_SLEEP_WAKE_LABEL);
         solar_os_context_request_sleep(ctx);
         return;
     }
@@ -1037,7 +1039,7 @@ void solar_os_shell_cmd_power(solar_os_context_t *ctx, int argc, char **argv)
                                       "suspend is only available from the display shell");
             return;
         }
-        solar_os_shell_io_writeln(term, "suspending; press KEY to resume");
+        solar_os_shell_io_writeln(term, "suspending; press a key to resume");
         solar_os_context_request_suspend(ctx);
         return;
     }

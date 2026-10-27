@@ -208,6 +208,9 @@ static mp_obj_t solaros_emotion_open(size_t count, const mp_obj_t *args, mp_map_
     char current[SOLAR_OS_DISPLAY_TARGET_NAME_MAX] = {0};
     if (python_app.session_gfx) solar_os_gfx_display_target_name(python_app.session_gfx, current, sizeof(current));
     bool foreground = *current && (!options.display || !strcmp(options.display, current));
+#if SOLAR_OS_PACKAGE_SERVICE_JET
+    if (python_jet_drawing()) mp_raise_ValueError(MP_ERROR_TEXT("close Jet scene before opening a face"));
+#endif
     if (python_app.claimed_gfx || python_app.tui_active)
         mp_raise_ValueError(MP_ERROR_TEXT("end graphics/TUI before opening a face"));
     for (unsigned i = 0; i < 4; ++i)

@@ -96,6 +96,11 @@ mode explicitly; `True` enables animation within the target's rate limit.
 Unchanged images are not resubmitted. Short transitions or blinks may be
 skipped by slow displays; use longer-held poses on e-paper.
 
+SSD1306 and SH1106 expansion displays advertise 25 fps, so automatic motion is
+enabled by default. Actual refresh speed depends on the named I2C bus speed
+and other devices sharing that bus. Animation follows elapsed time and skips
+intermediate images when presentation takes longer than a frame interval.
+
 ## Face methods
 
 | Python method | Behaviour |
