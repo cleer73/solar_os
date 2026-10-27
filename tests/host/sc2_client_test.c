@@ -134,6 +134,8 @@ typedef struct {
     int sess;       /* mini-relay session, -1 offline */
     queue_t to_relay;
     int notices, last_notice;
+    char sender_name[SC2C_NICK_MAX + 1];
+    char sender_id[SC2_DEVICE_ID_HEX_LEN + 1];
 } tdev_t;
 
 static int d_send(void *ctx, const char *line, size_t len)
@@ -152,6 +154,10 @@ static void d_event(void *ctx, const sc2c_event_t *ev)
     if (ev->type == SC2C_EV_NOTICE) {
         d->notices++;
         d->last_notice = ev->code;
+    }
+    if (ev->type == SC2C_EV_MESSAGE) {
+        snprintf(d->sender_name, sizeof(d->sender_name), "%s", ev->name);
+        snprintf(d->sender_id, sizeof(d->sender_id), "%s", ev->from);
     }
 }
 
@@ -342,7 +348,7 @@ static sc2_roster_t room_roster(tdev_t *d, const char *room)
     sc2c_roomrec_t rec;
     snprintf(name, sizeof(name), "sc2c/%s_r%s", d->c.tag, room);
     CHECK_RC(d->engine->pf.load(d->engine->pf.ctx, name, record, sizeof(record), &len), SC2_OK);
-    CHECK_RC(sc2e_record_unwrap(record, len, 0x31, 1, &payload, &payload_len), SC2_OK);
+    CHECK_RC(sc2e_record_unwrap(record, len, 0x31, record[5], &payload, &payload_len), SC2_OK);
     CHECK(payload_len == sizeof(rec));
     memcpy(&rec, payload, sizeof(rec));
     return rec.roster;
@@ -381,7 +387,7 @@ static void private_room_trust(void)
     }
     admin.c.auto_admit = true;
     char room[SC2_DEVICE_ID_HEX_LEN + 1], invite[SC2_INVITE_TEXT_MAX];
-    CHECK_RC(sc2c_room_create(&admin.c, room), SC2_OK);
+    CHECK_RC(sc2c_room_create_named(&admin.c, "Team room", room), SC2_OK);
     q_clear(&admin.to_relay);
     feed_line(&admin, "{\"type\":\"ack\",\"rid\":\"c0\"}");
     CHECK_RC(sc2c_room_invite_text(&admin.c, room, invite, sizeof(invite)), SC2_OK);
@@ -442,6 +448,27 @@ static void private_room_trust(void)
     CHECK_RC(sc2e_room_info(member.engine, room, &info), SC2_OK);
     CHECK(info.known && info.epoch == 2 && !strcmp(info.admin, admin.c.self_hex));
     CHECK(sc2c_room_get(&member.c, room)->state == SC2C_ROOM_JOINED);
+    char title[SC2E_ROOM_TITLE_MAX + 1];
+    CHECK_RC(sc2c_room_get_title(&member.c, room, title, sizeof(title)), SC2_OK);
+    CHECK(!strcmp(title, "Team room"));
+    snprintf(member.c.nick, sizeof(member.c.nick), "%s", "nils@cl32");
+    q_clear(&member.to_relay);
+    CHECK_RC(sc2c_submit(&member.c, SC2C_PRIVATE, room, "hello", 5, 92, 92), SC2_OK);
+    line_t *text = take_type(&member, "room.send");
+    CHECK(text != NULL);
+    if (text) {
+        CHECK_RC(sc2e_relay_room(text->s, text->len, 100, sealed, sizeof(sealed), &n), SC2_OK);
+        feed_line(&admin, sealed);
+        free(text);
+        CHECK(!strcmp(admin.sender_name, "nils@cl32") && !strcmp(admin.sender_id, member.c.self_hex));
+    }
+    const char control_name[] = "{\"t\":\"text\",\"name\":\"bad\\u001b[31m\",\"body\":\"hello\"}";
+    CHECK_RC(sc2e_room_encrypt(member.engine, room, NULL, control_name, strlen(control_name),
+                               frame, sizeof(frame), &n), SC2_OK);
+    size_t delivered_len;
+    CHECK_RC(sc2e_relay_room(frame, n, 101, sealed, sizeof(sealed), &delivered_len), SC2_OK);
+    feed_line(&admin, sealed);
+    CHECK(!admin.sender_name[0] && !strcmp(admin.sender_id, member.c.self_hex));
     sc2_roster_t trusted = room_roster(&member, room);
     CHECK_MEM(&trusted, &roster, sizeof(roster));
 
@@ -532,6 +559,22 @@ static void private_room_trust(void)
           !sc2c_room_get(&member.c, room)->want);
     CHECK_RC(sc2e_room_info(member.engine, room, &info), SC2_OK);
     CHECK(!info.known);
+    /* Old room records retain their trust state when upgraded without a title. */
+    char record_name[SC2E_NAME_MAX];
+    snprintf(record_name, sizeof(record_name), "sc2c/mem_r%s", room);
+    uint8_t record[sizeof(sc2c_roomrec_t) + SC2E_RECORD_OVERHEAD];
+    size_t record_len, legacy_len;
+    const uint8_t *payload;
+    size_t payload_len;
+    CHECK_RC(member.engine->pf.load(member.engine->pf.ctx, record_name, record, sizeof(record), &record_len), SC2_OK);
+    CHECK_RC(sc2e_record_unwrap(record, record_len, 0x31, 2, &payload, &payload_len), SC2_OK);
+    CHECK_RC(sc2e_record_wrap(record, sizeof(record), &legacy_len, 0x31, 1, payload,
+                              offsetof(sc2c_roomrec_t, title)), SC2_OK);
+    CHECK_RC(member.engine->pf.save(member.engine->pf.ctx, record_name, record, legacy_len), SC2_OK);
+    CHECK_RC(sc2c_room_get_title(&member.c, room, title, sizeof(title)), SC2_OK);
+    CHECK(!title[0] && member.c.rec.roster.epoch == 7);
+    CHECK_RC(sc2c_room_add(&member.c, room, 0), SC2_OK);
+    CHECK(sc2c_room_get(&member.c, room)->state == SC2C_ROOM_LEFT);
     for (unsigned i = 0; i < 3; i++) d_free(all[i]);
 }
 
@@ -706,6 +749,11 @@ int main(void)
     replaced_by_relay(&a, &a2);
     idle_by_relay(&a);
     private_room_trust();
+    CHECK(!sc2e_label_valid("", SC2E_ROOM_TITLE_MAX));
+    CHECK(!sc2e_label_valid("  ", SC2E_ROOM_TITLE_MAX));
+    CHECK(!sc2e_label_valid("bad\nname", SC2E_ROOM_TITLE_MAX));
+    CHECK(!sc2e_label_valid("bad\x1b[31mname", SC2E_ROOM_TITLE_MAX));
+    CHECK(sc2e_label_valid("Team \"room\"", SC2E_ROOM_TITLE_MAX));
 
     d_free(&a2);
     d_free(&a);

@@ -14,7 +14,7 @@
 #define PEER_REC_MAX 512u
 #define DM_REC_MAX 3072u
 #define IDENTITY_REC_MAX 128u
-#define ROOM_SHARE_INNER_MAX (320u + ((17u * SC2_ROSTER_CAP + 2u) / 3u) * 4u)
+#define ROOM_SHARE_INNER_MAX (336u + 6u * SC2E_ROOM_TITLE_MAX + ((17u * SC2_ROSTER_CAP + 2u) / 3u) * 4u)
 
 /* dm_decrypt lends its record buffer to prekeys_save_into. */
 _Static_assert(DM_REC_MAX >= PREKEYS_REC_MAX, "dm record buffer doubles as the prekeys buffer");
@@ -1419,6 +1419,26 @@ int sc2e_room_share(sc2e_t *e, const char *room_hex, const char *peer_hex, const
 int sc2e_room_share_roster(sc2e_t *e, const char *room_hex, const char *peer_hex, const char *rid,
                           const sc2_roster_t *roster, char *out, size_t cap, size_t *out_len)
 {
+    return sc2e_room_share_named(e, room_hex, peer_hex, rid, roster, NULL, out, cap, out_len);
+}
+
+bool sc2e_label_valid(const char *text, size_t max_bytes)
+{
+    if (!text) return false;
+    size_t len = strlen(text);
+    if (!len || len > max_bytes || !sc2_utf8_valid(text, len)) return false;
+    bool visible = false;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)text[i];
+        if (ch < 0x20 || ch == 0x7f) return false;
+        if (ch != ' ') visible = true;
+    }
+    return visible;
+}
+
+int sc2e_room_share_named(sc2e_t *e, const char *room_hex, const char *peer_hex, const char *rid,
+                         const sc2_roster_t *roster, const char *title, char *out, size_t cap, size_t *out_len)
+{
     uint8_t room[SC2_ROOM_ID_LEN];
     uint8_t peer[SC2_DEVICE_ID_LEN];
     sc2_jw_t w;
@@ -1426,6 +1446,7 @@ int sc2e_room_share_roster(sc2e_t *e, const char *room_hex, const char *peer_hex
     if (e == NULL || !e->open || out == NULL || out_len == NULL) {
         return SC2_ERR_ARG;
     }
+    if (title && (!roster || !sc2e_label_valid(title, SC2E_ROOM_TITLE_MAX))) return SC2_ERR_ARG;
     int rc = parse_id(room_hex, room);
     if (rc == SC2_OK) {
         rc = parse_id(peer_hex, peer);
@@ -1468,6 +1489,10 @@ int sc2e_room_share_roster(sc2e_t *e, const char *room_hex, const char *peer_hex
             sc2_jw_b64(&w, roster->head, SC2_COMMIT_ID_LEN);
             sc2_jw_key(&w, "roster");
             sc2_jw_b64(&w, members, 17u * roster->count);
+            if (title) {
+                sc2_jw_key(&w, "title");
+                sc2_jw_cstring(&w, title);
+            }
             sc2_memzero(members, sizeof(members));
         }
         sc2_jw_object_end(&w);

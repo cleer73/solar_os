@@ -158,10 +158,15 @@ connects the first enabled `sc2` instance; `sc2 relay` shows its state.
 unique prefix of at least 6 hex digits of a peer whose keys or session are
 stored, or a nickname saved with `sc2 alias NAME DEVICE`.
 
-Private rooms: `sc2 room create` makes a new end-to-end encrypted room on the
+Private rooms: `sc2 room create "Team room"` makes a named end-to-end encrypted room on the
 primary relay with this device as its admin and prints its invite, a
 `sc2i:...` text that holds the room's invite secret. Whoever has the invite
 can join, so pass it on privately (`sc2 room invite ROOM` prints it again).
+Names may contain spaces and are limited to 48 UTF-8 bytes. The encrypted
+membership checkpoint supplies the name to joining devices. Names are display
+labels; the room keeps its stable 32-hex ID. `sc2 room invite "Team room"`
+accepts a unique exact name, and room names and IDs support Tab completion.
+Omitting the name retains the `room XXXXXXXX` label.
 On the other device, `sc2 room join sc2i:...` (or `sc2 room join @FILE` when
 the invite is longer than the input line) asks to join. The joining device
 also sends the admin an encrypted proof of invite possession. The admin checks
@@ -176,6 +181,10 @@ their state (`waiting for an admin`, `waiting for the room key`, `joined`).
 Room keys are accepted only from the invited admin after membership validation.
 Later membership changes require an authorized admin signature and a matching
 commit chain. Sending waits for the new epoch key after a membership change.
+Private text messages carry the sender's SolarOS `user@hostname` label inside
+the authenticated encryption. Public posts use that identity as their signed
+display name. Older peers without a sender label appear by device ID. Display
+names do not replace device keys or safety-number verification.
 Invites cannot be revoked from the device yet, and members cannot be removed;
 create a new room instead.
 

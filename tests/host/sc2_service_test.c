@@ -291,6 +291,9 @@ int main(void)
     test_verified(&b);
     test_notice();
     test_file_backed_outbox(&b);
+    char peer_id[SC2_DEVICE_ID_HEX_LEN + 1], next_peer[SC2_DEVICE_ID_HEX_LEN + 1];
+    assert(solar_os_sc2_peer_next("", peer_id) && !strcmp(peer_id, b.info.device_id));
+    assert(!solar_os_sc2_peer_next(peer_id, next_peer)); /* De-duplicates both slots and peer/session directories. */
     sc2e_close(&b.e);
     sc2e_memstore_destroy(b.store);
     nftw(root, rm_entry, 8, FTW_DEPTH | FTW_PHYS);

@@ -18,7 +18,7 @@
 #define REC_OUTBOX_TYPE 0x32u
 #define OB_KIND_SHARE 9u /* epoch key DM owed to a room member (no event) */
 #define REC_ROOM_TYPE 0x31u
-#define REC_ROOM_VERSION 1u
+#define REC_ROOM_VERSION 2u
 #define RETRY_MS 5000u
 #define CLAIM_RETRY_MS 30000u
 #define SYNC_MAX 100u
@@ -216,13 +216,19 @@ static int rec_load(sc2c_t *c, const char *room)
     int rc = e->pf.load(e->pf.ctx, name, (uint8_t *)c->work, SC2C_WORK_MAX, &len);
     unlock(c);
     if (rc == SC2_OK) {
-        rc = sc2e_record_unwrap((const uint8_t *)c->work, len, REC_ROOM_TYPE, REC_ROOM_VERSION, &pl, &pl_len);
+        uint8_t version = len > 5 ? (uint8_t)c->work[5] : 0;
+        rc = version == 1 || version == REC_ROOM_VERSION ?
+            sc2e_record_unwrap((const uint8_t *)c->work, len, REC_ROOM_TYPE, version, &pl, &pl_len) : SC2_ERR_FORMAT;
     }
-    if (rc == SC2_OK && pl_len != sizeof(c->rec)) {
+    if (rc == SC2_OK && pl_len != sizeof(c->rec) &&
+        !((uint8_t)c->work[5] == 1 && pl_len == offsetof(sc2c_roomrec_t, title))) {
         rc = SC2_ERR_FORMAT;
     }
     if (rc == SC2_OK) {
-        memcpy(&c->rec, pl, sizeof(c->rec));
+        memset(&c->rec, 0, sizeof(c->rec));
+        memcpy(&c->rec, pl, pl_len);
+        if (!memchr(c->rec.title, 0, sizeof(c->rec.title)) ||
+            (c->rec.title[0] && !sc2e_label_valid(c->rec.title, SC2E_ROOM_TITLE_MAX))) rc = SC2_ERR_FORMAT;
     } else {
         memset(&c->rec, 0, sizeof(c->rec));
     }
@@ -596,7 +602,8 @@ static void shares_flush_room(sc2c_t *c, unsigned idx)
         size_t n = 0;
         snprintf(rid, sizeof(rid), "o%d", slot);
         e = lock(c);
-        rc = sc2e_room_share_roster(e, r->key, peer, rid, ro, ob_frame(c), SC2C_TX_MAX - OB_HDR, &n);
+        rc = sc2e_room_share_named(e, r->key, peer, rid, ro, c->rec.title[0] ? c->rec.title : NULL,
+                                  ob_frame(c), SC2C_TX_MAX - OB_HDR, &n);
         unlock(c);
         if (rc == SC2_OK) {
             rc = ob_save(c, (unsigned)slot, OB_KIND_SHARE, 0, 0, peer, n);
@@ -792,6 +799,13 @@ static bool authorize_control(sc2c_t *c, const sc2e_dm_result_t *res,
             !sc2_ct_eq(old_hash, new_hash, sizeof(old_hash))) return false;
     }
     c->rec.roster = roster;
+    sc2_json_val_t title_value;
+    if (sc2_json_get(root, "title", &title_value) == SC2_OK) {
+        char title[SC2E_ROOM_TITLE_MAX + 1];
+        if (sc2_json_string(&title_value, title, sizeof(title), NULL) != SC2_OK ||
+            !sc2e_label_valid(title, SC2E_ROOM_TITLE_MAX)) return false;
+        memcpy(c->rec.title, title, strlen(title) + 1u);
+    }
     return rec_save(c, room) == SC2_OK;
 }
 
@@ -801,6 +815,7 @@ static void deliver_text(sc2c_t *c, sc2c_kind_t kind, const char *conv, const ch
     /* pt is inner JSON in c->work; body is unescaped into c->tx */
     sc2_json_val_t root, v;
     char id[2 * SC2_MSG_ID_LEN + 1] = "";
+    char name[SC2C_NICK_MAX + 1] = "";
     uint64_t ts = 0;
     size_t bl = 0;
     if (sc2_json_root(pt, pl, &root) != SC2_OK || root.type != SC2_JSON_OBJECT) {
@@ -815,6 +830,8 @@ static void deliver_text(sc2c_t *c, sc2c_kind_t kind, const char *conv, const ch
         return;
     }
     (void)sc2_json_get_string(&root, "id", id, sizeof(id), NULL);
+    if (sc2_json_get_string(&root, "name", name, sizeof(name), NULL) != SC2_OK ||
+        !sc2e_label_valid(name, SC2C_NICK_MAX)) name[0] = 0;
     (void)sc2_json_get_u64(&root, "ts", UINT64_MAX >> 1, &ts);
     sc2c_event_t ev;
     memset(&ev, 0, sizeof(ev));
@@ -822,6 +839,7 @@ static void deliver_text(sc2c_t *c, sc2c_kind_t kind, const char *conv, const ch
     ev.kind = kind;
     ev.conv = conv;
     ev.from = from;
+    ev.name = name;
     ev.body = c->tx;
     ev.body_len = bl;
     ev.msg_id = id;
@@ -1881,6 +1899,25 @@ const sc2c_room_t *sc2c_room_get(const sc2c_t *c, const char *key)
 
 int sc2c_room_create(sc2c_t *c, char room_out[SC2_DEVICE_ID_HEX_LEN + 1])
 {
+    return sc2c_room_create_named(c, NULL, room_out);
+}
+
+int sc2c_room_get_title(sc2c_t *c, const char *room, char *out, size_t cap)
+{
+    if (!out || !cap) return SC2_ERR_ARG;
+    out[0] = 0;
+    int rc = rec_load(c, room);
+    if (rc == SC2_OK) {
+        size_t len = strlen(c->rec.title);
+        if (len >= cap) return SC2_ERR_BOUNDS;
+        memcpy(out, c->rec.title, len + 1u);
+    }
+    return rc;
+}
+
+int sc2c_room_create_named(sc2c_t *c, const char *title, char room_out[SC2_DEVICE_ID_HEX_LEN + 1])
+{
+    if (title && !sc2e_label_valid(title, SC2E_ROOM_TITLE_MAX)) return SC2_ERR_ARG;
     if (c->state != SC2C_READY) {
         return SC2C_AGAIN;
     }
@@ -1891,6 +1928,7 @@ int sc2c_room_create(sc2c_t *c, char room_out[SC2_DEVICE_ID_HEX_LEN + 1])
     if (rc == SC2_OK) {
         memset(&c->rec, 0, sizeof(c->rec));
         c->rec.flags = SC2C_RF_ADMIN | SC2C_RF_INVITE;
+        if (title) memcpy(c->rec.title, title, strlen(title) + 1u);
         rc = sc2_random(&e->pf.rng, c->rec.secret, sizeof(c->rec.secret));
         memcpy(c->rec.admin_id, e->self_id, SC2_DEVICE_ID_LEN);
         memcpy(c->rec.admin_ik, e->id.ik_pub, SC2_KEY_LEN);
@@ -2010,6 +2048,10 @@ static int build_inner(sc2c_t *c, const char *body, size_t body_len, size_t *out
     sc2_jw_cstring(&w, "text");
     sc2_jw_key(&w, "id");
     sc2_jw_hex(&w, id, sizeof(id));
+    if (sc2e_label_valid(c->nick, SC2C_NICK_MAX)) {
+        sc2_jw_key(&w, "name");
+        sc2_jw_cstring(&w, c->nick);
+    }
     sc2_jw_key(&w, "body");
     sc2_jw_string(&w, body, body_len);
     uint64_t ts = c->host.wall_s != NULL ? c->host.wall_s(c->host.ctx) : 0;

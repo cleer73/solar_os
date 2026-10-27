@@ -37,6 +37,7 @@ extern "C" {
 #define SC2E_FRAME_MAX (SC2_LINE_MAX + 1u)
 #define SC2E_INNER_MAX SC2_DM_MAX_PLAINTEXT
 #define SC2E_RECORD_OVERHEAD 16u
+#define SC2E_ROOM_TITLE_MAX 48u
 
 /* Peak engine work memory (pf.alloc) for any single call, measured by the
  * host test sc2_engine_test (see the RAM budget in protocol/sc2/README.md). The platform's own
@@ -232,6 +233,10 @@ int sc2e_room_share(sc2e_t *e, const char *room_hex, const char *peer_hex, const
 /* Include an authenticated membership checkpoint with the epoch key. */
 int sc2e_room_share_roster(sc2e_t *e, const char *room_hex, const char *peer_hex, const char *rid,
                           const sc2_roster_t *roster, char *out, size_t cap, size_t *out_len);
+int sc2e_room_share_named(sc2e_t *e, const char *room_hex, const char *peer_hex, const char *rid,
+                         const sc2_roster_t *roster, const char *title, char *out, size_t cap, size_t *out_len);
+/* Nonempty printable UTF-8 display label, bounded in bytes. */
+bool sc2e_label_valid(const char *text, size_t max_bytes);
 int sc2e_room_encrypt(sc2e_t *e, const char *room_hex, const char *rid, const char *inner, size_t inner_len,
                       char *out, size_t cap, size_t *out_len);
 int sc2e_room_decrypt(sc2e_t *e, const char *line, size_t len, sc2e_room_result_t *res, char *pt, size_t pt_cap,

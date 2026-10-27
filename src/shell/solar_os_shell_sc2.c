@@ -31,8 +31,8 @@ static void sc2_usage(solar_os_shell_io_t *io)
     solar_os_shell_io_writeln(io, "fallbacks:   messages configure <name> fallback <url> [key=<b64>] [<url> ...] | fallback off");
     solar_os_shell_io_writeln(io, "peer: messages query <name> <peer>, then messages send <conv> <text>");
     solar_os_shell_io_writeln(io, "sc2 rooms             rooms of the relay instance and their state");
-    solar_os_shell_io_writeln(io, "sc2 room create       new private room (you admin it); prints its invite");
-    solar_os_shell_io_writeln(io, "sc2 room invite <room>  print the invite again (room key or prefix)");
+    solar_os_shell_io_writeln(io, "sc2 room create [name]  new private room; quote names containing spaces");
+    solar_os_shell_io_writeln(io, "sc2 room invite <room>  print the invite again (ID, prefix or unique name)");
     solar_os_shell_io_writeln(io, "sc2 room join <sc2i:...|@file>  join a private room with an invite");
     solar_os_shell_io_writeln(io, "private room: messages send <conv> <text>; leave with messages leave <conv>");
 #endif
@@ -332,8 +332,12 @@ void solar_os_shell_cmd_sc2(solar_os_context_t *ctx, int argc, char **argv)
         return;
     }
     if (argc >= 3 && strcmp(argv[1], "room") == 0) {
-        if (argc == 3 && strcmp(argv[2], "create") == 0) {
-            sc2_room_cmd(ctx, io, SOLAR_OS_SC2_ROOM_CREATE, NULL);
+        if ((argc == 3 || argc == 4) && strcmp(argv[2], "create") == 0) {
+            if (argc == 4 && !sc2e_label_valid(argv[3], SC2E_ROOM_TITLE_MAX)) {
+                solar_os_shell_io_writeln(io, "sc2: room name must be 1-48 bytes of printable UTF-8");
+                return;
+            }
+            sc2_room_cmd(ctx, io, SOLAR_OS_SC2_ROOM_CREATE, argc == 4 ? argv[3] : NULL);
             return;
         }
         if (argc == 4 && strcmp(argv[2], "invite") == 0) {

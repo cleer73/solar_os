@@ -136,6 +136,14 @@ inner DM records, which the relay transports as opaque ciphertext:
   The invited admin authenticates this checkpoint through its encrypted DM.
   The roster must include the recipient and the invited admin; it must not
   roll back the trusted epoch or conflict with an existing head at that epoch.
+  Optional `title` supplies a printable UTF-8 room name (up to 48 bytes),
+  authenticated by the same admin DM. Local room records upgrade version 1
+  without discarding membership or invite keys; version 2 appends the title.
+
+Text inner JSON may include `name`, a printable UTF-8 sender label up to 64
+bytes. The SolarOS client sends its `user@hostname` identity. Private-room and
+DM labels are protected by the message encryption; public labels are signed
+with the post. Missing or invalid labels fall back to the device ID.
 
 The checkpoint bootstraps a new member without requiring room history from
 before admission. It also recovers membership after retained commit history

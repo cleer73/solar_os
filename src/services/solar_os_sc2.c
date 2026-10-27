@@ -771,6 +771,35 @@ const char *solar_os_sc2_peer_ref_error(esp_err_t err)
     }
 }
 
+bool solar_os_sc2_peer_next(const char *after, char out[SC2_DEVICE_ID_HEX_LEN + 1])
+{
+    if (!after || !out || sc2_enter() != ESP_OK) return false;
+    char best[SC2_DEVICE_ID_HEX_LEN + 1] = "";
+    const char *dirs[] = {SC2E_DIR_PEER, SC2E_DIR_DM};
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        char path[SC2_PATH_MAX];
+        snprintf(path, sizeof(path), "%s/%s", s_sc2.base, dirs[i]);
+        DIR *dir = opendir(path);
+        if (!dir) continue;
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (strlen(entry->d_name) != SC2_DEVICE_ID_HEX_LEN + 2u ||
+                entry->d_name[SC2_DEVICE_ID_HEX_LEN] != '.' ||
+                (entry->d_name[SC2_DEVICE_ID_HEX_LEN + 1] != 'a' &&
+                 entry->d_name[SC2_DEVICE_ID_HEX_LEN + 1] != 'b')) continue;
+            char id[SC2_DEVICE_ID_HEX_LEN + 1];
+            memcpy(id, entry->d_name, SC2_DEVICE_ID_HEX_LEN); id[SC2_DEVICE_ID_HEX_LEN] = 0;
+            if (ref_hex(id, id, sizeof(id)) == SC2_DEVICE_ID_HEX_LEN && strcmp(id, after) > 0 &&
+                (!best[0] || strcmp(id, best) < 0)) memcpy(best, id, sizeof(best));
+        }
+        closedir(dir);
+    }
+    sc2_leave();
+    if (!best[0]) return false;
+    memcpy(out, best, sizeof(best));
+    return true;
+}
+
 bool solar_os_sc2_alias_name_valid(const char *name)
 {
     size_t n = name != NULL ? strlen(name) : 0;

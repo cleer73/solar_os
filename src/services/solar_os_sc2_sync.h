@@ -52,7 +52,7 @@ typedef enum {
     SOLAR_OS_SC2_ROOM_LIST,       /* out = one line per room */
 } solar_os_sc2_room_op_t;
 
-#define SOLAR_OS_SC2_ROOM_OUT_MAX 1024u
+#define SOLAR_OS_SC2_ROOM_OUT_MAX 2048u
 
 /* room (33 bytes, may be NULL) gets the room key; out (cap bytes, may be
  * NULL) the text; why (whycap) a reason when the result is not ESP_OK. */

@@ -197,6 +197,7 @@ typedef struct {
     uint8_t admin_id[SC2_DEVICE_ID_LEN];
     uint8_t admin_ik[SC2_KEY_LEN];
     sc2_roster_t roster; /* authenticated roster and commit head */
+    char title[SC2E_ROOM_TITLE_MAX + 1];
 } sc2c_roomrec_t;
 
 #define SC2C_RF_ADMIN 0x01u
@@ -275,6 +276,9 @@ const sc2c_room_t *sc2c_room_get(const sc2c_t *c, const char *key);
 /* Create a private room (needs READY). The room key and invite text arrive
  * in SC2C_EV_CREATED. room_out gets the new key right away. */
 int sc2c_room_create(sc2c_t *c, char room_out[SC2_DEVICE_ID_HEX_LEN + 1]);
+int sc2c_room_create_named(sc2c_t *c, const char *title, char room_out[SC2_DEVICE_ID_HEX_LEN + 1]);
+/* Copies the locally persisted admin-authenticated title; empty for legacy rooms. */
+int sc2c_room_get_title(sc2c_t *c, const char *room, char *out, size_t cap);
 /* Accept an invite text "sc2i:..." and start joining its room. */
 int sc2c_room_join_invite(sc2c_t *c, const char *text, char room_out[SC2_DEVICE_ID_HEX_LEN + 1]);
 /* Re-create the invite text of a room this device administers. */

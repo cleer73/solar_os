@@ -29,6 +29,7 @@
 #include "mbedtls/ssl.h"
 #include "mbedtls/pk.h"
 #include "solar_os_jobs.h"
+#include "solar_os_identity.h"
 #include "solar_os_log.h"
 #include "solar_os_memory.h"
 #include "solar_os_messaging.h"
@@ -204,7 +205,8 @@ static void on_message(const sc2c_event_t *ev)
         snprintf(title, sizeof(title), "sc2 %s", sid);
         snprintf(sender, sizeof(sender), "%s", sid);
     } else if (priv) {
-        solar_os_sc2_room_title(title, sizeof(title), ev->conv);
+        if (sc2c_room_get_title(s.c, ev->conv, title, sizeof(title)) != SC2_OK || !title[0])
+            solar_os_sc2_room_title(title, sizeof(title), ev->conv);
         snprintf(sender, sizeof(sender), "%s", sid);
     } else {
         snprintf(title, sizeof(title), "#%s", ev->conv + strlen(SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX));
@@ -214,6 +216,11 @@ static void on_message(const sc2c_event_t *ev)
         } else {
             snprintf(sender, sizeof(sender), "%s", sid);
         }
+    }
+    if ((dm || priv) && ev->name && ev->name[0]) {
+        snprintf(sender, sizeof(sender), "%.*s", (int)sizeof(sender) - 1, ev->name);
+        size_t len = strlen(sender);
+        while (len && !sc2_utf8_valid(sender, len)) sender[--len] = 0;
     }
     bool truncated = ev->body_len >= SOLAR_OS_MESSAGING_BODY_MAX;
     const solar_os_messaging_inbound_t in = {
@@ -238,6 +245,17 @@ static void on_message(const sc2c_event_t *ev)
 
 static void rq_finish(esp_err_t err, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 static void rq_created(const sc2c_event_t *ev);
+
+static void update_room_title(const char *key)
+{
+    char title[SOLAR_OS_MESSAGING_TITLE_MAX];
+    if (sc2c_room_get_title(s.c, key, title, sizeof(title)) != SC2_OK || !title[0]) return;
+    const solar_os_messaging_conversation_upsert_t request = {
+        .provider = s.id, .provider_key = key, .kind = SOLAR_OS_CONVERSATION_ROOM, .title = title,
+        .security_flags = solar_os_sc2_conversation_security(s.cfg, SOLAR_OS_SC2_TARGET_PRIVATE_ROOM, false),
+    };
+    (void)solar_os_messaging_conversation_upsert(&request, NULL);
+}
 
 static void h_event(void *ctx, const sc2c_event_t *ev)
 {
@@ -279,6 +297,7 @@ static void h_event(void *ctx, const sc2c_event_t *ev)
             js = SOLAR_OS_MESSAGING_JOIN_LEFT;
         }
         (void)solar_os_messaging_join_update(s.id, ev->conv, js, ev->text);
+        if (ev->code == SC2C_ROOM_JOINED && ev->kind == SC2C_PRIVATE) update_room_title(ev->conv);
         if (ev->code == SC2C_ROOM_FAILED && s.rq->creating[0] != '\0' && strcmp(ev->conv, s.rq->creating) == 0) {
             s.rq->creating[0] = '\0';
             rq_finish(ESP_FAIL, "relay refused the room%s%s", ev->text != NULL ? ": " : "",
@@ -566,6 +585,7 @@ static void add_rooms(void)
         }
         (void)sc2c_room_add(s.c, key, solar_os_messaging_provider_cursor_masked(s.id, key, SC2_SYNC_TAG_MASK,
                                                                                  SC2_SYNC_TAG(s.rp.relay)));
+        if (strncmp(key, SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX, strlen(SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX))) update_room_title(key);
     }
     if (!have_general && !s.auto_joined) {
         /* #general by default: through Messaging so it shows in the chat UI
@@ -614,7 +634,7 @@ static bool build_client(void)
         .nick = s.nick,
         .admit = s.cfg->admit[0] != '\0' ? s.cfg->admit : NULL,
         .no_opks = s.rp.relay != 0,
-        /* the relay forwards only join requests with a valid invite proof */
+        /* Admission requires the end-to-end invite proof checked by the client. */
         .auto_admit = true,
         .invite_url = s.cfg->url,
     };
@@ -646,7 +666,8 @@ static void check_config(void)
         }
         if (solar_os_sc2_relay_get_config(st.id, s.next) == ESP_OK && s.next->enabled) {
             found = st.id;
-            snprintf(s.nick, sizeof(s.nick), "%s", st.name); /* public post name: the instance name */
+            solar_os_identity_format(s.nick, sizeof(s.nick));
+            if (s.client_ok) snprintf(s.c->nick, sizeof(s.c->nick), "%s", s.nick);
             break;
         }
     }
@@ -731,17 +752,19 @@ static bool is_private_key(const char *key)
            strncmp(key, SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX, strlen(SOLAR_OS_SC2_PUBLIC_ROOM_PREFIX)) != 0;
 }
 
-/* A configured private room: its key or a unique prefix (>= 6 hex). */
+/* A configured private room: its key, a unique prefix, or an exact title. */
 static const char *private_room_find(const char *arg)
 {
     const char *hit = NULL;
     size_t len = strlen(arg);
-    if (len < 6u || len > SC2_DEVICE_ID_HEX_LEN) {
-        return NULL;
-    }
+    if (!len) return NULL;
     for (size_t i = 0; i < SOLAR_OS_SC2_RELAY_ROOM_CAPACITY; i++) {
         const char *key = s.cfg->rooms[i];
-        if (is_private_key(key) && strncasecmp(key, arg, len) == 0) {
+        char title[SC2E_ROOM_TITLE_MAX + 1];
+        bool title_matches = is_private_key(key) &&
+            sc2c_room_get_title(s.c, key, title, sizeof(title)) == SC2_OK && title[0] && !strcmp(title, arg);
+        if (is_private_key(key) && (title_matches ||
+            (len >= 6u && len <= SC2_DEVICE_ID_HEX_LEN && strncasecmp(key, arg, len) == 0))) {
             if (hit != NULL) {
                 return NULL;
             }
@@ -761,6 +784,7 @@ static void rq_created(const sc2c_event_t *ev)
     }
     q->creating[0] = '\0';
     esp_err_t err = solar_os_messaging_join(s.id, ev->conv, NULL);
+    if (err == ESP_OK) update_room_title(ev->conv);
     const sc2c_room_t *r = sc2c_room_get(s.c, ev->conv);
     if (err == ESP_OK && r != NULL && r->state == SC2C_ROOM_JOINED) {
         (void)solar_os_messaging_join_update(s.id, ev->conv, SOLAR_OS_MESSAGING_JOIN_JOINED, NULL);
@@ -796,8 +820,11 @@ static void rq_list(sc2s_rq_t *q)
         const sc2c_room_t *r = sc2c_room_get(s.c, key);
         bool priv = is_private_key(key);
         bool admin = priv && sc2c_room_invite_text(s.c, key, inv, sizeof(inv)) == SC2_OK;
-        int n = snprintf(q->out + at, sizeof(q->out) - at, "%s  %s%s  %s\n", key, priv ? "private" : "public",
+        char title[SC2E_ROOM_TITLE_MAX + 1] = "";
+        if (priv) (void)sc2c_room_get_title(s.c, key, title, sizeof(title));
+        int n = snprintf(q->out + at, sizeof(q->out) - at, "%s  %s%s  %s%s%s%s\n", key, priv ? "private" : "public",
                          admin ? ", admin" : "",
+                         title[0] ? "\"" : "", title, title[0] ? "\"  " : "",
                          r != NULL ? room_state_text(r) : priv && s.rp.relay != 0 ? "on the primary relay" : "-");
         at = n < 0 ? sizeof(q->out) : at + (size_t)n;
     }
@@ -828,7 +855,7 @@ static void rq_run(void)
     case SOLAR_OS_SC2_ROOM_INVITE: {
         const char *key = private_room_find(q->arg);
         if (key == NULL) {
-            rq_finish(ESP_ERR_NOT_FOUND, "no such private room (give its key or a unique prefix)");
+            rq_finish(ESP_ERR_NOT_FOUND, "no unique private room (give its ID, prefix or exact name)");
             return;
         }
         snprintf(q->room, sizeof(q->room), "%s", key);
@@ -852,7 +879,7 @@ static void rq_run(void)
             return;
         }
         if (q->op == SOLAR_OS_SC2_ROOM_CREATE) {
-            int rc = sc2c_room_create(s.c, q->room);
+            int rc = sc2c_room_create_named(s.c, q->arg[0] ? q->arg : NULL, q->room);
             if (rc != SC2_OK) {
                 rq_finish(ESP_FAIL, "create failed: %s", rc == SC2C_AGAIN ? "not logged in" : sc2_strerror(rc));
                 return;

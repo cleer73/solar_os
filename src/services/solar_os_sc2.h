@@ -70,6 +70,8 @@ esp_err_t solar_os_sc2_forget_peer(const char *peer);
 #define SOLAR_OS_SC2_ALIAS_MAX 16u
 #define SOLAR_OS_SC2_ALIAS_NAME_MAX 16u
 esp_err_t solar_os_sc2_resolve_peer(const char *ref, char out[SC2_DEVICE_ID_HEX_LEN + 1]);
+/* Sorted unique peer/session IDs; after may be empty to start. */
+bool solar_os_sc2_peer_next(const char *after, char out[SC2_DEVICE_ID_HEX_LEN + 1]);
 const char *solar_os_sc2_peer_ref_error(esp_err_t err);
 bool solar_os_sc2_alias_name_valid(const char *name);
 esp_err_t solar_os_sc2_alias_set(const char *name, const char *device);
