@@ -2,6 +2,15 @@
 
 ## 4.x
 
+- **4.17.0** — 2026-10-27 — Added Sealed Chat (SC2) with end-to-end
+  encrypted direct messages and named private rooms, authenticated room
+  invitations, signed public rooms, safety-number verification, readable
+  sender labels, and shell completion. Added signed relay discovery, relay
+  key pinning, fallback relays, and Python/Lua SC2 APIs. The `sc2-sync`
+  worker follows explicit job start/stop controls. `chatd` can host a small
+  SC2 relay alongside legacy v1. Added configurable low-voltage actions to
+  `batmon` and CAN bus management in the I/O app. Fixed CL-32 sleep/wake
+  behavior and power splash screens.
 - **4.16.32** — 2026-10-26 — Added a tabbed messaging manager and direct Chat
   access from Contacts. Fixed MeshCore send stack usage. Added Pi0cket CL-32
   e-paper board support alongside RLCD, with held modifiers, session shortcuts,
