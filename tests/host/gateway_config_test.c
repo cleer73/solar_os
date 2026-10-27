@@ -61,6 +61,23 @@ void nvs_close(nvs_handle_t handle) { (void)handle; }
 void solar_os_identity_get_user(char *out, size_t size) { strlcpy(out, "user", size); }
 void solar_os_identity_get_hostname(char *out, size_t size) { strlcpy(out, "device", size); }
 
+static bool record_message_security(const solar_os_messaging_message_t *message, void *user)
+{
+    *(uint32_t *)user |= message->security_flags;
+    return true;
+}
+
+static void check_gateway_v1_security(solar_os_conversation_id_t room)
+{
+    const uint32_t expected = SOLAR_OS_SECURITY_LEGACY_INSECURE | SOLAR_OS_SECURITY_TRANSPORT_SECURED;
+    solar_os_messaging_conversation_t conversation;
+    assert(solar_os_messaging_conversation_get(room, &conversation) == ESP_OK);
+    assert(conversation.security_flags == expected);
+    uint32_t message_flags = 0;
+    assert(solar_os_messaging_message_visit(room, 0, record_message_security, &message_flags, NULL) > 0);
+    assert(message_flags == expected);
+}
+
 static void reboot_gateway(void)
 {
     while (gateways.instances) {
@@ -125,6 +142,7 @@ int main(void)
     void *scope = solar_os_gateway_scope_enter(gateway_find(a));
     assert(solar_os_chat_send("shared", "from-a") == ESP_OK);
     solar_os_gateway_scope_leave(scope);
+    check_gateway_v1_security(room_a);
     scope = solar_os_gateway_scope_enter(gateway_find(b));
     solar_os_chat_command_t command;
     while (solar_os_chat_outbox_peek(&command) == ESP_OK) {

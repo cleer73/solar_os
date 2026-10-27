@@ -75,9 +75,10 @@ class FlavorPackagesTest(unittest.TestCase):
         name, _, groups, packages = self.resolve("classic")
         self.assertEqual(name, "classic")
         self.assertEqual({key for key in compact_groups if compact_groups[key] != groups[key]},
-                         {"adc_dpad", "synth"})
+                         {"adc_dpad", "synth", "sc2"})
         self.assertEqual({key for key in compact_packages if compact_packages[key] != packages[key]},
-                         {"service_adc_dpad", "app_synth", "service_synth", "service_midi"})
+                         {"service_adc_dpad", "app_synth", "service_synth", "service_midi",
+                          "service_sc2", "service_sc2_provider", "job_sc2_sync"})
         self.assertTrue(packages["service_adc_dpad"])
         self.assertFalse(packages["app_lua"])
         self.assertTrue(packages["app_python"])

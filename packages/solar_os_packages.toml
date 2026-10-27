@@ -3310,3 +3310,62 @@ sources = [
 ]
 requires = ["esp_driver_gpio", "esp_driver_spi", "esp_driver_ledc", "esp_timer", "nvs_flash", "u8g2"]
 capabilities = ["gfx", "expansion_gpio"]
+
+[groups.sc2]
+label = "SC2 end-to-end chat security"
+category = "Messaging"
+members = ["service_sc2", "service_sc2_provider", "job_sc2_sync"]
+
+[packages.service_sc2]
+label = "messaging.sc2"
+sources = [
+  "services/solar_os_sc2.c",
+  "services/solar_os_sc2_engine.c",
+  "services/solar_os_sc2_selftest.c",
+  "shell/solar_os_shell_sc2.c",
+  "../protocol/sc2/src/sc2_aead.c",
+  "../protocol/sc2/src/sc2_codec.c",
+  "../protocol/sc2/src/sc2_commit.c",
+  "../protocol/sc2/src/sc2_common.c",
+  "../protocol/sc2/src/sc2_ed25519.c",
+  "../protocol/sc2/src/sc2_frame.c",
+  "../protocol/sc2/src/sc2_hash.c",
+  "../protocol/sc2/src/sc2_identity.c",
+  "../protocol/sc2/src/sc2_json.c",
+  "../protocol/sc2/src/sc2_minirelay.c",
+  "../protocol/sc2/src/sc2_mod.c",
+  "../protocol/sc2/src/sc2_ratchet.c",
+  "../protocol/sc2/src/sc2_relaykey.c",
+  "../protocol/sc2/src/sc2_room.c",
+  "../protocol/sc2/src/sc2_safety.c",
+  "../protocol/sc2/src/sc2_wordlist_en.c",
+  "../protocol/sc2/src/sc2_x25519.c",
+  "../protocol/sc2/src/sc2_x3dh.c",
+  # Shared with service_meshcore: identical paths are compiled once.
+  "vendor/meshcore/ed25519/fe.c",
+  "vendor/meshcore/ed25519/ge.c",
+  "vendor/meshcore/ed25519/sc.c",
+  "vendor/meshcore/ed25519/sha512.c",
+]
+# X25519 and ChaCha20-Poly1305 come from the WireGuard component, which is
+# linked once whether or not service_wireguard is selected.
+# No PSRAM requirement: work memory prefers PSRAM and falls back to internal
+# RAM, and builds without CONFIG_SPIRAM use the SC2_LOW_RAM profile (peak
+# work memory about 16 KiB, see protocol/sc2/README.md). The Messaging
+# provider below still needs PSRAM because service_messaging does.
+requires = ["mbedtls", "wireguard_lwip", "esp_timer"]
+
+[packages.service_sc2_provider]
+label = "messaging.sc2-provider"
+depends = ["service_sc2", "service_messaging"]
+sources = ["services/solar_os_sc2_provider.c"]
+capabilities = ["psram"]
+
+# Relay transport: sans-IO client plus the TCP/TLS worker.
+[packages.job_sc2_sync]
+label = "job.sc2-sync"
+depends = ["service_sc2_provider", "service_network"]
+sources = ["services/solar_os_sc2_client.c", "services/solar_os_sc2_sync.c", "services/solar_os_sc2_discover.c",
+           "jobs/solar_os_sc2_sync_job.c"]
+requires = ["esp-tls", "mbedtls", "esp_netif", "esp_http_client"]
+capabilities = ["psram", "wifi"]

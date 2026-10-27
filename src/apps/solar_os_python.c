@@ -109,6 +109,9 @@
 #if SOLAR_OS_PACKAGE_SERVICE_SFTPSYNC
 #include "solar_os_sftpsync.h"
 #endif
+#if SOLAR_OS_PACKAGE_SERVICE_SC2
+#include "solar_os_sc2.h"
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_HID
 #include "solar_os_hid.h"
 #endif
@@ -9182,6 +9185,9 @@ MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(solaros_gfx_text_obj, 3, 3, solaros_gfx_text
 #endif
 #if SOLAR_OS_PACKAGE_SERVICE_SFTPSYNC
 #include "solar_os_python_sftpsync.inc"
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_SC2
+#include "solar_os_python_sc2.inc"
 #endif
 
 #include "solar_os_python_media.inc"

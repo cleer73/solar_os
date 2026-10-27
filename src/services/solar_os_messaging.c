@@ -1574,6 +1574,52 @@ uint64_t solar_os_messaging_provider_cursor(
     return cursor;
 }
 
+uint64_t solar_os_messaging_provider_cursor_masked(
+    solar_os_messaging_provider_id_t provider,
+    const char *provider_key,
+    uint64_t mask,
+    uint64_t tag)
+{
+    if (!mask && !tag) return solar_os_messaging_provider_cursor(provider, provider_key);
+    if ((tag & ~mask) || !messaging_provider_valid(provider) ||
+        !messaging_text_valid(provider_key,
+                              SOLAR_OS_MESSAGING_PROVIDER_KEY_MAX,
+                              false) ||
+        solar_os_messaging_init() != ESP_OK) {
+        return 0;
+    }
+    messaging_history_lock();
+    if (!messaging.persistent) (void)messaging_history_ensure_locked();
+    const int conversation_index =
+        messaging_conversation_index_locked(provider, provider_key);
+    if (conversation_index < 0) {
+        messaging_history_unlock();
+        return 0;
+    }
+    const solar_os_conversation_id_t conversation_id =
+        messaging.conversations[conversation_index].id;
+    uint64_t cursor = 0;
+    FILE *file = messaging_history_fopen(messaging.store_path, "rb");
+    for (size_t i = 0; file && i < messaging.disk_head; i++) {
+        if (messaging_history_read_locked(file, i, messaging.record_scratch) < 0) {
+            messaging.storage_error = ESP_FAIL;
+            break;
+        }
+        if (messaging.record_scratch->message.key)
+            messaging_history_normalize_locked(messaging.record_scratch);
+        const solar_os_messaging_message_t *message = &messaging.record_scratch->message;
+        if (message->key && message->provider == provider &&
+            message->conversation_id == conversation_id &&
+            (message->provider_message_key & mask) == tag &&
+            (message->provider_message_key & ~mask) > cursor) {
+            cursor = message->provider_message_key & ~mask;
+        }
+    }
+    if (file) messaging_history_fclose(file);
+    messaging_history_unlock();
+    return cursor;
+}
+
 esp_err_t solar_os_messaging_message_get(solar_os_message_key_t message_key,
                                          solar_os_messaging_message_t *message)
 {

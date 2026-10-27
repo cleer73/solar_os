@@ -521,6 +521,13 @@ if(SOLAR_OS_PACKAGE_SERVICE_MESHCORE)
         "../src/vendor/meshcore/ed25519"
     )
 endif()
+if(SOLAR_OS_PACKAGE_SERVICE_SC2)
+    # SC2 core headers; Ed25519 field/group code is shared with MeshCore.
+    list(APPEND SOLAR_OS_EXTRA_INCLUDE_DIRS
+        "../protocol/sc2/include"
+        "../src/vendor/meshcore/ed25519"
+    )
+endif()
 
 if(SOLAR_OS_PACKAGE_BHI260AP)
     list(APPEND SOLAR_OS_EXTRA_INCLUDE_DIRS "vendor/bhy2")
@@ -592,4 +599,13 @@ if(SOLAR_OS_PACKAGE_SERVICE_MESHCORE)
         MESH_DEBUG=0
         MESH_PACKET_LOGGING=0
     )
+endif()
+
+if(SOLAR_OS_PACKAGE_SERVICE_SC2)
+    # SC2 SHA-256/HMAC on the mbedTLS backend (see protocol/sc2/README.md).
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE SC2_USE_MBEDTLS=1)
+    # No PSRAM: SC2's low-RAM profile (protocol/sc2/README.md).
+    if(NOT CONFIG_SPIRAM)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE SC2_LOW_RAM=1)
+    endif()
 endif()

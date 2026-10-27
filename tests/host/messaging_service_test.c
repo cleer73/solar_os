@@ -844,6 +844,31 @@ static void test_history_navigation_io(void)
     assert(solar_os_messaging_clear(0,NULL)==ESP_OK);
 }
 
+static void test_masked_provider_cursor(void)
+{
+    const uint64_t mask = UINT64_C(0xf) << 60;
+    const uint64_t first = UINT64_C(1) << 60;
+    const uint64_t second = UINT64_C(2) << 60;
+    solar_os_messaging_inbound_t in = {.provider = 4,
+        .conversation_key = "relay-cursors", .conversation_title = "Relays",
+        .conversation_kind = SOLAR_OS_CONVERSATION_ROOM, .sender = "peer", .body = "history"};
+    in.provider_message_key = first | 999;
+    assert(solar_os_messaging_publish_inbound(&in, NULL, NULL) == ESP_OK);
+    for (unsigned i = 1; i <= SOLAR_OS_MESSAGING_MESSAGE_CAPACITY + 10; i++) {
+        in.provider_message_key = second | i;
+        assert(solar_os_messaging_publish_inbound(&in, NULL, NULL) == ESP_OK);
+    }
+    for (unsigned restart = 0; restart < 2; restart++) {
+        assert(solar_os_messaging_provider_cursor_masked(4, "relay-cursors", mask, first) == 999);
+        assert(solar_os_messaging_provider_cursor_masked(4, "relay-cursors", mask, second) ==
+            SOLAR_OS_MESSAGING_MESSAGE_CAPACITY + 10);
+        assert(solar_os_messaging_provider_cursor_masked(4, "relay-cursors", mask, 0) == 0);
+        assert(solar_os_messaging_provider_cursor_masked(1, "relay-cursors", mask, first) == 0);
+        restart_messages();
+    }
+    assert(solar_os_messaging_clear(0, NULL) == ESP_OK);
+}
+
 int main(void)
 {
     assert(mkdtemp(test_root));
@@ -853,6 +878,7 @@ int main(void)
     test_concurrent_history();
     test_late_sd_promotion();
     test_history_navigation_io();
+    test_masked_provider_cursor();
     test_channel_ownership_and_restart();
     test_provider_instances();
     test_unbound_and_evicted_removal();

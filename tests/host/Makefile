@@ -1341,3 +1341,219 @@ test: $(TARGETS)
 clean:
 	$(RM) $(TARGETS) model_bundle_test inference_lua_json_test zoo_test
 	$(RM) -r generated
+
+# ---------------------------------------------------------------------------
+# SC2 portable crypto/session core (protocol/sc2), see protocol/sc2/README.md.
+# Appended block. Vendor crypto (orlp Ed25519, WireGuard refc) is compiled as
+# separate objects without -Werror; the SC2 sources and tests use $(CFLAGS).
+SC2_DIR := $(ROOT)/protocol/sc2
+SC2_ED_DIR := $(ROOT)/src/vendor/meshcore/ed25519
+SC2_WG_DIR := $(ROOT)/components/wireguard_lwip/src
+SC2_INC := -I$(SC2_DIR)/include -I$(SC2_DIR)/vectors -I$(SC2_ED_DIR) -I$(SC2_WG_DIR)/crypto/refc -I$(SC2_WG_DIR)
+SC2_SRCS := $(sort $(wildcard $(SC2_DIR)/src/*.c))
+SC2_HDRS := $(wildcard $(SC2_DIR)/include/*.h) $(SC2_DIR)/vectors/sc2_vectors.inc sc2_test_util.h
+SC2_VENDOR_SRCS := $(addprefix $(SC2_ED_DIR)/,fe.c ge.c sc.c sha512.c) \
+	$(addprefix $(SC2_WG_DIR)/crypto/refc/,x25519.c chacha20.c chacha20poly1305.c poly1305-donna.c) \
+	$(SC2_WG_DIR)/crypto.c
+SC2_VENDOR_OBJS := $(addprefix sc2_vendor_,$(notdir $(SC2_VENDOR_SRCS:.c=.o)))
+SC2_TARGETS := sc2_crypto_test sc2_session_test sc2_frame_test sc2_relaykey_test sc2_minirelay_test
+# Optional: the same crypto/session tests on the mbedTLS hash backend
+# (SC2_USE_MBEDTLS=1), built against an mbedTLS 3.x source tree. Defaults to
+# the ESP-IDF copy that PlatformIO installs; set SC2_MBEDTLS_DIR= to skip.
+SC2_MBEDTLS_DIR ?= $(firstword $(wildcard $(HOME)/.platformio/packages/framework-espidf/components/mbedtls/mbedtls))
+SC2_MBEDTLS_SRCS = $(addprefix $(SC2_MBEDTLS_DIR)/library/,md.c sha256.c platform_util.c)
+SC2_MBEDTLS_TARGETS := sc2_crypto_mbedtls_test sc2_session_mbedtls_test
+
+define SC2_VENDOR_RULE
+sc2_vendor_$(notdir $(1:.c=.o)): $(1)
+	$$(CC) $$(filter-out -Werror,$$(CFLAGS)) -Wno-sign-compare $$(SC2_INC) -c $(1) -o $$@
+endef
+$(foreach s,$(SC2_VENDOR_SRCS),$(eval $(call SC2_VENDOR_RULE,$(s))))
+
+$(SC2_TARGETS): %: %.c $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) $(SC2_INC) $< $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+$(SC2_MBEDTLS_TARGETS): sc2_%_mbedtls_test: sc2_%_test.c sc2_mbedtls_config.h $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	@test -n "$(SC2_MBEDTLS_DIR)" || { echo "set SC2_MBEDTLS_DIR to an mbedTLS 3.x source tree"; exit 1; }
+	$(CC) $(CFLAGS) -DSC2_USE_MBEDTLS=1 '-DMBEDTLS_CONFIG_FILE="sc2_mbedtls_config.h"' -I. \
+		-I$(SC2_MBEDTLS_DIR)/include $(SC2_INC) $< $(SC2_SRCS) $(SC2_VENDOR_OBJS) $(SC2_MBEDTLS_SRCS) -o $@
+
+.PHONY: sc2-test sc2-mbedtls-test
+sc2-test: $(SC2_TARGETS)
+	./sc2_crypto_test
+	./sc2_session_test
+	./sc2_frame_test
+	./sc2_relaykey_test
+	./sc2_minirelay_test
+
+sc2-mbedtls-test: $(SC2_MBEDTLS_TARGETS)
+	./sc2_crypto_mbedtls_test
+	./sc2_session_mbedtls_test
+
+all: $(SC2_TARGETS)
+test: sc2-test
+ifneq ($(SC2_MBEDTLS_DIR),)
+test: sc2-mbedtls-test
+endif
+TARGETS += $(SC2_TARGETS) $(SC2_MBEDTLS_TARGETS) $(SC2_VENDOR_OBJS)
+
+# SC2 portable device engine (src/services/solar_os_sc2_engine.c) and the
+# selftest/bench shared with the firmware `sc2 selftest` command.
+SC2E_DIR := $(ROOT)/src/services
+SC2E_SRCS := $(SC2E_DIR)/solar_os_sc2_engine.c $(SC2E_DIR)/solar_os_sc2_selftest.c
+SC2E_HDRS := $(SC2E_DIR)/solar_os_sc2_engine.h $(SC2E_DIR)/solar_os_sc2_selftest.h
+
+sc2_engine_test: sc2_engine_test.c $(SC2E_SRCS) $(SC2E_HDRS) $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) $(SC2_INC) -I$(SC2E_DIR) $< $(SC2E_SRCS) $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+sc2_engine_mbedtls_test: sc2_engine_test.c sc2_mbedtls_config.h $(SC2E_SRCS) $(SC2E_HDRS) $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	@test -n "$(SC2_MBEDTLS_DIR)" || { echo "set SC2_MBEDTLS_DIR to an mbedTLS 3.x source tree"; exit 1; }
+	$(CC) $(CFLAGS) -DSC2_USE_MBEDTLS=1 '-DMBEDTLS_CONFIG_FILE="sc2_mbedtls_config.h"' -I. \
+		-I$(SC2_MBEDTLS_DIR)/include $(SC2_INC) -I$(SC2E_DIR) $< $(SC2E_SRCS) $(SC2_SRCS) \
+		$(SC2_VENDOR_OBJS) $(SC2_MBEDTLS_SRCS) -o $@
+
+.PHONY: sc2-engine-test sc2-engine-mbedtls-test
+sc2-engine-test: sc2_engine_test
+	./sc2_engine_test
+
+sc2-engine-mbedtls-test: sc2_engine_mbedtls_test
+	./sc2_engine_mbedtls_test
+
+all: sc2_engine_test
+sc2-test: sc2-engine-test
+test: sc2-engine-test
+ifneq ($(SC2_MBEDTLS_DIR),)
+sc2-mbedtls-test: sc2-engine-mbedtls-test
+endif
+TARGETS += sc2_engine_test sc2_engine_mbedtls_test
+
+# SC2 relay client (sc2-sync state machine) against the mini-relay, in process.
+sc2_client_test: sc2_client_test.c $(SC2E_DIR)/solar_os_sc2_client.c $(SC2E_DIR)/solar_os_sc2_client.h \
+        $(SC2E_SRCS) $(SC2E_HDRS) $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) $(SC2_INC) -I$(SC2E_DIR) $< $(SC2E_DIR)/solar_os_sc2_client.c $(SC2E_SRCS) $(SC2_SRCS) \
+		$(SC2_VENDOR_OBJS) -o $@
+
+.PHONY: sc2-client-test
+sc2-client-test: sc2_client_test
+	./sc2_client_test
+
+all: sc2_client_test
+sc2-test: sc2-client-test
+test: sc2-client-test
+TARGETS += sc2_client_test
+
+sc2_client_lowram_test: sc2_client_test.c $(SC2E_DIR)/solar_os_sc2_client.c $(SC2E_DIR)/solar_os_sc2_client.h \
+        $(SC2E_SRCS) $(SC2E_HDRS) $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) -DSC2_LOW_RAM=1 $(SC2_INC) -I$(SC2E_DIR) $< $(SC2E_DIR)/solar_os_sc2_client.c \
+		$(SC2E_SRCS) $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+.PHONY: sc2-client-lowram-test
+sc2-client-lowram-test: sc2_client_lowram_test
+	./sc2_client_lowram_test
+
+all: sc2_client_lowram_test
+sc2-test: sc2-client-lowram-test
+test: sc2-client-lowram-test
+TARGETS += sc2_client_lowram_test
+
+# SC2 Messaging provider class on the real Messaging registry (SC2 key store stubbed).
+sc2_provider_test: sc2_provider_test.c messaging_service_test.c $(SC2E_DIR)/solar_os_sc2_provider.c \
+        $(SC2E_DIR)/solar_os_sc2_provider.h $(ROOT)/src/services/solar_os_contacts.c \
+        $(ROOT)/src/services/solar_os_messaging.c $(ROOT)/src/services/solar_os_messaging_registry.inc \
+        $(ROOT)/src/services/solar_os_messaging_types.c $(ROOT)/src/services/solar_os_messaging.h \
+        $(ROOT)/src/services/solar_os_messaging_types.h messaging_stubs/freertos/semphr.h \
+        $(ROOT)/src/services/solar_os_storage.c $(ROOT)/src/services/solar_os_storage.h
+	$(CC) $(CFLAGS) -pthread -D_GNU_SOURCE -DpdTICKS_TO_MS\(ticks\)=\(ticks\) -include compat.h \
+		-ffunction-sections -fdata-sections \
+		-Imessaging_stubs -I. -I$(ROOT)/src -I$(ROOT)/src/services -I$(SC2_DIR)/include \
+		-I$(ROOT)/src/board -I$(ROOT)/src/drivers \
+		$< $(ROOT)/src/services/solar_os_messaging_types.c $(SC2_DIR)/src/sc2_codec.c \
+		$(ROOT)/src/services/solar_os_storage.c -Wl,--gc-sections \
+		-Wl,--wrap=solar_os_storage_is_mounted,--wrap=solar_os_storage_sd_is_mounted \
+		-Wl,--wrap=solar_os_storage_flash_is_mounted,--wrap=solar_os_storage_flash_mount_point \
+		-Wl,--wrap=solar_os_storage_sd_mount_point \
+		-Wl,--wrap=solar_os_storage_default_path,--wrap=solar_os_storage_mkdir \
+		-Wl,--wrap=solar_os_storage_remove,--wrap=solar_os_storage_get_usage,--wrap=rename -o $@
+
+.PHONY: sc2-provider-test
+sc2-provider-test: sc2_provider_test
+	./sc2_provider_test
+
+all: sc2_provider_test
+sc2-test: sc2-provider-test
+test: sc2-provider-test
+TARGETS += sc2_provider_test
+
+# SC2 membership commits, relay-signed room.mod events and invites.
+SC2A_TARGETS := sc2_admin_test
+SC2A_MBEDTLS_TARGETS := sc2_admin_mbedtls_test
+
+$(SC2A_TARGETS): %: %.c $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) $(SC2_INC) $< $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+$(SC2A_MBEDTLS_TARGETS): sc2_%_mbedtls_test: sc2_%_test.c sc2_mbedtls_config.h $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	@test -n "$(SC2_MBEDTLS_DIR)" || { echo "set SC2_MBEDTLS_DIR to an mbedTLS 3.x source tree"; exit 1; }
+	$(CC) $(CFLAGS) -DSC2_USE_MBEDTLS=1 '-DMBEDTLS_CONFIG_FILE="sc2_mbedtls_config.h"' -I. \
+		-I$(SC2_MBEDTLS_DIR)/include $(SC2_INC) $< $(SC2_SRCS) $(SC2_VENDOR_OBJS) $(SC2_MBEDTLS_SRCS) -o $@
+
+.PHONY: sc2-admin-test sc2-admin-mbedtls-test
+sc2-admin-test: $(SC2A_TARGETS)
+	./sc2_admin_test
+
+sc2-admin-mbedtls-test: $(SC2A_MBEDTLS_TARGETS)
+	./sc2_admin_mbedtls_test
+
+all: $(SC2A_TARGETS)
+sc2-test: sc2-admin-test
+test: sc2-admin-test
+ifneq ($(SC2_MBEDTLS_DIR),)
+sc2-mbedtls-test: sc2-admin-mbedtls-test
+endif
+TARGETS += $(SC2A_TARGETS) $(SC2A_MBEDTLS_TARGETS)
+
+# The device engine again in the SC2_LOW_RAM profile (builds without PSRAM):
+# same flows, smaller local limits, peak work memory checked against
+# SC2E_WORK_BUDGET.
+sc2_engine_lowram_test: sc2_engine_test.c $(SC2E_SRCS) $(SC2E_HDRS) $(SC2_SRCS) $(SC2_HDRS) $(SC2_VENDOR_OBJS)
+	$(CC) $(CFLAGS) -DSC2_LOW_RAM=1 $(SC2_INC) -I$(SC2E_DIR) $< $(SC2E_SRCS) $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+.PHONY: sc2-engine-lowram-test
+sc2-engine-lowram-test: sc2_engine_lowram_test
+	./sc2_engine_lowram_test
+
+all: sc2_engine_lowram_test
+sc2-test: sc2-engine-lowram-test
+test: sc2-engine-lowram-test
+TARGETS += sc2_engine_lowram_test
+
+# The SolarOS SC2 service on a host directory: aliases, safety-number
+# verification records and public-room notices, with a second
+# in-memory engine as the peer.
+SC2S_SRCS := $(ROOT)/src/services/solar_os_sc2.c $(SC2E_DIR)/solar_os_sc2_client.c $(SC2E_SRCS)
+sc2_service_test: sc2_service_test.c $(SC2S_SRCS) $(ROOT)/src/services/solar_os_sc2.h $(SC2E_HDRS) $(SC2_SRCS) \
+        $(SC2E_DIR)/solar_os_sc2_client.h $(SC2_HDRS) $(SC2_VENDOR_OBJS) sc2_service_stubs/esp_random.h
+	$(CC) $(CFLAGS) -Wno-format-truncation -pthread -D_GNU_SOURCE -DpdTICKS_TO_MS\(ticks\)=\(ticks\) -include compat.h \
+		-Isc2_service_stubs -Imessaging_stubs -I. -I$(ROOT)/src -I$(ROOT)/src/services $(SC2_INC) \
+		$< $(SC2S_SRCS) $(SC2_SRCS) $(SC2_VENDOR_OBJS) -o $@
+
+.PHONY: sc2-service-test
+sc2-service-test: sc2_service_test
+	./sc2_service_test
+
+all: sc2_service_test
+sc2-test: sc2-service-test
+test: sc2-service-test
+TARGETS += sc2_service_test
+
+# sc2-sync relay choice: failover, return to the primary, fallback visits.
+sc2_relay_policy_test: sc2_relay_policy_test.c $(ROOT)/src/services/solar_os_sc2_relay_policy.h
+	$(CC) $(CFLAGS) -I$(ROOT)/src/services $< -o $@
+
+.PHONY: sc2-relay-policy-test
+sc2-relay-policy-test: sc2_relay_policy_test
+	./sc2_relay_policy_test
+
+all: sc2_relay_policy_test
+sc2-test: sc2-relay-policy-test
+test: sc2-relay-policy-test
+TARGETS += sc2_relay_policy_test

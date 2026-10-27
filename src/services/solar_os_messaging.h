@@ -342,6 +342,13 @@ size_t solar_os_messaging_message_visit(
 uint64_t solar_os_messaging_provider_cursor(
     solar_os_messaging_provider_id_t provider,
     const char *provider_key);
+/* The same over messages whose provider key has (key & mask) == tag, with
+ * the mask bits cleared (a provider that tags keys by source, e.g. relay). */
+uint64_t solar_os_messaging_provider_cursor_masked(
+    solar_os_messaging_provider_id_t provider,
+    const char *provider_key,
+    uint64_t mask,
+    uint64_t tag);
 size_t solar_os_messaging_message_visit_consistent(
     solar_os_conversation_id_t conversation_id,
     solar_os_messaging_provider_id_t provider,

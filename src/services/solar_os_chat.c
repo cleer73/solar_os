@@ -192,11 +192,12 @@ static int chat_add_channel_locked(const char *channel,
 
 static uint32_t chat_security_flags(void)
 {
-    uint32_t flags = 0;
+    /* Gateway v1 has no end-to-end encryption or sender signatures. */
+    uint32_t flags = SOLAR_OS_SECURITY_LEGACY_INSECURE;
     chat_lock();
     if (strncmp(chat.url, "chats://", 8) == 0 ||
         strncmp(chat.url, "tls://", 6) == 0) {
-        flags = SOLAR_OS_SECURITY_TRANSPORT_SECURED;
+        flags |= SOLAR_OS_SECURITY_TRANSPORT_SECURED;
     }
     chat_unlock();
     return flags;
