@@ -1103,24 +1103,14 @@ void solar_os_sc2_sync_stop(void)
 
 static void provider_changed(solar_os_messaging_provider_id_t id, bool enabled)
 {
-    (void)id;
-    if (enabled && s.running) {
-        s.checked_at = 0; /* pick up the new or changed instance now */
-        (void)solar_os_sc2_sync_start();
-    } else if (enabled) {
-        /* Through the job manager: `job` shows sc2-sync running, and a start
-         * that finds no SRAM for the worker stack is queued and retried
-         * instead of being dropped. */
-        esp_err_t err = solar_os_jobs_start(NULL, "sc2-sync", 0, NULL);
-        if (err == ESP_ERR_NOT_FOUND) {
-            err = solar_os_sc2_sync_start();
-        }
-        if (err != ESP_OK) {
-            SOLAR_OS_LOGW(TAG, "cannot start: %s", esp_err_to_name(err));
-        }
-    } else if (s.running && s.task != NULL) {
+    /* Instance settings do not own the job lifecycle. Only wake a worker
+     * that was started explicitly (or by configured job autostart). */
+    if (s.running && !s.stop && s.task != NULL) {
         s.checked_at = 0;
         xTaskNotifyGive(s.task);
+    } else if (enabled) {
+        (void)solar_os_messaging_provider_set_status(id, false, false, ESP_OK,
+                                                     "enabled; run `job start sc2-sync`");
     }
 }
 

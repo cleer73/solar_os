@@ -305,7 +305,7 @@ void solar_os_shell_cmd_sc2(solar_os_context_t *ctx, int argc, char **argv)
         solar_os_sc2_sync_status_t st;
         solar_os_sc2_sync_get_status(&st);
         if (!st.running) {
-            solar_os_shell_io_writeln(io, "sc2-sync: not running (enable an sc2 instance or `job start sc2-sync`)");
+            solar_os_shell_io_writeln(io, "sc2-sync: not running (use `job start sc2-sync`)");
             return;
         }
         if (st.instance == 0) {

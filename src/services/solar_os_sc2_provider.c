@@ -665,7 +665,7 @@ static esp_err_t sc2p_create(const char *name, int argc, const char *const *argv
         return ESP_ERR_NO_MEM;
     }
     config->version = SOLAR_OS_SC2_RELAY_CONFIG_VERSION;
-    config->enabled = true; /* a new relay connects at once; `messages disconnect` turns it off */
+    config->enabled = false; /* enable with `messages connect`; the job is started separately */
     error = solar_os_sc2_relay_parse_url(argv[0], config);
     /* URL [ADMIT] [key=B64]: the key pins the relay's long-term key */
     for (int i = 1; error == ESP_OK && i < argc; i++) {

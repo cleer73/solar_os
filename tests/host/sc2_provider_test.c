@@ -110,7 +110,7 @@ static void test_registry(void)
     assert(solar_os_messaging_provider_is_class(id, "sc2"));
     solar_os_sc2_relay_config_t config;
     assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK);
-    assert(config.tls && !strcmp(config.pin, PIN_A) && !strcmp(config.admit, "invite-42") && config.enabled);
+    assert(config.tls && !strcmp(config.pin, PIN_A) && !strcmp(config.admit, "invite-42") && !config.enabled);
 
     solar_os_conversation_id_t pub = 0, priv = 0, dm = 0;
     assert(solar_os_messaging_join(id, "PUB:General", &pub) == ESP_OK && pub);
@@ -361,6 +361,60 @@ static int remove_entry(const char *path, const struct stat *sb, int flag, struc
     return remove(path);
 }
 
+static unsigned transport_changes;
+static bool transport_enabled;
+static void record_transport_change(solar_os_messaging_provider_id_t id, bool enabled)
+{
+    assert(id != 0);
+    transport_changes++;
+    transport_enabled = enabled;
+}
+
+static void test_manual_job_lifecycle(void)
+{
+    solar_os_sc2_provider_set_transport(record_transport_change);
+    solar_os_messaging_provider_id_t id = 0;
+    const char *settings[] = {"chat://relay.example:7777"};
+    assert(solar_os_messaging_instance_add("sc2", "manual", 1, settings, &id) == ESP_OK);
+    solar_os_sc2_relay_config_t config;
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && !config.enabled);
+    assert(transport_changes == 1 && !transport_enabled);
+
+    assert(solar_os_messaging_connect(id, true) == ESP_OK);
+    assert(transport_changes == 2 && transport_enabled);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && config.enabled);
+    const char *admit[] = {"admit", "code"};
+    assert(solar_os_messaging_instance_configure(id, 2, admit) == ESP_OK);
+    assert(transport_changes == 3 && transport_enabled);
+
+    /* A persisted enabled instance notifies the transport on reload; it
+     * still has no worker. The transport callback must not create one. */
+    restart_provider();
+    assert(transport_changes == 4 && transport_enabled);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && config.enabled);
+
+    solar_os_conversation_id_t room = 0;
+    assert(solar_os_messaging_join(id, "pub:general", &room) == ESP_OK);
+    solar_os_message_key_t key = 0;
+    assert(solar_os_messaging_send(room, "queued while stopped", false, &key) == ESP_OK && key);
+    assert(transport_changes == 4); /* Chat's send API does not invoke the start hook. */
+    solar_os_messaging_provider_status_t status;
+    assert(solar_os_messaging_provider_get_status(id, &status) == ESP_OK);
+    assert(!status.running && !status.connected);
+    solar_os_messaging_outbound_t outbound;
+    assert(solar_os_messaging_outbox_peek(id, &outbound) == ESP_OK);
+    assert(outbound.message_key == key && !strcmp(outbound.body, "queued while stopped"));
+    assert(solar_os_messaging_outbox_update(outbound.id, SOLAR_OS_DELIVERY_SENT, NULL) == ESP_OK);
+
+    assert(solar_os_messaging_connect(id, false) == ESP_OK);
+    assert(transport_changes == 5 && !transport_enabled);
+    restart_provider();
+    assert(transport_changes == 6 && !transport_enabled);
+    assert(solar_os_sc2_relay_get_config(id, &config) == ESP_OK && !config.enabled);
+    assert(solar_os_messaging_instance_remove(id) == ESP_OK);
+    solar_os_sc2_provider_set_transport(NULL);
+}
+
 int main(void)
 {
     assert(mkdtemp(test_root));
@@ -368,7 +422,8 @@ int main(void)
     test_registry();
     test_fallbacks();
     test_relay_keys();
+    test_manual_job_lifecycle();
     assert(nftw(test_root, remove_entry, 16, FTW_DEPTH | FTW_PHYS) == 0);
-    puts("sc2_provider_test: parsing, registry, flags, fallbacks, relay keys, persistence and removal OK");
+    puts("sc2_provider_test: parsing, registry, flags, fallbacks, relay keys, persistence, removal and manual lifecycle OK");
     return 0;
 }

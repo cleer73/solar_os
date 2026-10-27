@@ -206,7 +206,7 @@ void solar_os_boot_services_init(uint32_t now_ms)
 #endif
 
 #if SOLAR_OS_PACKAGE_JOB_SC2_SYNC
-    solar_os_sc2_sync_install(); /* enabled sc2 instances start the relay worker */
+    solar_os_sc2_sync_install(); /* notify an already-running worker of instance changes */
 #endif
 #if SOLAR_OS_PACKAGE_SERVICE_SC2_PROVIDER
     const esp_err_t sc2_err = solar_os_sc2_provider_init();

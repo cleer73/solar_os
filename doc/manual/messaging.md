@@ -48,11 +48,14 @@ MeshCore settings are `messages add meshcore NAME radio RADIO PROFILE` or
 | `irc` | `HOST PORT NICK` | `irc-sync` |
 | `meshcore` | `radio RADIO PROFILE` or `ble ADDRESS TYPE [PIN]` | `meshcore` or `meshcore-ble` |
 | `link` | `TRANSPORT` | Its `radio-link` or `espnow-link` transport with `chat=on` |
-| `sc2` | `DOMAIN [ADMIT] [key=B64]`, or `chats://HOST:PORT[#pin=sha256/B64] [ADMIT] [key=B64]` or `chat://HOST:PORT [ADMIT] [key=B64]` | `sc2-sync` (started automatically) |
+| `sc2` | `DOMAIN [ADMIT] [key=B64]`, or `chats://HOST:PORT[#pin=sha256/B64] [ADMIT] [key=B64]` or `chat://HOST:PORT [ADMIT] [key=B64]` | `sc2-sync` |
 
 New instances start disabled. Use `messages connect NAME` and start the worker.
-`sc2` instances are the exception: they are created enabled, and enabling one
-starts `sc2-sync` by itself; `messages disconnect NAME` turns one off.
+For SC2, use `messages connect NAME` and `job start sc2-sync`.
+Enabling or configuring an instance, restoring it after a reboot, and sending
+a message do not start the job. Messages queue while the worker is stopped.
+Use `job stop sc2-sync` to stop the worker, or `messages disconnect NAME` to
+disable one instance. Configured job autostart can start the worker at boot.
 `messages configure NAME SETTINGS...` changes connection settings; IRC also
 accepts `sasl ACCOUNT PASSWORD`, `sasl off`, `pass PASSWORD|off`, and `ca FILE|default`.
 Chat exposes `/classes`, `/instances`, `/add CLASS NAME SETTINGS...`,

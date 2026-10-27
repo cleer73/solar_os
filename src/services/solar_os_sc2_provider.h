@@ -103,6 +103,7 @@ uint32_t solar_os_sc2_conversation_security(const solar_os_sc2_relay_config_t *c
                                             solar_os_sc2_target_kind_t kind, bool peer_key_known);
 
 /* Relay transport hook (sc2-sync): called when an instance is enabled,
- * reconfigured or disabled. Install before solar_os_sc2_provider_init(). */
+ * reconfigured or disabled; it does not start the job.
+ * Install before solar_os_sc2_provider_init(). */
 typedef void (*solar_os_sc2_transport_fn)(solar_os_messaging_provider_id_t id, bool enabled);
 void solar_os_sc2_provider_set_transport(solar_os_sc2_transport_fn fn);
