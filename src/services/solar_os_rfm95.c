@@ -232,7 +232,23 @@ static esp_err_t op_receive(void *ctx,
     return rfm95_receive((rfm95_t *)ctx, packet, timeout_ms);
 }
 
+static esp_err_t op_read_rssi(void *ctx, int16_t *dbm)
+{
+    solar_os_radio_status_t status;
+    esp_err_t err = rfm95_get_status((rfm95_t *)ctx, &status);
+    if (err == ESP_OK && status.state != SOLAR_OS_RADIO_STATE_RX) return ESP_ERR_INVALID_STATE;
+    if (err == ESP_OK) *dbm = status.rssi_dbm;
+    return err;
+}
+
+static esp_err_t op_tune_rx(void *ctx, uint32_t hz, uint32_t *settle_ms)
+{
+    return rfm95_tune_rx((rfm95_t *)ctx, hz, settle_ms);
+}
+
 static const solar_os_radio_ops_t radio_ops = {
+    .tune_rx = op_tune_rx,
+    .read_rssi = op_read_rssi,
     .configure = op_configure,
     .set_state = op_set_state,
     .get_status = op_get_status,
@@ -303,6 +319,8 @@ esp_err_t solar_os_rfm95_attach(const char *name,
                 SOLAR_OS_RADIO_MODULATION_LORA,
             .features = SOLAR_OS_RADIO_FEATURE_PACKET |
                 SOLAR_OS_RADIO_FEATURE_RSSI |
+                SOLAR_OS_RADIO_FEATURE_LIVE_RSSI |
+                SOLAR_OS_RADIO_FEATURE_FAST_TUNE |
                 SOLAR_OS_RADIO_FEATURE_SNR |
                 SOLAR_OS_RADIO_FEATURE_TX_POWER |
                 SOLAR_OS_RADIO_FEATURE_RX_GAIN |

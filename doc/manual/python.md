@@ -42,6 +42,7 @@ Open a topic below, or use its ID with `man` on the device, for example
 | [Buses and expansion](python.buses.md) | `solaros.buses`, `solaros.expansion` |
 | [Audio and control](python.audio.md) | `solaros.audio`, `solaros.speech`, `solaros.synth`, `solaros.dsp`, `solaros.controls`, `solaros.parameters`, `solaros.midi`, `solaros.osc` |
 | [Emotion engine](emotion.md) | `solaros.emotion` facial animation and reaction sounds |
+| [Jet 3D renderer](jet.md) | `solaros.jet` scenes, meshes, lighting and presentation |
 | [Input and clipboard](python.input.md) | `solaros.input`, `solaros.hid`, `solaros.clipboard` |
 | [Apps, jobs, and identity](python.system.md) | `solaros.identity`, `solaros.jobs`, `solaros.sessions`, `solaros.apps` |
 | [Contacts and messages](python.messaging.md) | `solaros.contacts`, `solaros.messages` |

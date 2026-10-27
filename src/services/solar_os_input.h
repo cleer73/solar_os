@@ -162,6 +162,7 @@ typedef enum {
     SOLAR_OS_INPUT_GESTURE_TAP,
     SOLAR_OS_INPUT_GESTURE_DOUBLE_TAP,
     SOLAR_OS_INPUT_GESTURE_AIRWHEEL,
+    SOLAR_OS_INPUT_GESTURE_SWIPE,
     SOLAR_OS_INPUT_GESTURE_COUNT,
 } solar_os_input_gesture_t;
 
@@ -299,6 +300,9 @@ esp_err_t solar_os_input_write_pointer(solar_os_input_source_t source,
                                        const solar_os_input_pointer_event_t *event);
 esp_err_t solar_os_input_write_pointer_sample(solar_os_input_source_t source,
     const solar_os_input_pointer_sample_t *sample);
+/* The runtime input pump advances timed recognition for all input sources.
+ * Producers only submit ordinary input samples. */
+void solar_os_input_poll(void);
 /* Exclusive, source-specific capture before foreground/filter delivery. Claim
  * only at a neutral button/contact boundary. Release discards pending samples.
  * Read returns NOT_FOUND when empty, INVALID_STATE after source closure, and

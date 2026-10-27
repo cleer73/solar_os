@@ -94,6 +94,29 @@ int main(void)
     assert(rfm95_configure(&dev, &config) == ESP_FAIL);
     assert(dev.config.rx_gain == SOLAR_OS_RADIO_RX_GAIN_BOOSTED);
 #endif
+    fail_gain = false;
+    config = dev.config;
+#ifdef TEST_RFM69
+    assert(rfm69_configure(&dev, &config) == ESP_OK);
+#else
+    assert(rfm95_configure(&dev, &config) == ESP_OK);
+#endif
+    /* Retuning must preserve all modem/filter/gain registers and packet data. */
+    uint8_t old_registers[sizeof(registers)];
+    memcpy(old_registers, registers, sizeof(registers));
+    uint32_t settle_ms = 0;
+    uint32_t frequency = dev.config.frequency_hz + 125000U;
+#ifdef TEST_RFM69
+    assert(rfm69_tune_rx(&dev, frequency, &settle_ms) == ESP_OK);
+#else
+    assert(rfm95_tune_rx(&dev, frequency, &settle_ms) == ESP_OK);
+#endif
+    assert(dev.config.frequency_hz == frequency && dev.state == SOLAR_OS_RADIO_STATE_RX);
+    assert(settle_ms >= 2 && settle_ms <= 4);
+    for (size_t i = 0; i < sizeof(registers); i++) {
+        if (i == REG_OP_MODE || (i >= REG_FRF_MSB && i <= REG_FRF_LSB)) continue;
+        assert(registers[i] == old_registers[i]);
+    }
     puts("radio RX gain register writes, defaults, AGC and failures: ok");
     return 0;
 }

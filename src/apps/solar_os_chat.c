@@ -134,11 +134,15 @@ typedef struct {
     uint8_t channel_count;
     uint8_t channel_scroll;
     size_t message_scroll;
+    size_t message_max_scroll;
+    size_t history_offset;
+    bool history_has_older;
     char status[CHAT_APP_STATUS_MAX];
     solar_os_message_key_t status_message_key;
     chat_app_channel_t channels[CHAT_APP_CHANNEL_COUNT];
     chat_app_channel_row_t channel_rows[CHAT_APP_CHANNEL_VIEW_COUNT];
     chat_app_message_t *messages;
+    solar_os_messaging_message_t *history_page;
     solar_os_messaging_event_t *messaging_event;
     uint32_t messaging_event_cursor;
     uint32_t messaging_generation;
@@ -678,16 +682,24 @@ static void chat_reconcile_messaging(void)
     }
     chat_app.message_count = system_count;
     chat_app.message_head = (oldest + system_count) % CHAT_APP_MESSAGE_COUNT;
+    solar_os_conversation_id_t previous = chat_current_conversation_id();
     chat_refresh_conversations();
-    (void)solar_os_messaging_message_visit_consistent(
-        chat_app.initial_conversation_id,
-        chat_app.filter_provider,
-        chat_restore_message,
-        NULL,
-        &chat_app.messaging_event_cursor,
-        &chat_app.messaging_generation);
+    if (chat_current_conversation_id() != previous) chat_app.history_offset = 0;
     if (!chat_current_is_system()) {
         (void)solar_os_messaging_mark_read(chat_current_conversation_id());
+    }
+    /* Capture before reading: a concurrent arrival must trigger another refresh. */
+    solar_os_messaging_status_t status;
+    if (solar_os_messaging_get_status(&status) == ESP_OK) chat_app.messaging_generation = status.generation;
+    solar_os_messaging_message_t *page = chat_app.history_page;
+    if (page && !chat_current_is_system()) {
+        size_t count = 0;
+        esp_err_t error = solar_os_messaging_message_page(chat_current_conversation_id(),
+            chat_app.filter_provider, chat_app.history_offset, page, CHAT_APP_MESSAGE_COUNT,
+            &count, &chat_app.history_has_older);
+        if (error == ESP_OK) {
+            for (size_t i = 0; i < count; i++) (void)chat_restore_message(&page[i], NULL);
+        } else chat_set_status("history storage unavailable");
     }
     chat_app.messaging_dirty = false;
     chat_app.redraw = true;
@@ -1345,6 +1357,7 @@ static void chat_draw_messages(size_t start_row,
     }
 
     const size_t max_scroll = total_rows > text_rows ? total_rows - text_rows : 0;
+    chat_app.message_max_scroll = max_scroll;
     if (chat_app.message_scroll > max_scroll) {
         chat_app.message_scroll = max_scroll;
     }
@@ -1702,11 +1715,9 @@ static void chat_select_channel(uint8_t index, bool join)
     chat_app.status_message_key = SOLAR_OS_MESSAGE_KEY_NONE;
     chat_app.channels[index].unread = false;
     chat_app.channels[index].unread_count = 0;
-    if (!chat_app.channels[index].system) {
-        (void)solar_os_messaging_mark_read(
-            chat_app.channels[index].conversation_id);
-    }
     chat_app.message_scroll = 0;
+    chat_app.history_offset = 0;
+    chat_reconcile_messaging();
     if (join) {
         chat_app.tab = CHAT_APP_TAB_CHAT;
     }
@@ -1796,11 +1807,10 @@ static void chat_show_status(void)
                         (unsigned)status.messages,
                         (unsigned)status.unread,
                         (unsigned)status.queued_outbox);
-    chat_append_statusf("history: %s cap=%u",
-                        status.persistent ?
-                            (status.inbox_backed ? "compact internal" : "full") :
-                            "volatile",
-                        (unsigned)status.persistent_capacity);
+    chat_append_statusf("history: %s; RAM cache=%u/%u",
+                        status.persistent ? "disk archive" : "unavailable",
+                        (unsigned)status.cached_messages,
+                        (unsigned)SOLAR_OS_MESSAGING_MESSAGE_CAPACITY);
     solar_os_messaging_provider_id_t provider = 0;
     solar_os_messaging_provider_status_t provider_status;
     while (solar_os_messaging_provider_next(&provider, &provider_status)) {
@@ -2163,6 +2173,13 @@ static void chat_handle_message_key(solar_os_context_t *ctx, uint8_t ch)
     case SOLAR_OS_KEY_PAGE_UP:
         {
             const size_t step = chat_message_scroll_step();
+            if (chat_app.message_scroll >= chat_app.message_max_scroll && chat_app.history_has_older) {
+                chat_app.history_offset += CHAT_APP_MESSAGE_COUNT;
+                chat_reconcile_messaging();
+                chat_app.message_scroll = 0;
+                chat_app.redraw = true;
+                break;
+            }
             chat_app.message_scroll = SIZE_MAX - chat_app.message_scroll >= step ?
                 chat_app.message_scroll + step : SIZE_MAX;
             chat_app.redraw = true;
@@ -2171,6 +2188,13 @@ static void chat_handle_message_key(solar_os_context_t *ctx, uint8_t ch)
     case SOLAR_OS_KEY_PAGE_DOWN:
         {
             const size_t step = chat_message_scroll_step();
+            if (chat_app.message_scroll == 0 && chat_app.history_offset) {
+                chat_app.history_offset -= CHAT_APP_MESSAGE_COUNT;
+                chat_reconcile_messaging();
+                chat_app.message_scroll = SIZE_MAX;
+                chat_app.redraw = true;
+                break;
+            }
             chat_app.message_scroll = chat_app.message_scroll > step ?
                 chat_app.message_scroll - step : 0;
             chat_app.redraw = true;
@@ -2245,6 +2269,8 @@ static void chat_app_free_state(void)
 
 static void chat_free_buffers(void)
 {
+    solar_os_memory_free(chat_app.history_page);
+    chat_app.history_page = NULL;
     if (chat_app.messages != NULL) {
         solar_os_memory_free(chat_app.messages);
         chat_app.messages = NULL;
@@ -2334,13 +2360,14 @@ static esp_err_t chat_start(solar_os_context_t *ctx)
     }
 
     chat_app.messages = chat_app_calloc(CHAT_APP_MESSAGE_COUNT, sizeof(chat_app_message_t));
+    chat_app.history_page = chat_app_calloc(CHAT_APP_MESSAGE_COUNT, sizeof(*chat_app.history_page));
     chat_app.history = chat_app_calloc(CHAT_APP_HISTORY_COUNT, sizeof(chat_app.history[0]));
     chat_app.input = chat_app_calloc(CHAT_APP_INPUT_MAX, 1);
     chat_app.history_draft = chat_app_calloc(CHAT_APP_INPUT_MAX, 1);
     chat_app.pending_untrusted = chat_app_calloc(CHAT_APP_INPUT_MAX, 1);
     chat_app.messaging_event =
         chat_app_calloc(1, sizeof(*chat_app.messaging_event));
-    if (chat_app.messages == NULL ||
+    if (chat_app.messages == NULL || chat_app.history_page == NULL ||
         chat_app.history == NULL ||
         chat_app.input == NULL ||
         chat_app.history_draft == NULL ||

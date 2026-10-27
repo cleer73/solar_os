@@ -16,6 +16,10 @@
 #include "solar_os_shell_common.h"
 #include "solar_os_tui.h"
 #include "solar_os_tui_widgets.h"
+#include "solar_os_config.h"
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+#include "solar_os_rfscan.h"
+#endif
 
 #define RADIO_TUI_STATUS_MAX 96
 #define RADIO_TUI_EDIT_MAX 64
@@ -890,6 +894,9 @@ static esp_err_t radio_tui_start(solar_os_context_t *ctx)
         return err;
     }
     radio_tui_set_status("enter edits, arrows cycle, esc exits");
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+    if (solar_os_context_gfx(ctx) != NULL) radio_tui_set_status("s: graphical scanner");
+#endif
     solar_os_tui_set_cursor_visible(&radio_tui.tui, false);
     radio_tui_render();
     return ESP_OK;
@@ -951,6 +958,21 @@ static bool radio_tui_event(solar_os_context_t *ctx, const solar_os_event_t *eve
         radio_tui_handle_edit_key(key);
         return true;
     }
+
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+    if (key == 's' && solar_os_context_gfx(ctx) != NULL) {
+        solar_os_radio_info_t info;
+        if (radio_tui_current(&info, NULL)) {
+            char *args[] = {"rfscan", info.name};
+            esp_err_t err = solar_os_context_request_launch(ctx, &solar_os_rfscan_app, 2, args);
+            if (err != ESP_OK) {
+                radio_tui_set_status(esp_err_to_name(err));
+                radio_tui_render();
+            }
+        }
+        return true;
+    }
+#endif
 
     if (key == SOLAR_OS_KEY_APP_EXIT || key == SOLAR_OS_KEY_ESCAPE) {
         solar_os_context_finish(radio_tui.ctx, 0, NULL);

@@ -36,6 +36,9 @@
 #if SOLAR_OS_PACKAGE_SERVICE_EMOTION
 #include "solar_os_emotion.h"
 #endif
+#if SOLAR_OS_PACKAGE_SERVICE_JET
+#include "solar_os_jet.h"
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_INPUT_KEYMAP
 #include "solar_os_input_keymap.h"
 #endif
@@ -250,6 +253,7 @@ typedef enum {
     PYTHON_EVENT_TUI_TAB,
     PYTHON_EVENT_TUI_INPUT,
     PYTHON_EVENT_EMOTION_MODE,
+    PYTHON_EVENT_JET_MODE,
     PYTHON_EVENT_GFX_BEGIN,
     PYTHON_EVENT_GFX_END,
     PYTHON_EVENT_GFX_CLEAR,
@@ -338,6 +342,7 @@ typedef struct {
 
 static const char *TAG = "solar_os_python";
 static bool python_emotion_drawing(void);
+static bool python_jet_drawing(void);
 
 typedef enum {
     PYTHON_RUNTIME_OWNER_NONE,
@@ -361,6 +366,11 @@ typedef struct {
     uint32_t emotion_generation[4];
     bool emotion_busy, emotion_ack, emotion_suspended;
     uint32_t emotion_count;
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_JET
+    solar_os_jet_t *jet;
+    uint32_t jet_generation, jet_count;
+    bool jet_busy, jet_ack, jet_suspended;
 #endif
 } python_cold_state_t;
 
@@ -7683,20 +7693,25 @@ static bool python_messages_list_visit(
     return true;
 }
 
-static mp_obj_t solaros_messages_list(mp_obj_t conversation_id_obj)
+static mp_obj_t solaros_messages_list(size_t n_args, const mp_obj_t *args)
 {
+    size_t offset = n_args >= 2 ? python_u32_from_obj(args[1]) : 0;
+    size_t limit = n_args >= 3 ? python_u32_from_obj(args[2]) : SOLAR_OS_MESSAGING_MESSAGE_CAPACITY;
+    if (!limit || limit > SOLAR_OS_MESSAGING_MESSAGE_CAPACITY)
+        mp_raise_ValueError(MP_ERROR_TEXT("limit must be 1..64"));
+    /* GC ownership also releases the page if dictionary allocation raises. */
+    solar_os_messaging_message_t *page = m_new(solar_os_messaging_message_t, limit);
+    size_t count = 0; bool more = false;
+    python_check_esp(solar_os_messaging_message_page(python_u32_from_obj(args[0]),
+        0, offset, page, limit, &count, &more));
     python_messages_list_context_t context = {
         .list = mp_obj_new_list(0, NULL),
     };
-    (void)solar_os_messaging_message_visit(
-        python_u32_from_obj(conversation_id_obj),
-        0,
-        python_messages_list_visit,
-        &context,
-        NULL);
+    for (size_t i = 0; i < count; i++) (void)python_messages_list_visit(&page[i], &context);
+    m_del(solar_os_messaging_message_t, page, limit);
     return context.list;
 }
-MP_DEFINE_CONST_FUN_OBJ_1(solaros_messages_list_obj, solaros_messages_list);
+MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(solaros_messages_list_obj, 1, 3, solaros_messages_list);
 
 static mp_obj_t solaros_messages_send(size_t n_args,
                                       const mp_obj_t *args,
@@ -8271,7 +8286,7 @@ static void python_gfx_release_target_name(const char *target)
 
 static void python_ui_send_event(const python_event_t *event)
 {
-    if (python_emotion_drawing()) mp_raise_ValueError(MP_ERROR_TEXT("close emotion faces before drawing graphics or TUI"));
+    if (python_emotion_drawing() || python_jet_drawing()) mp_raise_ValueError(MP_ERROR_TEXT("close emotion and Jet scenes before drawing graphics or TUI"));
     if (!python_send_event(event)) {
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("ui event queue stopped"));
     }
@@ -8724,7 +8739,7 @@ static void python_gfx_send_text(int32_t x, int32_t y, const char *text, size_t 
 
 static mp_obj_t solaros_gfx_begin(size_t n_args, const mp_obj_t *args)
 {
-    if (python_emotion_drawing()) mp_raise_ValueError(MP_ERROR_TEXT("close emotion faces before drawing graphics"));
+    if (python_emotion_drawing() || python_jet_drawing()) mp_raise_ValueError(MP_ERROR_TEXT("close emotion and Jet scenes before drawing graphics"));
     const char *target = NULL;
     if (n_args >= 1 && args[0] != mp_const_none) {
         target = mp_obj_str_get_str(args[0]);
@@ -8856,6 +8871,19 @@ static mp_obj_t solaros_gfx_rgb(mp_obj_t red_obj,
         solar_os_gfx_rgb((uint8_t)red, (uint8_t)green, (uint8_t)blue));
 }
 MP_DEFINE_CONST_FUN_OBJ_3(solaros_gfx_rgb_obj, solaros_gfx_rgb);
+
+static mp_obj_t solaros_gfx_theme(void)
+{
+    uint32_t foreground = 0, background = 0;
+    python_check_esp(solar_os_display_get_colors(&foreground, &background));
+    mp_obj_t theme = mp_obj_new_dict(2);
+    mp_obj_dict_store(theme, mp_obj_new_str("foreground", 10),
+                      mp_obj_new_int_from_uint(foreground));
+    mp_obj_dict_store(theme, MP_OBJ_NEW_QSTR(MP_QSTR_background),
+                      mp_obj_new_int_from_uint(background));
+    return theme;
+}
+MP_DEFINE_CONST_FUN_OBJ_0(solaros_gfx_theme_obj, solaros_gfx_theme);
 
 static mp_obj_t solaros_gfx_font(size_t n_args, const mp_obj_t *args)
 {
@@ -9168,6 +9196,7 @@ MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(solaros_gfx_text_obj, 3, 3, solaros_gfx_text
 #include "solar_os_python_pipeline.inc"
 #include "solar_os_python_dlp.inc"
 #include "solar_os_python_emotion.inc"
+#include "solar_os_python_jet.inc"
 
 static void python_module_store(mp_obj_t module, const char *name, mp_obj_t value)
 {
@@ -9512,6 +9541,7 @@ esp_err_t solar_os_python_run(const solar_os_script_run_request_t *request,
     python_media_destroy();
     python_dlp_destroy();
     python_emotion_destroy();
+    python_jet_destroy();
 #if SOLAR_OS_PACKAGE_SERVICE_HTTP_CLIENT
     python_http_stream_destroy();
     python_http_session_destroy();
@@ -9735,6 +9765,7 @@ static void python_task(void *arg)
         python_media_destroy();
         python_dlp_destroy();
         python_emotion_destroy();
+        python_jet_destroy();
 #if SOLAR_OS_PACKAGE_SERVICE_HTTP_CLIENT
         python_http_stream_destroy();
         python_http_session_destroy();
@@ -9826,6 +9857,15 @@ static void python_return_to_shell(solar_os_context_t *ctx,
     solar_os_context_finish(ctx,
                                          exit_code,
                                          shared_port ? NULL : message);
+}
+
+static void python_finish_handoff(solar_os_context_t *ctx)
+{
+    /* DONE can be consumed before the child starts. Finish on return as well. */
+    if (python_app.done && python_app.repl_exit_requested &&
+        ctx->requested_app == NULL && !ctx->exit_requested) {
+        python_return_to_shell(ctx, python_app.exit_code, NULL);
+    }
 }
 
 static size_t python_repl_max_input_len(solar_os_context_t *ctx)
@@ -10191,7 +10231,7 @@ static void python_stop(solar_os_context_t *ctx)
              * worker. Never delete that owner task mid-call.
              * Interpreter cancellation remains active while we wait. */
             while ((__atomic_load_n(&python_media_session, __ATOMIC_ACQUIRE) != NULL ||
-                    python_inference_active() || python_imlib_active() || python_emotion_active()) &&
+                    python_inference_active() || python_imlib_active() || python_emotion_active() || python_jet_active()) &&
                    !python_task_stopped(NULL)) {
                 (void)solar_os_script_wait_for_stop(python_task_stopped, NULL,
                     PYTHON_STOP_WAIT_MS, 20U);
@@ -10237,6 +10277,7 @@ static void python_stop(solar_os_context_t *ctx)
         python_app.device_input = NULL;
     }
     python_emotion_destroy();
+    python_jet_destroy();
     python_gfx_release_target();
 #if SOLAR_OS_PACKAGE_SERVICE_SYNTH
     (void)solar_os_synth_voice_stop(PYTHON_SYNTH_OWNER);
@@ -10268,7 +10309,7 @@ static void python_stop(solar_os_context_t *ctx)
 
 static void python_apply_tui_event(solar_os_context_t *ctx, const python_event_t *event)
 {
-    if (python_emotion_drawing()) return;
+    if (python_emotion_drawing() || python_jet_drawing()) return;
     if (event == NULL) {
         return;
     }
@@ -10350,6 +10391,18 @@ static void python_apply_tui_event(solar_os_context_t *ctx, const python_event_t
     }
 }
 
+#if SOLAR_OS_PACKAGE_SERVICE_EMOTION || SOLAR_OS_PACKAGE_SERVICE_JET
+static void python_apply_streaming_mode(solar_os_context_t *ctx, bool active, bool *ack)
+{
+    solar_os_context_set_streaming_graphics_active(ctx, active);
+    /* Port contexts borrow the physical terminal. Its display task owns paint;
+     * drawing here races that task as soon as a stream releases its claim. */
+    if (!active && python_current_terminal())
+        solar_os_terminal_invalidate_render(python_current_terminal());
+    __atomic_store_n(ack, true, __ATOMIC_RELEASE);
+}
+#endif
+
 static void python_apply_gfx_event(solar_os_context_t *ctx, const python_event_t *event)
 {
     if (event == NULL) {
@@ -10358,13 +10411,17 @@ static void python_apply_gfx_event(solar_os_context_t *ctx, const python_event_t
 
 #if SOLAR_OS_PACKAGE_SERVICE_EMOTION
     if (event->type == PYTHON_EVENT_EMOTION_MODE) {
-        solar_os_context_set_streaming_graphics_active(ctx, event->attr != 0);
-        if (!event->attr && python_current_terminal()) solar_os_terminal_draw(python_current_terminal());
-        __atomic_store_n(&python_runtime_state->emotion_ack, true, __ATOMIC_RELEASE);
+        python_apply_streaming_mode(ctx, event->attr != 0, &python_runtime_state->emotion_ack);
         return;
     }
 #endif
-    if (python_emotion_drawing()) return;
+#if SOLAR_OS_PACKAGE_SERVICE_JET
+    if (event->type == PYTHON_EVENT_JET_MODE) {
+        python_apply_streaming_mode(ctx, event->attr != 0, &python_runtime_state->jet_ack);
+        return;
+    }
+#endif
+    if (python_emotion_drawing() || python_jet_drawing()) return;
     switch (event->type) {
     case PYTHON_EVENT_GFX_BEGIN:
         solar_os_context_set_graphics_active(ctx, true);
@@ -10531,6 +10588,7 @@ static void python_drain_events(solar_os_context_t *ctx)
             python_apply_tui_event(ctx, &event);
             break;
         case PYTHON_EVENT_EMOTION_MODE:
+        case PYTHON_EVENT_JET_MODE:
         case PYTHON_EVENT_GFX_BEGIN:
         case PYTHON_EVENT_GFX_END:
         case PYTHON_EVENT_GFX_CLEAR:
@@ -10639,6 +10697,7 @@ static bool python_event(solar_os_context_t *ctx, const solar_os_event_t *event)
 
     if (event->type == SOLAR_OS_EVENT_TICK) {
         python_drain_events(ctx);
+        python_finish_handoff(ctx);
         return true;
     }
     if (event->type != SOLAR_OS_EVENT_CHAR) {
@@ -10763,10 +10822,36 @@ static void python_emotion_visibility(solar_os_context_t *ctx, bool visible)
     }
     __atomic_store_n(&python_runtime_state->emotion_busy, false, __ATOMIC_RELEASE);
 }
-static void python_emotion_suspend(solar_os_context_t *ctx)
-{ python_emotion_visibility(ctx, false); }
-static void python_emotion_resume(solar_os_context_t *ctx)
-{ python_emotion_visibility(ctx, true); }
+#endif
+
+#if SOLAR_OS_PACKAGE_SERVICE_JET
+static void python_jet_visibility(solar_os_context_t *ctx, bool visible)
+{
+    while (__atomic_exchange_n(&python_runtime_state->jet_busy, true, __ATOMIC_ACQ_REL)) {
+        python_drain_events(ctx); vTaskDelay(1);
+    }
+    __atomic_store_n(&python_runtime_state->jet_suspended, !visible, __ATOMIC_RELEASE);
+    if (solar_os_jet_uses_gfx(python_runtime_state->jet, python_app.session_gfx)) {
+        esp_err_t err;
+        do {
+            err = visible ? solar_os_jet_resume(python_runtime_state->jet) : solar_os_jet_suspend(python_runtime_state->jet);
+            if (err != ESP_OK) { SOLAR_OS_LOGW(TAG,"Jet visibility: %s",esp_err_to_name(err)); vTaskDelay(pdMS_TO_TICKS(20)); }
+        } while (err != ESP_OK && !visible);
+    }
+    python_jet_unlock();
+}
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_EMOTION || SOLAR_OS_PACKAGE_SERVICE_JET
+static void python_scene_visibility(solar_os_context_t *ctx, bool visible) {
+#if SOLAR_OS_PACKAGE_SERVICE_EMOTION
+    python_emotion_visibility(ctx,visible);
+#endif
+#if SOLAR_OS_PACKAGE_SERVICE_JET
+    python_jet_visibility(ctx,visible);
+#endif
+}
+static void python_scene_suspend(solar_os_context_t *ctx) { python_scene_visibility(ctx,false); }
+static void python_scene_resume(solar_os_context_t *ctx) { python_scene_visibility(ctx,true); }
 #endif
 
 const solar_os_app_t solar_os_python_app = {
@@ -10776,9 +10861,9 @@ const solar_os_app_t solar_os_python_app = {
     .flags = SOLAR_OS_APP_FLAG_POINTER_EVENTS | SOLAR_OS_APP_FLAG_AXIS_EVENTS |
         SOLAR_OS_APP_FLAG_GESTURE_EVENTS | SOLAR_OS_APP_FLAG_RESUME_SNAPSHOT,
     .start = python_start,
-#if SOLAR_OS_PACKAGE_SERVICE_EMOTION
-    .suspend = python_emotion_suspend,
-    .resume = python_emotion_resume,
+#if SOLAR_OS_PACKAGE_SERVICE_EMOTION || SOLAR_OS_PACKAGE_SERVICE_JET
+    .suspend = python_scene_suspend,
+    .resume = python_scene_resume,
 #endif
     .stop = python_stop,
     .event = python_event,

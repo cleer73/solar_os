@@ -42,6 +42,10 @@ when `session create` launches an app on a display from a port shell. Apps
 that declare file extensions also receive the shell's normal file and directory
 Tab completion for their arguments.
 
+Discovery reads ELF headers, dynamic symbols and the foreground manifest without
+loading the whole app into memory. Launch validates the complete ELF and checks
+that its manifest matches the session's admitted resource declaration.
+
 Installed foreground apps appear in app discovery. An installed foreground app
 with a built-in app's ID takes precedence while installed. Each app can own one
 session. Different external apps can remain loaded in suspended sessions.
@@ -51,7 +55,6 @@ Resource declaration changes to an app already discovered require a restart.
 App lists and command completion share cached discovery. Package installs and
 removals, FTP changes, and storage commands refresh it on the next lookup.
 Changes made through direct file APIs may take up to 30 seconds to appear.
-The host still validates each ELF when launching it.
 
 The package catalog has application, job, driver and
 [library](native-library.md) categories.
@@ -160,6 +163,12 @@ the module must release buttons and clear position anchors on reset.
 The appended `calendar_read` method returns the host local calendar date and
 time. It does not provide a way to set the host clock. Request a service table
 large enough to include each method before using it.
+
+`audio_open` opens the selected SolarOS playback output, including I2S expansion
+outputs, and returns its sample rate and channel count. `audio_write` accepts
+signed 16-bit PCM in that format. `audio_close` releases the output. An app can
+open and close it to discover the output rate before starting synth audio;
+direct PCM playback and synth playback cannot be open together.
 
 Packed INDEX2 frames use four shades of the current display theme. The appended
 synth methods accept a bounded block size and required sample rate. Callbacks

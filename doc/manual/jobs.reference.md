@@ -680,8 +680,9 @@ job start displayd web0
 
 Starting the job prints a random six-digit access code. Open
 `http://<device>/display`, enter that code, and click the displayed image
-before typing. The browser frontend polls the native 1-bit U8g2 frame up to
-twenty times per second and performs pixel rotation in the browser instead of
+before typing. The browser frontend polls native RGB565 frames on color
+targets and 1-bit U8g2 frames on monochrome targets up to twenty times per
+second. It performs pixel rotation in the browser instead of
 the HTTP server task. It sends bounded key input through the scheduler.
 `Ctrl+]` remains the application-exit key.
 
@@ -691,12 +692,20 @@ API:
 GET  /api/displays
 GET  /api/displays/<target>/frame.pbm
 GET  /api/displays/<target>/frame.raw
+GET  /api/displays/<target>/frame.rgb565
 POST /api/displays/<target>/input
 ```
 
 All API requests require `Authorization: Bearer <code>`. The access code is
 never accepted in the URL. The built-in frontend itself is public so that it
 can prompt for the code, but keeps the supplied code only in page memory.
+
+Display metadata reports `pixel_format` as `rgb565` or `mono1` and supplies
+`frame_rgb565` for color targets. The color endpoint contains native row-major
+RGB565 pixels, most-significant byte first, with `native_width * 2` bytes per
+row and the metadata's rotation. `frame.raw` retains the native 1-bit U8g2
+layout; `frame.pbm` remains a monochrome image. Color targets provide both
+formats. The color endpoint returns 404 for monochrome targets.
 
 Notes:
 
@@ -711,16 +720,23 @@ Notes:
 - The physical mirror reuses the active U8g2 display and does not create
   another display session. The built-in display shell is registered as the
   session attached to `display0`.
-- A consistent 1-bit frame snapshot and same-sized raw transmit buffer are held
-  in PSRAM while the job runs. For the 400x300 Waveshare display they consume
-  30,400 bytes in total. `web0` additionally owns a board-sized U8g2
+- A consistent frame snapshot and raw transmit buffer are held in PSRAM while
+  the job runs. Color targets keep an additional RGB565 snapshot and use a
+  color-sized transmit buffer: together these require four bytes per native
+  pixel plus the 1-bit snapshot. For the monochrome 400x300 Waveshare display,
+  the snapshot and transmit buffer consume 30,400 bytes in total. `web0`
+  additionally owns a board-sized U8g2
   framebuffer (15,200 bytes on Waveshare, 13,824 bytes on the 384x288 PAL
   target). HTTP transmission never holds a display or registry lock.
+- Indexed graphics and full-screen, unscaled RGB565 frames, including Jet
+  scenes, preserve their original colors in the browser. The monochrome
+  endpoints provide dithered snapshots. Partial or scaled RGB565 raster updates
+  are not mirrored.
 - The snapshot is copied into the transmit buffer and released before network
   I/O, so a slow browser cannot prevent newer display frames from being
   published.
-- The browser uses `frame.raw` to avoid per-pixel PBM conversion on the ESP32.
-  The PBM endpoint remains available for simple external clients.
+- The browser uses `frame.rgb565` for color targets and `frame.raw` for
+  monochrome targets. The PBM endpoint remains available for external clients.
 - If a browser is still reading a frame when the display presents again, that
   publication is skipped rather than blocking the display.
 - Input is queued by the HTTP task and dispatched only by the normal SolarOS

@@ -71,8 +71,8 @@ typedef struct {
     esp_err_t result;
     int exit_code;
 #if SOLAR_OS_PACKAGE_SERVICE_AUDIO
-    solar_os_audio_stream_t *audio;
-    solar_os_audio_stream_format_t audio_format;
+    solar_os_stream_handle_t *audio;
+    solar_os_stream_handle_t audio_stream;
 #endif
 #if SOLAR_OS_PACKAGE_SERVICE_SYNTH
     SemaphoreHandle_t synth_mutex;
@@ -647,7 +647,7 @@ static void foreground_audio_close(void)
 #if SOLAR_OS_PACKAGE_SERVICE_AUDIO
     foreground_state_t *state = foreground_current();
     if (foreground_caller() && state->audio) {
-        solar_os_audio_stream_close(state->audio);
+        solar_os_stream_close(state->audio);
         state->audio = NULL;
     }
 #endif
@@ -663,14 +663,26 @@ static int foreground_audio_open(uint32_t *rate, uint8_t *channels)
 #if SOLAR_OS_PACKAGE_SERVICE_SYNTH
     if (state->synth_running) return SOLAR_OS_NATIVE_ERROR_INVALID_STATE;
 #endif
-    esp_err_t err = solar_os_audio_stream_open(state->slot->manifest.id, 0, &state->audio, &state->audio_format);
-    if (err == ESP_OK && (state->audio_format.sample_format != SOLAR_OS_STREAM_AUDIO_S16_LE ||
-        state->audio_format.bits_per_sample != 16U || state->audio_format.channels > 2U ||
-        !state->audio_format.channels || !state->audio_format.sample_rate)) {
+    state->audio_stream = (solar_os_stream_handle_t)SOLAR_OS_STREAM_HANDLE_INIT;
+    const solar_os_stream_open_options_t options = {
+        .direction = SOLAR_OS_STREAM_DIRECTION_SINK,
+        .timeout_ms = 0U,
+        .requested_audio = {
+            .sample_format = SOLAR_OS_STREAM_AUDIO_S16_LE,
+            .bits_per_sample = 16U,
+        },
+    };
+    esp_err_t err = solar_os_audio_open_default(SOLAR_OS_STREAM_DIRECTION_SINK,
+        state->slot->manifest.id, &options, &state->audio_stream, NULL);
+    if (err == ESP_OK) state->audio = &state->audio_stream;
+    const solar_os_stream_audio_format_t *format = &state->audio_stream.audio;
+    if (err == ESP_OK && (format->sample_format != SOLAR_OS_STREAM_AUDIO_S16_LE ||
+        format->bits_per_sample != 16U || format->channels > 2U ||
+        !format->channels || !format->sample_rate)) {
         foreground_audio_close();
         err = ESP_ERR_NOT_SUPPORTED;
     }
-    if (err == ESP_OK) { *rate = state->audio_format.sample_rate; *channels = state->audio_format.channels; }
+    if (err == ESP_OK) { *rate = format->sample_rate; *channels = format->channels; }
     return foreground_result(err);
 #else
     return SOLAR_OS_NATIVE_ERROR_NOT_SUPPORTED;
@@ -684,8 +696,11 @@ static int foreground_audio_write(const int16_t *samples, size_t frames)
 #if SOLAR_OS_PACKAGE_SERVICE_AUDIO
     if (!state->audio) return SOLAR_OS_NATIVE_ERROR_INVALID_STATE;
     if (!samples || frames > 4096U) return SOLAR_OS_NATIVE_ERROR_INVALID_ARGUMENT;
-    return foreground_result(solar_os_audio_stream_write(state->audio, samples,
-        frames * state->audio_format.channels * sizeof(*samples)));
+    const size_t bytes = frames * state->audio->audio.channels * sizeof(*samples);
+    size_t written = 0U;
+    esp_err_t err = solar_os_stream_write(state->audio, samples, bytes, UINT32_MAX, &written);
+    if (err == ESP_OK && written != bytes) err = ESP_ERR_INVALID_SIZE;
+    return foreground_result(err);
 #else
     (void)samples; (void)frames;
     return SOLAR_OS_NATIVE_ERROR_NOT_SUPPORTED;
@@ -797,7 +812,7 @@ static void foreground_worker_cleanup(void *user)
 #endif
 #if SOLAR_OS_PACKAGE_SERVICE_AUDIO
     if (state->audio) {
-        solar_os_audio_stream_close(state->audio);
+        solar_os_stream_close(state->audio);
         state->audio = NULL;
     }
 #endif
@@ -1136,6 +1151,15 @@ static esp_err_t foreground_prepare_slot(const char *path,
     return ESP_OK;
 }
 
+static esp_err_t foreground_discovery_read(void *context, size_t offset,
+                                           void *buffer, size_t length)
+{
+    FILE *file = context;
+    /* Avoid discarding stdio's read buffer for adjacent metadata windows. */
+    if (ftell(file) != (long)offset && fseek(file, (long)offset, SEEK_SET) != 0) return ESP_FAIL;
+    return fread(buffer, 1U, length, file) == length ? ESP_OK : ESP_FAIL;
+}
+
 esp_err_t solar_os_native_foreground_resolve(const char *path,
     const solar_os_app_t **app, char *detail, size_t detail_size)
 {
@@ -1146,16 +1170,12 @@ esp_err_t solar_os_native_foreground_resolve(const char *path,
     if (err != ESP_OK) return err;
     if (metadata.type != SOLAR_OS_STORAGE_ENTRY_FILE || metadata.size_bytes < 52U ||
         metadata.size_bytes > SOLAR_OS_NATIVE_ELF_MAX_BYTES) return ESP_ERR_INVALID_SIZE;
-    uint8_t *data = solar_os_memory_alloc((size_t)metadata.size_bytes,
-        SOLAR_OS_MEMORY_EXTERNAL_REQUIRED, "native.app.inspect");
-    if (!data) return ESP_ERR_NO_MEM;
-    size_t read = 0U;
+    FILE *file = fopen(path, "rb");
+    if (!file) return ESP_FAIL;
     solar_os_native_elf_info_t info;
-    err = solar_os_storage_read_file(path, data, (size_t)metadata.size_bytes, &read);
-    if (err == ESP_OK && read != metadata.size_bytes) err = ESP_FAIL;
-    if (err == ESP_OK) err = solar_os_native_elf_validate(data, read,
+    err = solar_os_native_elf_discover(foreground_discovery_read, file, (size_t)metadata.size_bytes,
         SOLAR_OS_NATIVE_ELF_MACHINE_XTENSA, &info, detail, detail_size);
-    solar_os_memory_free(data);
+    fclose(file);
     if (err != ESP_OK) return err;
     if (!info.foreground) return ESP_OK; /* lifecycle-1 command */
     return foreground_prepare_slot(path, &info, app);

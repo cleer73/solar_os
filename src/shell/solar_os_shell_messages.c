@@ -5,9 +5,11 @@
 #include <string.h>
 
 #include "solar_os_memory.h"
+#include "solar_os_messages_app.h"
 #include "solar_os_messaging.h"
 #include "solar_os_shell_common.h"
 #include "solar_os_shell_io.h"
+#include "solar_os_shell.h"
 #if SOLAR_OS_PACKAGE_SERVICE_SC2_PROVIDER
 #include "solar_os_sc2.h"
 #endif
@@ -26,6 +28,7 @@ static const char * const messages_commands[] = {
 static void messages_usage(solar_os_shell_io_t *io)
 {
     solar_os_shell_io_writeln(io, "usage:");
+    solar_os_shell_io_writeln(io, "  messages (instance, connection, and history TUI)");
     solar_os_shell_io_writeln(io, "  messages status");
     solar_os_shell_io_writeln(io, "  messages classes|instances");
     solar_os_shell_io_writeln(io, "  messages add <class> <instance> <settings...>");
@@ -209,22 +212,20 @@ static void messages_status(solar_os_shell_io_t *io)
     solar_os_shell_io_table_printf(
         io,
         "Conversations: %u/%u\n"
-        "Messages: %u/%u (%u unread)\n"
+        "Messages: %u (%u unread)\n"
+        "RAM cache: %u/%u\n"
         "Pending outbox: %u/%u (volatile)\n"
-        "History: %s, capacity %u, limit %u bytes\n"
+        "History: %s\n"
         "Dropped: messages %" PRIu32 ", outbox %" PRIu32 "\n",
         (unsigned)status.conversations,
         (unsigned)SOLAR_OS_MESSAGING_CONVERSATION_CAPACITY,
         (unsigned)status.messages,
-        (unsigned)SOLAR_OS_MESSAGING_MESSAGE_CAPACITY,
         (unsigned)status.unread,
+        (unsigned)status.cached_messages,
+        (unsigned)SOLAR_OS_MESSAGING_MESSAGE_CAPACITY,
         (unsigned)status.queued_outbox,
         (unsigned)SOLAR_OS_MESSAGING_OUTBOX_CAPACITY,
-        status.persistent ?
-            (status.inbox_backed ? "compact internal" : "full") :
-            "volatile",
-        (unsigned)status.persistent_capacity,
-        (unsigned)status.persistent_limit_bytes,
+        status.persistent ? "disk archive (available disk space)" : "unavailable",
         status.dropped_messages,
         status.dropped_outbox);
     if (status.storage_error != ESP_OK) {
@@ -419,6 +420,12 @@ void solar_os_shell_cmd_messages(solar_os_context_t *ctx,
 {
     solar_os_shell_io_t *io = solar_os_context_shell_io(ctx);
     if (io == NULL) {
+        return;
+    }
+    if (argc == 1) {
+        esp_err_t error = solar_os_context_request_launch(ctx, &solar_os_messages_app, 0, NULL);
+        if (error == ESP_OK) solar_os_shell_session_prepare_foreground_launch(ctx, false);
+        else solar_os_shell_io_printf(io, "messages: launch failed: %s\n", solar_os_shell_error_text(error));
         return;
     }
     if (argc == 2 && strcmp(argv[1], "classes") == 0) {

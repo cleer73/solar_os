@@ -2,6 +2,30 @@
 
 ## 4.x
 
+- **4.16.32** — 2026-10-26 — Added a tabbed messaging manager and direct Chat
+  access from Contacts. Fixed MeshCore send stack usage. Added Pi0cket CL-32
+  e-paper board support alongside RLCD, with held modifiers, session shortcuts,
+  and keyboard wake from sleep. Added the reusable SSD1685 driver with Fastwave,
+  native-app raster output, and pulse refresh by default. Extended `display relax`
+  to all supported e-paper displays. Added named display profiles and improved
+  runtime attachment with resolution and rotation lists. The function generator
+  now fits smaller displays.
+- **4.16.31** — 2026-10-25 — Chat now retains received and sent messages
+  on disk with fast channel switching and access to older history. Added TWAI
+  CAN expansion support and shell controls. Improved BLE keyboard compatibility,
+  fixed large-display rendering, and preserved full color in browser mirroring.
+- **4.16.30** — 2026-10-24 — Faster native-app discovery at boot and reduced
+  alert-tone SRAM use. Added Jet background caching and Python/Lua access to
+  terminal colors. Display snapshots now mirror unscaled full-screen RGB565
+  frames as dithered monochrome images.
+- **4.16.29** — 2026-10-24 — Added the optional `rfscan` graphical radio
+  scanner with live RSSI graphs, fast band sweeps and waterfalls on color and
+  monochrome displays. Added touchscreen tap, double-tap, hold and swipe
+  gestures.
+- **4.16.28** — 2026-10-23 — Added the optional Jet 3D renderer for Python
+  and Lua, with textured meshes, lighting, sprites, particles, shaders and asset
+  loading on color and dithered monochrome displays. Fixed streaming-script
+  terminal redraw and native-app audio on T-Deck and other expansion outputs.
 - **4.16.27** — 2026-10-22 — Added named motor and encoder services with
   shell controls and Python/Lua bindings. DRV8830 motors use normalized signed
   drive commands over named I2C buses, with an optional fault input. Native

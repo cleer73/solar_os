@@ -604,7 +604,7 @@ static const shell_command_t shell_builtin_commands[] = {
     {"contacts", "browse and manage contacts", solar_os_shell_cmd_contacts},
 #endif
 #if SOLAR_OS_PACKAGE_APP_CHAT
-    {"messages", "inspect and send provider-neutral messages", solar_os_shell_cmd_messages},
+    {"messages", "manage messaging instances, connections, and history", solar_os_shell_cmd_messages},
     {"outbox", "list or cancel pending messages", solar_os_shell_cmd_outbox},
 #endif
 #if SOLAR_OS_PACKAGE_SERVICE_IRC
@@ -715,6 +715,9 @@ static const shell_command_t shell_builtin_commands[] = {
 #endif
 #if SOLAR_OS_PACKAGE_SERVICE_MODEM
     {"modem", "cellular modem profiles and status", solar_os_shell_cmd_modem},
+#endif
+#if SOLAR_OS_PACKAGE_CAN_TWAI
+    {"can", "CAN controller and frames", solar_os_shell_cmd_can},
 #endif
 #if SOLAR_OS_PACKAGE_SERVICE_HAPTIC
     {"haptic", "haptic feedback tools", solar_os_shell_cmd_haptic},
@@ -1172,6 +1175,9 @@ static const char * const modem_subcommands[] = {
 static const char * const modem_profile_subcommands[] = {"show", "set", "clear"};
 static const char * const modem_sim_subcommands[] = {"unlock"};
 #endif
+#if SOLAR_OS_PACKAGE_CAN_TWAI
+static const char * const can_subcommands[] = {"list", "status", "send", "recv", "recover", "start"};
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_HAPTIC
 static const char * const haptic_subcommands[] = {"list", "play", "stop"};
 #endif
@@ -1214,6 +1220,9 @@ static const char * const osc_source_types[] = {"stream", "control"};
 #endif
 
 static const char * const radio_subcommands[] = {
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+    "scan",
+#endif
     "status",
     "list",
     "config",
@@ -1822,6 +1831,9 @@ static const char * const path_player_tui[] = {"player", "--tui"};
 #endif
 #if SOLAR_OS_PACKAGE_APP_FUNCGEN
 static const char * const path_funcgen[] = {"funcgen"};
+#endif
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+static const char * const path_rfscan[] = {"rfscan"};
 #endif
 #if SOLAR_OS_PACKAGE_APP_LOGIC
 static const char * const path_logic[] = {"logic"};
@@ -2630,6 +2642,9 @@ static const char * const path_modem_power[] = {"modem", "power"};
 static const char * const path_modem_profile[] = {"modem", "profile"};
 static const char * const path_modem_sim[] = {"modem", "sim"};
 #endif
+#if SOLAR_OS_PACKAGE_CAN_TWAI
+static const char * const path_can[] = {"can"};
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_HAPTIC
 static const char * const path_haptic[] = {"haptic"};
 #endif
@@ -2725,6 +2740,9 @@ static const char * const path_encoder_reset[] = {"encoder", "reset"};
 #endif
 static const char * const path_radio[] = {"radio"};
 static const char * const path_radio_status[] = {"radio", "status"};
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+static const char * const path_radio_scan[] = {"radio", "scan"};
+#endif
 static const char * const path_radio_config[] = {"radio", "config"};
 static const char * const path_radio_config_name[] = {"radio", "config", SHELL_COMPLETION_ANY};
 static const char * const path_radio_config_modulation[] = {"radio", "config", SHELL_COMPLETION_ANY, "modulation"};
@@ -3235,6 +3253,9 @@ static const shell_completion_rule_t shell_completion_rules[] = {
     SHELL_COMPLETION_STATIC(path_logic_pins, logic_rate_values),
     SHELL_COMPLETION_STATIC(path_logic_rate, logic_sample_values),
     SHELL_COMPLETION_STATIC(path_logic_samples, logic_trigger_options),
+#endif
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+    SHELL_COMPLETION_RADIOS(path_rfscan),
 #endif
 #if SOLAR_OS_PACKAGE_APP_SCP
     SHELL_COMPLETION_OPTIONS(path_scp, scp_options),
@@ -3773,6 +3794,9 @@ static const shell_completion_rule_t shell_completion_rules[] = {
     SHELL_COMPLETION_STATIC(path_modem_profile, modem_profile_subcommands),
     SHELL_COMPLETION_STATIC(path_modem_sim, modem_sim_subcommands),
 #endif
+#if SOLAR_OS_PACKAGE_CAN_TWAI
+    SHELL_COMPLETION_STATIC(path_can, can_subcommands),
+#endif
 #if SOLAR_OS_PACKAGE_SERVICE_HAPTIC
     SHELL_COMPLETION_STATIC(path_haptic, haptic_subcommands),
 #endif
@@ -3841,6 +3865,9 @@ static const shell_completion_rule_t shell_completion_rules[] = {
 #if SOLAR_OS_PACKAGE_SERVICE_RADIO
     SHELL_COMPLETION_STATIC(path_radio, radio_subcommands),
     SHELL_COMPLETION_RADIOS(path_radio_status),
+#if SOLAR_OS_PACKAGE_APP_RFSCAN
+    SHELL_COMPLETION_RADIOS(path_radio_scan),
+#endif
     SHELL_COMPLETION_RADIOS(path_radio_config),
     SHELL_COMPLETION_STATIC(path_radio_config_name, radio_config_fields),
     SHELL_COMPLETION_STATIC(path_radio_config_modulation, radio_modulation_values),
@@ -8221,13 +8248,28 @@ static void shell_completion_emit_expansion_spec(
 
     if (spec->allowed_value_count > 0) {
         for (size_t i = 0; i < spec->allowed_value_count; i++) {
-            snprintf(candidate, sizeof(candidate), "%s=0x%02x", spec->key, spec->allowed_values[i]);
+            snprintf(candidate, sizeof(candidate),
+                     spec->kind == SOLAR_OS_EXPANSION_BINDING_I2C_ADDRESS ?
+                         "%s=0x%02x" : "%s=%d",
+                     spec->key, spec->allowed_values[i]);
             shell_completion_emit(state, candidate);
         }
         return;
     }
 
     switch (spec->kind) {
+    case SOLAR_OS_EXPANSION_BINDING_PARAMETER:
+        if (spec->has_value_range && spec->max_value >= spec->min_value &&
+            (int64_t)spec->max_value - spec->min_value < 16) {
+            for (int64_t value = spec->min_value; value <= spec->max_value; value++) {
+                snprintf(candidate, sizeof(candidate), "%s=%d", spec->key, (int)value);
+                shell_completion_emit(state, candidate);
+            }
+        } else {
+            snprintf(candidate, sizeof(candidate), "%s=", spec->key);
+            shell_completion_emit(state, candidate);
+        }
+        break;
     case SOLAR_OS_EXPANSION_BINDING_I2C_BUS:
         for (size_t i = 0; i < solar_os_expansion_i2c_bus_count(); i++) {
             solar_os_expansion_i2c_bus_t bus;
@@ -8358,10 +8400,11 @@ static bool shell_complete_expansion_argument(solar_os_context_t *ctx,
         char completed[SHELL_INPUT_MAX];
         snprintf(completed,
                  sizeof(completed),
-                 "%.*s%s ",
+                 "%.*s%s%s",
                  (int)token_start,
                  shell_session(ctx)->input,
-                 state.match);
+                 state.match,
+                 solar_os_shell_completion_needs_trailing_space(state.match) ? " " : "");
         shell_replace_input(ctx, completed);
         return true;
     }

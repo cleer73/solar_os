@@ -522,6 +522,27 @@ esp_err_t solar_os_radio_get_status(const char *name, solar_os_radio_status_t *s
     return ESP_OK;
 }
 
+esp_err_t solar_os_radio_read_rssi(const char *name, int16_t *dbm)
+{
+    if (!radio_name_valid(name) || dbm == NULL) return ESP_ERR_INVALID_ARG;
+    ESP_RETURN_ON_ERROR(radio_ensure_init(), "radio", "init failed");
+    /* Keep the registration alive through this short, read-only driver call.
+     * Driver mutexes serialize it with the owner's receive/transmit calls. */
+    xSemaphoreTake(radio_mutex, portMAX_DELAY);
+    const int index = radio_find_index_locked(name);
+    esp_err_t ret = ESP_ERR_NOT_FOUND;
+    if (index >= 0) {
+        radio_device_t *device = &radio_devices[index];
+        ret = ESP_ERR_NOT_SUPPORTED;
+        if (device->ops != NULL && device->ops->read_rssi != NULL &&
+            (device->info.features & SOLAR_OS_RADIO_FEATURE_LIVE_RSSI)) {
+            ret = device->ops->read_rssi(device->ctx, dbm);
+        }
+    }
+    xSemaphoreGive(radio_mutex);
+    return ret;
+}
+
 esp_err_t solar_os_radio_claim(const char *name,
                                const char *owner,
                                solar_os_radio_handle_t *handle)
@@ -668,6 +689,38 @@ esp_err_t solar_os_radio_handle_get_status(const solar_os_radio_handle_t *handle
     }
     *status = current;
     return ESP_OK;
+}
+
+esp_err_t solar_os_radio_handle_tune_rx(const solar_os_radio_handle_t *handle,
+                                       uint32_t frequency_hz, uint32_t *settle_ms)
+{
+    if (frequency_hz == 0 || settle_ms == NULL) return ESP_ERR_INVALID_ARG;
+    ESP_RETURN_ON_ERROR(radio_ensure_init(), "radio", "init failed");
+    xSemaphoreTake(radio_mutex, portMAX_DELAY);
+    if (!radio_handle_operation_acquire_locked(handle)) {
+        xSemaphoreGive(radio_mutex);
+        return ESP_ERR_INVALID_ARG;
+    }
+    const int index = handle->index;
+    const uint32_t token = handle->token;
+    radio_device_t *device = &radio_devices[index];
+    const solar_os_radio_ops_t *ops = device->ops;
+    void *ctx = device->ctx;
+    bool supported = (device->info.features & SOLAR_OS_RADIO_FEATURE_FAST_TUNE) != 0;
+    xSemaphoreGive(radio_mutex);
+    esp_err_t err = ESP_ERR_NOT_SUPPORTED;
+    if (supported && ops != NULL && ops->tune_rx != NULL) {
+        err = ops->tune_rx(ctx, frequency_hz, settle_ms);
+    }
+    xSemaphoreTake(radio_mutex, portMAX_DELAY);
+    if (err == ESP_OK && radio_devices[index].active &&
+        radio_devices[index].claimed && radio_devices[index].token == token) {
+        radio_devices[index].status.config.frequency_hz = frequency_hz;
+        radio_devices[index].status.state = SOLAR_OS_RADIO_STATE_RX;
+    }
+    radio_handle_operation_release_locked(index, token);
+    xSemaphoreGive(radio_mutex);
+    return err;
 }
 
 esp_err_t solar_os_radio_configure(const char *name, const solar_os_radio_config_t *config)
@@ -1444,6 +1497,10 @@ const char *solar_os_radio_feature_name(solar_os_radio_feature_t feature)
         return "packet";
     case SOLAR_OS_RADIO_FEATURE_RSSI:
         return "rssi";
+    case SOLAR_OS_RADIO_FEATURE_LIVE_RSSI:
+        return "live_rssi";
+    case SOLAR_OS_RADIO_FEATURE_FAST_TUNE:
+        return "fast_tune";
     case SOLAR_OS_RADIO_FEATURE_SNR:
         return "snr";
     case SOLAR_OS_RADIO_FEATURE_TX_POWER:
@@ -1553,6 +1610,8 @@ void solar_os_radio_features_format(solar_os_radio_features_t features,
     const solar_os_radio_feature_t values[] = {
         SOLAR_OS_RADIO_FEATURE_PACKET,
         SOLAR_OS_RADIO_FEATURE_RSSI,
+        SOLAR_OS_RADIO_FEATURE_LIVE_RSSI,
+        SOLAR_OS_RADIO_FEATURE_FAST_TUNE,
         SOLAR_OS_RADIO_FEATURE_SNR,
         SOLAR_OS_RADIO_FEATURE_TX_POWER,
         SOLAR_OS_RADIO_FEATURE_RX_GAIN,

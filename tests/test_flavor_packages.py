@@ -39,6 +39,21 @@ class FlavorPackagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid flavor name"):
             generate_flavor_config.public_flavor_name("full", "beta flavor")
 
+    def test_radio_scanner_requires_graphics_and_radio_service(self):
+        _, _, groups, packages = self.resolve("full")
+        self.assertTrue(groups["radio_scanner"])
+        for name in ("app_rfscan", "service_radio_scan", "service_radio", "service_audio"):
+            self.assertTrue(packages[name], name)
+        _, capable = generate_flavor_config.apply_board_capability_pruning(
+            self.catalog, groups, packages, {"gfx", "expansion_spi"})
+        self.assertTrue(capable["app_rfscan"])
+        _, headless = generate_flavor_config.apply_board_capability_pruning(
+            self.catalog, groups, packages, {"expansion_spi"})
+        self.assertFalse(headless["app_rfscan"])
+        for flavor in ("classic", "writerdeck"):
+            _, _, _, optional = self.resolve(flavor)
+            self.assertFalse(optional["app_rfscan"])
+
     def test_games_are_only_in_full(self):
         built_in_flavors = ("full", "classic", "writerdeck")
         for flavor in built_in_flavors:
@@ -291,6 +306,22 @@ class FlavorPackagesTest(unittest.TestCase):
         )
         self.assertFalse(unavailable["expansion_uc8279"])
 
+    def test_ssd1685_expansion_profile_and_package(self):
+        _, _, groups, packages = self.resolve("full")
+        self.assertTrue(groups["ssd1685"])
+        self.assertTrue(packages["expansion_ssd1685"])
+        for caps, enabled in (
+            ({"gfx", "spi", "expansion_spi", "expansion_gpio"}, True),
+            ({"gfx", "spi", "expansion_spi"}, False),
+            ({"spi", "expansion_spi", "expansion_gpio"}, False),
+        ):
+            _, selected = generate_flavor_config.apply_board_capability_pruning(
+                self.catalog, groups, packages, caps)
+            self.assertEqual(selected["expansion_ssd1685"], enabled)
+        for flavor in ("classic", "writerdeck"):
+            _, _, _, optional = self.resolve(flavor)
+            self.assertFalse(optional["expansion_ssd1685"])
+
     def test_uc8179_expansion_profile_and_package(self):
         _, _, groups, packages = self.resolve("full")
         self.assertTrue(groups["uc8179"])
@@ -455,6 +486,21 @@ class FlavorPackagesTest(unittest.TestCase):
         sources = generate_flavor_config.collect_sources(self.catalog, groups, selected)
         self.assertIn("drivers/rtc_ds3231.c", sources)
         self.assertIn("services/solar_os_ds3231_driver.c", sources)
+
+    def test_cl32_epd_keeps_shared_pulse_sources_in_writerdeck(self):
+        from solaros_board_manifest import load_board_manifest, load_driver_catalog, required_packages
+        manifest_dir = REPOSITORY / "boards/manifests"
+        board = load_board_manifest(manifest_dir / "cl32_epd.toml", manifest_dir)
+        drivers = load_driver_catalog(REPOSITORY / "boards/expansion_drivers.toml")
+        _, _, groups, packages = self.resolve("writerdeck")
+        selected = generate_flavor_config.enable_required_packages(
+            self.catalog, packages, set(required_packages(board, drivers)))
+        groups, selected = generate_flavor_config.apply_board_capability_pruning(
+            self.catalog, groups, selected, set(board["build"]["capabilities"]))
+        sources = generate_flavor_config.collect_sources(self.catalog, groups, selected)
+        for source in ("epd_ssd1685", "epd_ssd1685_waveform", "epd_pixel_budget", "epd_scan_worker"):
+            self.assertIn(f"drivers/{source}.c", sources)
+        self.assertNotIn("drivers/epd_ssd1683.c", sources)
 
     def test_unknown_board_required_package_is_rejected(self):
         _, _, _, packages = self.resolve("writerdeck")
@@ -644,6 +690,7 @@ class FlavorPackagesTest(unittest.TestCase):
             "driver_display_ili9341",
             "driver_display_st7796",
             "expansion_ssd1683",
+            "expansion_ssd1685",
             "expansion_uc8179",
             "expansion_uc8279",
         )

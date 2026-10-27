@@ -39,6 +39,7 @@ where the board supports them:
 | `vision` | Decode QR codes and process images. | [Computer vision](vision.md) |
 | `inference` | Run resident models on ESP32-S3 with PSRAM. | [Model inference](inference.md) |
 | `inference_backend` | Include the ESP-DL engine in firmware; otherwise install the `espdl` library. | [Model inference](inference.md) |
+| `jet` | Include the script/display frontend for the separately installed Jet library. Also selected by Python and Lua on supported boards. | [Jet 3D renderer](jet.md) |
 | `zoo` | Browse and install model bundles. | [Zoo](apps.md#zoo) |
 | `pipelines` | Process images or video in the background. Also select the desired processor. | [Image pipelines](pipelines.md) |
 | `servo` | Control calibrated positional servos. | [Servo outputs](servo.md) |

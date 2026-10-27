@@ -136,14 +136,15 @@ The display-shell app exit chord is `CTRL+ALT+DEL`. Port shells use `Ctrl+]`.
 | `contacts` | `contacts block <contact-id> [endpoint-id]` | Block one endpoint or every endpoint on a contact. |
 | `contacts` | `contacts remove <contact-id>` | Remove a contact and all its endpoints. |
 | `contacts` | `contacts link <target-contact-id> <source-contact-id>` | Move the source endpoints into the target and remove the source contact. |
-| `messages` | `messages status` | Show bounded-store, persistence, drop, and live provider state. |
+| `messages` | `messages` | Open the tabbed instance, connection, and message manager. |
+| `messages` | `messages status` | Show archive, persistence, drop, and live provider state. |
 | `messages` | `messages conversations` | List provider-neutral conversations and unread/security state. |
 | `messages` | `messages list <conversation-id>` | List retained messages and their stable hexadecimal IDs. |
 | `messages` | `messages send <conversation-id> <text> [--allow-untrusted]` | Queue an outbound message; discovered direct endpoints require the explicit flag. |
 | `messages` | `messages read <conversation-id>` | Mark a conversation and its linked Inbox entries read. |
 | `messages` | `messages delete <message-id>` | Delete one retained message and its linked Inbox projection by hexadecimal ID. |
 | `messages` | `messages clear <instance\|instance-id\|all>` | Clear retained history and owned Inbox projections, including for removed instances. Unrelated Inbox sources remain. |
-| `messages` | `messages remove <instance\|instance-id>` | Remove a configurable provider instance, connection credentials, pending sends, history and Inbox notifications. Built-in instances are protected. |
+| `messages` | `messages remove <instance\|instance-id>` | Remove a provider instance, connection credentials, pending sends, history and Inbox notifications. |
 | `messages` | `messages outbox` | List pending outbound requests in queue order. |
 | `messages` | `messages cancel <message-id>` | Cancel a queued outbound message by the hexadecimal ID printed by `list` or `send`. |
 | `outbox` | `outbox [list]` | List pending outbound messages. Sent and failed messages remain in conversation history, not Outbox. |
@@ -293,7 +294,7 @@ job for periodic polling.
 | `input` | `input calibrate <source> [set <min-x> <max-x> <min-y> <max-y> <width> <height>\|reset]` | Show, save, or reset coordinate calibration for an absolute-pointer source. |
 | `input` | `input emit <key\|chord>` | Emit a local key tap, such as `RIGHT`, `ALT+RIGHT`, `ENTER`, or one literal character, through the normal input-focus path. |
 | `input` | `input keymap [<source> [show\|load <path>\|reset]]` | List source mapping support, inspect a map, load a validated JSON file, or restore a registered source profile. See [source keymaps](input.keymap.md). |
-| `gesture` | `gesture [status]` | List gesture-capable input sources, readiness, and the gesture kinds each source advertises. |
+| `gesture` | `gesture [status]` | List gesture-capable sensors and touchscreens, readiness, and the gesture kinds each source advertises. |
 | `gesture` | `gesture bind source=<name\|*> gesture=<name> [direction=<name\|*>] [cooldown=<ms>] -- <command> [args...]` | Configure a volatile gesture-to-command rule for the `gestures` job. |
 | `gesture` | `gesture bindings` | Show listener state and list volatile gesture bindings, trigger counts, queue drops, cooldowns, and commands. |
 | `gesture` | `gesture unbind <id\|all>` | Remove one volatile gesture binding or all of them. |
@@ -463,7 +464,7 @@ Profiles:
 
 Suspend is different from explicit light sleep. It keeps the runtime, radios,
 background jobs, Inbox notifications, and audio active while the primary
-display is off. It temporarily uses the `lowpower` profile and prevents the
+display is suspended. It temporarily uses the `lowpower` profile and prevents the
 idle policy from entering explicit light sleep. Another press of KEY,
 a new keypress from a built-in or attached keyboard, or a BLE keyboard reconnect
 resumes the display and restores the selected profile. Releasing a held key or
@@ -474,17 +475,26 @@ the selected profile, effective profile, and suspend state.
 Without `short` or `long`, an action changes the short press for compatibility.
 
 `deepsleep` is a standalone command. It turns off the ESP32 radios and enters
-ESP32 deep sleep after configuring the same KEY, compatible RTC interrupt, and
+ESP32 deep sleep after configuring the same board wake input, compatible RTC interrupt, and
 next scheduled timer wake sources used by explicit light sleep. KEY, an armed
 RTC or scheduled timer, and RESET start a normal fresh boot; running jobs,
 sessions, and RAM state are not restored. BLE and Wi-Fi are off and cannot wake
 the device. This is not a hardware power-off: the board remains powered, and a
 separate board power control must still be used to remove its supply.
 
+On Pi0cket CL-32, the built-in keyboard resumes suspend and wakes light or
+deep sleep through the companion controller's shared interrupt. USB-power and
+charging changes can also wake the board. Release held keys before sleeping.
+Keyboard-equipped boards allow up to three seconds for held keys and the wake
+interrupt to settle; sleep is cancelled if the input remains active.
+
 `suspend` shows the SolarOS splash with **Suspended**; `sleep` and `deepsleep`
 show **Sleeping**. The splash replaces the current contents on every attached
 display before the transition, including e-paper displays that retain their
 image. Waking from suspend or light sleep restores the previous session.
+The CL-32 reflective LCD turns off during suspend after presenting the splash
+and restores the selected display power policy on resume. Unlike e-paper, it
+cannot retain the image after its supply is removed.
 
 `shutdown` works from display and port shells on every target. It stops new
 app and job launches, closes sessions, stops background jobs and radios,
@@ -495,7 +505,7 @@ Cleanup failures are reported and prevent power-down. Use RESET or cycle power
 to restart after a cleanup failure.
 
 Shutdown uses the board's declared hardware power-off provider when available:
-the CL32 controller, AXP2101 on Waveshare ESP32-S3-ePaper-3.97, and BQ25896
+the Pi0cket CL-32 controller, AXP2101 on Waveshare ESP32-S3-ePaper-3.97, and BQ25896
 battery disconnect on T-LoRa-Pager. Xteink X4 Pro drops its peripheral latch;
 T-Deck Plus and ThinkNode M9 turn off their shared display/peripheral rail.
 Other targets enter ESP32 deep sleep. USB power can keep a board
@@ -585,10 +595,10 @@ percentage from 0 to 100 (0 turns them off), or `follow` to track the primary
 display's configured brightness. Independent brightness defaults to 50%; both
 the numeric setting and follow mode are saved across reboots. Follow mode
 requires display brightness control. The keyboard backlights on T-Deck Plus,
-T-LoRa-Pager, ThinkNode M9, and CL-32 use this control. Unsupported hardware
+T-LoRa-Pager, ThinkNode M9, and Pi0cket CL-32 use this control. Unsupported hardware
 reports `unsupported`. Suspend and explicit sleep temporarily turn auxiliary
 lighting off; resume restores the selected setting. Shutdown also turns it off.
-The CL-32 companion controller retains its keyboard-activity timeout and fade.
+The Pi0cket CL-32 companion controller retains its keyboard-activity timeout and fade.
 T-Deck Alt+B toggles the light for the current boot without typing a character
 or saving changes across reboots. Suspend and light sleep preserve this on/off
 choice. Toggling on from a configured level of zero uses 50%. The query shows
@@ -598,7 +608,7 @@ the configured brightness, including while the light is toggled off.
 `setterm backlight` for the screen must use `setterm brightness` instead.
 
 `setterm keyrate` configures the shared repeat policy for BLE, PS/2, CardKB,
-and the CL-32 keyboard, fixed board buttons, `gpio-keys`, and ADC D-pads.
+and the Pi0cket CL-32 keyboard, fixed board buttons, `gpio-keys`, and ADC D-pads.
 Analog joysticks publish axes and do not generate key events.
 The value is stored in NVS and is available on builds without BLE.
 
@@ -1283,6 +1293,7 @@ available for the compiled board.
 | `osc` | `osc bind <name> control <control> <address> [rate=hz] [send=change\|always]` | Publish one normalized named control as an OSC float32 value from `0.0..1.0`. |
 | `osc` | `osc unbind <name>` or `osc clear` | Remove one outbound binding or all outbound bindings. |
 | `radio` | `radio` | Open the packet-radio TUI with live status and editable common config. |
+| `radio` | `radio scan [name]` | Open the graphical `rfscan` app when included in the firmware. |
 | `radio` | `radio status|list` | List packet radios registered by expansion drivers. |
 | `radio` | `radio status <name>` | Show one packet radio, its capabilities, state, and current config. |
 | `radio` | `radio config <name> [field value]` | Show or update common packet-radio configuration. |
@@ -1318,6 +1329,11 @@ available for the compiled board.
 | `modem` | `modem connect\|disconnect [name]` | Bring the saved cellular network connection and PPP interface up or down. |
 | `modem` | `modem sim unlock <pin> [name]` | Enter a required SIM PIN without persisting it. |
 | `modem` | `modem at <quoted-command> [name] [timeout-ms]` | Send one validated AT command and print the complete response. |
+| `can` | `can [list]` | List the attached classic CAN controller and bitrate. See [Classic CAN](hardware.can.md). |
+| `can` | `can status <name>` | Show CAN state, queues, and error counters. |
+| `can` | `can send <name> <id> <hex-or-> [ext] [rtr]` | Queue a standard, extended, or remote CAN frame with up to eight bytes. |
+| `can` | `can recv <name> [timeout-ms]` | Read one CAN frame, waiting at most 1000 ms. |
+| `can` | `can recover <name>` / `can start <name>` | Start bus-off recovery, or restart after recovery reaches stopped state. |
 | `haptic` | `haptic [list]` | List registered haptic devices, their concrete drivers, and supported effect range. |
 | `haptic` | `haptic play <effect> [name]` | Play one numbered effect on a haptic device. |
 | `haptic` | `haptic stop [name]` | Stop the active haptic effect. |
@@ -1435,9 +1451,10 @@ or Escape stops it between refreshes. The command returns to the shell after
 restoring the saved image and previous refresh mode, including pulse tuning.
 Sleep and shutdown interrupt recovery before the power transition.
 
-Recovery is supported on the CrowPanel 5.79-inch/SolarWriter dual-SSD1683,
-Waveshare 4.2-inch V2, and Elecrow 4.2-inch green-sticker profiles. Other display
-profiles return unsupported. It claims the whole physical target; close apps
+Recovery is available on all built-in EPD drivers: every SSD1683 profile,
+SSD1685, SSD1677, UC8179, and UC8279, including the X4 display wrapper and
+runtime-attached panels. LCD, RLCD, and other display types return unsupported.
+It claims the whole physical target; close apps
 or remove layouts that own it first. A display-shell session can recover its
 own target without closing that session. Ordinary presentation and pulse scans
 are suspended during recovery. Completion reports black/white cycles, not a
@@ -1491,8 +1508,14 @@ initial cleanup and does not schedule periodic full refreshes. `refresh=fast`
 forces a fast full-frame waveform and `refresh=full` forces the full cleanup
 waveform on every changed frame.
 
-The Elecrow 5.79-inch dual-SSD1683, Elecrow 4.2-inch green-sticker, and
-Waveshare 4.2-inch V2/revision-2.2 profiles also accept the optional
+SSD1685 targets default to asynchronous `refresh=pulse` and also provide
+factory `refresh=auto|partial|full` modes. In auto mode,
+`cleanup-every=<1..128>` sets the number of partial updates before a full OTP
+cleanup (default 64). `refresh=partial` bypasses periodic cleanup;
+`refresh=fast` is an alias for it.
+
+The Elecrow 5.79-inch dual-SSD1683, Elecrow 4.2-inch green-sticker,
+Waveshare 4.2-inch V2/revision-2.2, and SSD1685 GDEY029T71H profiles provide the
 `refresh=pulse` monochrome mode. `display mode <target> drive-cycles=<1..32>`
 sets the per-pixel budget, `pulse-frames=<1..32>` sets each drive phase's scan
 duration, `waveform-fr=<1..12>` selects a raw frame-rate code (the dual SSD1683
@@ -1508,12 +1531,13 @@ the image count. At a limit, the asynchronous worker schedules a native cleanup
 without waiting for another presentation or for all pending pixels to settle.
 Mode output includes the policy, peak/limit drive cycles, and changed-image age.
 These counters estimate accumulated activity and do not measure ghosting.
-These runtime settings apply only to pulse mode and are listed by
+These runtime settings apply to pulse mode, with SSD1685's `cleanup-every`
+also controlling its native auto-mode cleanup interval. They are listed by
 `display mode <target>`. `pulse-scan=sync` completes a presentation's pending
 cycles before returning. `pulse-scan=async` runs one cycle per scan in a
 persistent worker and accepts new targets while earlier pixels settle.
 `pulse-period=<10..1000>` requests the minimum new-image interval in milliseconds;
-the dual-SSD1683 and Elecrow green-sticker profiles instead accept 67–1000 ms.
+the dual-SSD1683, Elecrow green-sticker, and SSD1685 profiles instead accept 67–1000 ms.
 Settling drives run as BUSY permits without consuming new-image slots. A new
 target can replace the current target between drives when its image slot is due;
 unchanged pixels keep their remaining budgets. Identical submissions do not
@@ -1525,6 +1549,9 @@ count includes native baseline snapshots; submitted/coalesced counts also appear
 `pulse-power=<cycle,hold>` selects supply cycling or retention during settling,
 `pulse-ramp=<normal,fast>` selects booster duration, and
 `pulse-spi-khz=<100..20000>` overrides the SPI clock only for pulse operation.
+SSD1685 limits pulse SPI to 100–10000 kHz and also exposes `invert=<false,true>`
+for polarity testing; its custom waveform requires panel validation. See the
+[SSD1685 reference](expansion.reference.md#gdey029t71h-e-paper-ssd1685) for defaults.
 Elecrow 5.79-inch defaults are asynchronous, 67 ms new-image interval, retained supplies, fast
 booster ramp, 20000 kHz pulse SPI, 6 drive cycles, 8 scan frames, FR code 4,
 and adaptive cleanup with a baseline of 64. This profile uses the Fastwave

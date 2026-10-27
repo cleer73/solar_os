@@ -197,7 +197,19 @@ static esp_err_t op_receive(void *ctx, solar_os_radio_packet_t *packet, uint32_t
     return sx1262_receive((sx1262_t *)ctx, packet, timeout_ms);
 }
 
+static esp_err_t op_read_rssi(void *ctx, int16_t *dbm)
+{
+    return sx1262_read_rssi((sx1262_t *)ctx, dbm);
+}
+
+static esp_err_t op_tune_rx(void *ctx, uint32_t hz, uint32_t *settle_ms)
+{
+    return sx1262_tune_rx((sx1262_t *)ctx, hz, settle_ms);
+}
+
 static const solar_os_radio_ops_t radio_ops = {
+    .tune_rx = op_tune_rx,
+    .read_rssi = op_read_rssi,
     .configure = op_configure,
     .set_state = op_set_state,
     .get_status = op_get_status,
@@ -254,6 +266,8 @@ esp_err_t solar_os_sx1262_attach(const char *name,
             .modulations = SOLAR_OS_RADIO_MODULATION_LORA | SOLAR_OS_RADIO_MODULATION_GFSK,
             .features = SOLAR_OS_RADIO_FEATURE_PACKET |
                 SOLAR_OS_RADIO_FEATURE_RSSI |
+                SOLAR_OS_RADIO_FEATURE_LIVE_RSSI |
+                SOLAR_OS_RADIO_FEATURE_FAST_TUNE |
                 SOLAR_OS_RADIO_FEATURE_SNR |
                 SOLAR_OS_RADIO_FEATURE_TX_POWER |
                 SOLAR_OS_RADIO_FEATURE_RX_GAIN |

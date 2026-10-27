@@ -40,6 +40,7 @@
 #define SX1262_OP_GET_STATUS 0xC0U
 #define SX1262_OP_GET_RX_BUFFER_STATUS 0x13U
 #define SX1262_OP_GET_PACKET_STATUS 0x14U
+#define SX1262_OP_GET_RSSI_INST 0x15U
 #define SX1262_OP_WRITE_REGISTER 0x0DU
 #define SX1262_OP_WRITE_BUFFER 0x0EU
 #define SX1262_OP_READ_BUFFER 0x1EU
@@ -48,6 +49,7 @@
 #define SX1262_OP_SET_STOP_RX_TIMER_ON_PREAMBLE 0x9FU
 
 #define SX1262_STANDBY_RC 0x00U
+#define SX1262_STANDBY_XOSC 0x01U
 #define SX1262_REGULATOR_DC_DC 0x01U
 #define SX1262_TCXO_VOLTAGE_3V0 0x06U
 #define SX1262_TCXO_DELAY_15625NS_UNITS 320U /* ~5 ms startup delay */
@@ -376,6 +378,27 @@ static uint8_t sx1262_lora_bandwidth_code(uint32_t bw_hz)
     return 0x06U; /* 500 kHz */
 }
 
+static bool sx1262_gfsk_bandwidth(uint32_t requested, uint32_t *actual, uint8_t *code)
+{
+    /* Semtech sx126x_gfsk_bw_t encodings; choose the narrowest filter that
+     * covers the requested bandwidth. Do not silently use a fixed filter. */
+    static const uint32_t widths[] = {
+        4800, 5800, 7300, 9700, 11700, 14600, 19500, 23400, 29300,
+        39000, 46900, 58600, 78200, 93800, 117300, 156200, 187200,
+        234300, 312000, 373600, 467000,
+    };
+    static const uint8_t codes[] = {
+        0x1f, 0x17, 0x0f, 0x1e, 0x16, 0x0e, 0x1d, 0x15, 0x0d,
+        0x1c, 0x14, 0x0c, 0x1b, 0x13, 0x0b, 0x1a, 0x12,
+        0x0a, 0x19, 0x11, 0x09,
+    };
+    if (requested == 0) requested = 234300U;
+    for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+        if (widths[i] >= requested) { *actual = widths[i]; *code = codes[i]; return true; }
+    }
+    return false;
+}
+
 static void sx1262_image_calibration_bytes(uint32_t freq_hz, uint8_t *freq1, uint8_t *freq2)
 {
     if (freq_hz >= 902000000U && freq_hz <= 928000000U) {
@@ -389,9 +412,12 @@ static void sx1262_image_calibration_bytes(uint32_t freq_hz, uint8_t *freq1, uin
     } else if (freq_hz >= 430000000U && freq_hz <= 440000000U) {
         *freq1 = 0x6BU; *freq2 = 0x6FU; /* 433 MHz ISM */
     } else {
-        /* Fall back to the widest documented band; calibration will be
-         * less accurate outside a known plan but should not fail outright. */
-        *freq1 = 0xE1U; *freq2 = 0xE9U;
+        /* Calibrate a local window for frequencies outside the common plans.
+         * Parameters are 4 MHz steps; use odd endpoints around the carrier. */
+        uint32_t lower = (freq_hz - 4000000U) / 4000000U;
+        uint32_t upper = (freq_hz + 4000000U + 3999999U) / 4000000U;
+        *freq1 = (uint8_t)((lower & 1U) ? lower : lower - 1U);
+        *freq2 = (uint8_t)((upper & 1U) ? upper : upper + 1U);
     }
 }
 
@@ -422,6 +448,13 @@ static bool sx1262_is_lora(const solar_os_radio_config_t *config)
 esp_err_t sx1262_configure(sx1262_t *dev, const solar_os_radio_config_t *config)
 {
     if (dev == NULL || config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t gfsk_bandwidth_hz = 0;
+    uint8_t gfsk_bandwidth_code = 0;
+    if (config->frequency_hz < 150000000U || config->frequency_hz > 960000000U ||
+        (!sx1262_is_lora(config) &&
+         !sx1262_gfsk_bandwidth(config->rx_bandwidth_hz, &gfsk_bandwidth_hz, &gfsk_bandwidth_code))) {
         return ESP_ERR_INVALID_ARG;
     }
     if (config->rx_gain != SOLAR_OS_RADIO_RX_GAIN_DEFAULT &&
@@ -465,6 +498,10 @@ esp_err_t sx1262_configure(sx1262_t *dev, const solar_os_radio_config_t *config)
         sx1262_image_calibration_bytes(config->frequency_hz, &freq1, &freq2);
         const uint8_t params[2] = {freq1, freq2};
         err = sx1262_transact(dev, SX1262_OP_CALIBRATE_IMAGE, params, sizeof(params), NULL, 0);
+        if (err == ESP_OK) {
+            dev->image_cal_min_hz = (uint32_t)freq1 * 4000000U;
+            dev->image_cal_max_hz = (uint32_t)freq2 * 4000000U;
+        }
     }
     if (err == ESP_OK) {
         const uint32_t freq_reg =
@@ -501,7 +538,7 @@ esp_err_t sx1262_configure(sx1262_t *dev, const solar_os_radio_config_t *config)
             const uint8_t params[8] = {
                 (uint8_t)(br_reg >> 16), (uint8_t)(br_reg >> 8), (uint8_t)(br_reg & 0xFFU),
                 0x00U, /* no pulse shaping */
-                0x0FU, /* ~234.3 kHz Rx bandwidth: safe wideband default */
+                gfsk_bandwidth_code,
                 (uint8_t)(fdev_reg >> 16), (uint8_t)(fdev_reg >> 8), (uint8_t)(fdev_reg & 0xFFU),
             };
             err = sx1262_transact(dev, SX1262_OP_SET_MODULATION_PARAMS, params, sizeof(params), NULL, 0);
@@ -576,6 +613,7 @@ esp_err_t sx1262_configure(sx1262_t *dev, const solar_os_radio_config_t *config)
     }
     if (err == ESP_OK) {
         dev->config = *config;
+        if (!lora) dev->config.rx_bandwidth_hz = gfsk_bandwidth_hz;
         if (dev->config.rx_gain == SOLAR_OS_RADIO_RX_GAIN_DEFAULT) {
             dev->config.rx_gain = SOLAR_OS_RADIO_RX_GAIN_POWER_SAVING;
         }
@@ -652,6 +690,74 @@ esp_err_t sx1262_get_status(sx1262_t *dev, solar_os_radio_status_t *status)
     }
     sx1262_unlock(dev);
     return ESP_OK;
+}
+
+esp_err_t sx1262_tune_rx(sx1262_t *dev, uint32_t frequency_hz, uint32_t *settle_ms)
+{
+    if (dev == NULL || settle_ms == NULL || frequency_hz < 150000000U ||
+        frequency_hz > 960000000U) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = sx1262_lock(dev);
+    if (err != ESP_OK) return err;
+    if ((dev->state != SOLAR_OS_RADIO_STATE_RX && dev->state != SOLAR_OS_RADIO_STATE_STANDBY) ||
+        dev->config.frequency_hz == 0) {
+        sx1262_unlock(dev);
+        return ESP_ERR_INVALID_STATE;
+    }
+    bool calibrate = dev->image_cal_min_hz == 0 ||
+        frequency_hz < dev->image_cal_min_hz + 1000000U ||
+        frequency_hz > dev->image_cal_max_hz - 1000000U;
+    /* XOSC standby keeps the TCXO running between bins. RC standby and image
+     * calibration are needed only when leaving the calibrated RF window. */
+    uint8_t standby = calibrate ? SX1262_STANDBY_RC : SX1262_STANDBY_XOSC;
+    err = sx1262_transact(dev, SX1262_OP_SET_STANDBY, &standby, 1, NULL, 0);
+    if (err == ESP_OK) dev->state = SOLAR_OS_RADIO_STATE_STANDBY;
+    if (err == ESP_OK && calibrate) {
+        uint8_t params[2];
+        sx1262_image_calibration_bytes(frequency_hz, &params[0], &params[1]);
+        err = sx1262_transact(dev, SX1262_OP_CALIBRATE_IMAGE, params, 2, NULL, 0);
+        if (err == ESP_OK) {
+            dev->image_cal_min_hz = (uint32_t)params[0] * 4000000U;
+            dev->image_cal_max_hz = (uint32_t)params[1] * 4000000U;
+            standby = SX1262_STANDBY_XOSC;
+            err = sx1262_transact(dev, SX1262_OP_SET_STANDBY, &standby, 1, NULL, 0);
+        }
+    }
+    if (err == ESP_OK) {
+        uint32_t reg = (uint32_t)((((uint64_t)frequency_hz << 25) + SX1262_FXTAL_HZ / 2) / SX1262_FXTAL_HZ);
+        uint8_t params[4] = {reg >> 24, reg >> 16, reg >> 8, reg};
+        err = sx1262_transact(dev, SX1262_OP_SET_RF_FREQUENCY, params, 4, NULL, 0);
+    }
+    if (err == ESP_OK) err = sx1262_clear_irq_status(dev, SX1262_IRQ_ALL);
+    if (err == ESP_OK) {
+        const uint8_t params[3] = {0xff, 0xff, 0xff};
+        err = sx1262_transact(dev, SX1262_OP_SET_RX, params, 3, NULL, 0);
+    }
+    if (err == ESP_OK) {
+        dev->config.frequency_hz = frequency_hz;
+        dev->state = SOLAR_OS_RADIO_STATE_RX;
+        uint32_t bw = dev->config.rx_bandwidth_hz ? dev->config.rx_bandwidth_hz : 125000U;
+        uint32_t filter_ms = (32000U + bw - 1U) / bw;
+        *settle_ms = filter_ms < 2U ? 2U : filter_ms;
+    }
+    sx1262_unlock(dev);
+    return err;
+}
+
+esp_err_t sx1262_read_rssi(sx1262_t *dev, int16_t *dbm)
+{
+    if (dev == NULL || dbm == NULL) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = sx1262_lock(dev);
+    if (err != ESP_OK) return err;
+    if (dev->state != SOLAR_OS_RADIO_STATE_RX) {
+        err = ESP_ERR_INVALID_STATE;
+    } else {
+        /* opcode, status/NOP, RssiInst: one status byte precedes the value. */
+        uint8_t response[2] = {0};
+        err = sx1262_transact(dev, SX1262_OP_GET_RSSI_INST, NULL, 0, response, 2);
+        if (err == ESP_OK) *dbm = -(int16_t)(response[1] / 2U);
+    }
+    sx1262_unlock(dev);
+    return err;
 }
 
 esp_err_t sx1262_send(sx1262_t *dev, const solar_os_radio_packet_t *packet, uint32_t timeout_ms)
