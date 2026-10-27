@@ -73,6 +73,8 @@ TARGETS += epd_scan_worker_test
 TARGETS += epd_ssd1683_test epd_ssd1683_waveform_test
 TARGETS += shell_table_test
 TARGETS += io_layout_test
+TARGETS += io_layout_can_test
+TARGETS += batmon_job_test
 TARGETS += power_key_test power_key_wired_test power_key_input_test power_key_custom_test
 
 shell_table_test: shell_table_test.c $(ROOT)/src/shell/solar_os_shell_io.c $(ROOT)/src/shell/solar_os_shell_io.h
@@ -81,13 +83,15 @@ shell_table_test: shell_table_test.c $(ROOT)/src/shell/solar_os_shell_io.c $(ROO
 		-I$(ROOT)/src/shell -I$(ROOT)/components/u8g2/src/clib \
 		shell_table_test.c $(ROOT)/src/shell/solar_os_shell_io.c -Wl,--gc-sections -o $@
 
-io_layout_test: io_layout_test.c $(ROOT)/src/apps/solar_os_io.c $(ROOT)/src/services/solar_os_tui_widgets.c
+io_layout_can_test: override CFLAGS += -DSOLAR_OS_PACKAGE_CAN_TWAI=1
+io_layout_test io_layout_can_test: io_layout_test.c $(ROOT)/src/apps/solar_os_io.c $(ROOT)/src/services/solar_os_tui_widgets.c $(ROOT)/src/shell/solar_os_shell_expansion_command.c
 	$(CC) $(CFLAGS) -Wno-unused-variable -Wno-format-truncation \
 		-D_GNU_SOURCE -DSPI2_HOST=1 -DSPI3_HOST=2 \
 		-ffunction-sections -fdata-sections -include compat.h -Iexpansion_stubs -I. \
 		-I$(ROOT)/src -I$(ROOT)/src/apps -I$(ROOT)/src/shell -I$(ROOT)/src/services \
 		-I$(ROOT)/components/u8g2/src/clib io_layout_test.c \
-		$(ROOT)/src/services/solar_os_tui_widgets.c -Wl,--gc-sections -o $@
+		$(ROOT)/src/services/solar_os_tui_widgets.c \
+		$(ROOT)/src/shell/solar_os_shell_expansion_command.c -Wl,--gc-sections -o $@
 
 power_key_wired_test: override CFLAGS += -DSOLAR_OS_BOARD_HAS_WIRED_KEYBOARD=1 -DSOLAR_OS_BOARD_KEY_SHORT_INPUT_KEY=SOLAR_OS_KEY_ENTER
 power_key_input_test: override CFLAGS += -DSOLAR_OS_BOARD_KEY_SHORT_INPUT_KEY=SOLAR_OS_KEY_APP_EXIT
@@ -943,6 +947,10 @@ battery_service_test: battery_service_test.c $(ROOT)/src/services/solar_os_batte
 		battery_service_test.c $(ROOT)/src/services/solar_os_battery.c \
 		$(ROOT)/src/services/solar_os_battery_trend.c -o $@
 
+batmon_job_test: batmon_job_test.c $(ROOT)/src/jobs/solar_os_batmon_job.c $(ROOT)/src/services/solar_os_shutdown.c
+	$(CC) $(CFLAGS) -D_GNU_SOURCE -include compat.h -I. -I$(ROOT)/src \
+		-I$(ROOT)/src/services $< -o $@
+
 battery_trend_test: battery_trend_test.c $(ROOT)/src/services/solar_os_battery_trend.c $(ROOT)/src/services/solar_os_battery_trend.h
 	$(CC) $(CFLAGS) -I$(ROOT)/src/services \
 		battery_trend_test.c $(ROOT)/src/services/solar_os_battery_trend.c -o $@
@@ -1224,6 +1232,7 @@ test: $(TARGETS)
 	./input_keymap_service_test
 	./cl32_keyboard_test
 	./battery_service_test
+	./batmon_job_test
 	./camera_service_test
 	./script_media_test
 	./script_media_rtsp_test
@@ -1273,6 +1282,7 @@ test: $(TARGETS)
 	./app_exit_result_test
 	./shell_table_test
 	./io_layout_test
+	./io_layout_can_test
 	./power_key_test
 	./power_key_wired_test
 	./power_key_input_test

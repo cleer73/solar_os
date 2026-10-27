@@ -1305,13 +1305,20 @@ Controls:
 - Layout markers are `*` free, `~` releasable, `@` claimed, `!` fixed/control,
   `+` power, `-` ground, and `x` not connected.
 - `Enter` opens context-sensitive actions for a pin or bus.
-- `n` creates a board-approved named I2C, SPI, UART, MIDI, or 1-Wire bus.
+- `n` creates a board-approved named I2C, SPI, UART, MIDI, 1-Wire, PS/2, or
+  CAN bus, depending on the installed drivers.
 - Bus creation uses arrows to select fields and values; the generated bus name
   can be edited directly.
 - Runtime buses can be attached, detached, or removed when their lease state
   permits it. Their `Autostart` action idempotently appends the matching
   `expansion bus create ...` command to `/.shell/startup`. Direct GPIO and PWM
   assignments can be created and released from the Pins or Layout view.
+- CAN creation selects TX/RX GPIOs, bitrate in kbit/s, listen-only or normal
+  mode, and an optional transceiver-select GPIO with its active level. The
+  default is 500 kbit/s in listen-only mode. CAN controllers appear in Buses;
+  runtime controllers support removal and `Autostart`, which saves an
+  `expansion attach twai-can ...` command. A compatible CAN transceiver is
+  required; see `manual hardware.can`.
 - A selected I2C bus has a `Set I2C speed` action with 100 kHz, 400 kHz, and
   1 MHz choices. The change applies at runtime even while devices lease the bus.
 - `r` refreshes; `q`, `Esc`, or the app-exit key exits.
